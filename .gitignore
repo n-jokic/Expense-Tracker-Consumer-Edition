@@ -1,0 +1,33 @@
+# ── Database (contains personal data — never commit) ──────────────────────────
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Python cache ───────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Streamlit local config (may contain secrets) ───────────────────────────────
+.streamlit/secrets.toml
+
+# ── Environment / secret files ─────────────────────────────────────────────────
+.env
+*.env
+secrets.toml
+
+# ── OS clutter ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Exports / backups ───────────────────────────────────────────────────────────
+*.zip
+*.bak

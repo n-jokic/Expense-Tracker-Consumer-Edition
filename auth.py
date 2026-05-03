@@ -22,7 +22,10 @@ def hash_password(plain: str) -> str:
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
+    except Exception as e:
+        # Surface real errors so they're not silently swallowed
+        import streamlit as st
+        st.error(f"Auth error (please contact support): {e}")
         return False
 
 
@@ -43,12 +46,13 @@ def _valid_password(password: str) -> tuple[bool, str]:
 # ── Core auth functions ───────────────────────────────────────────────────────
 
 def register_user(username: str, email: str, password: str, display_name: str) -> tuple[bool, str]:
-    username = username.strip()
+    username = username.strip().lower()          # normalise to lowercase
     email    = email.strip().lower()
+    password = password.strip()                  # remove accidental leading/trailing whitespace
 
     if len(username) < 3:
         return False, "Username must be at least 3 characters."
-    if not username.isalnum() and "_" not in username:
+    if not all(c.isalnum() or c == "_" for c in username):
         return False, "Username can only contain letters, numbers, and underscores."
     if not _valid_email(email):
         return False, "Please enter a valid email address."
@@ -68,7 +72,8 @@ def register_user(username: str, email: str, password: str, display_name: str) -
 
 
 def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
-    username = username.strip()
+    username = username.strip().lower()          # normalise — matches registration
+    password = password.strip()                  # remove accidental whitespace
     user = get_user_by_username(username)
 
     if not user:
@@ -82,6 +87,8 @@ def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
 def change_password(user_id: int, old_password: str, new_password: str) -> tuple[bool, str]:
     from db import get_session
     from db import User
+    old_password = old_password.strip()
+    new_password = new_password.strip()
     with get_session() as s:
         u = s.query(User).filter(User.id == user_id).first()
         if not u:

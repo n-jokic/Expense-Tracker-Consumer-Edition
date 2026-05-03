@@ -574,8 +574,12 @@ def create_user(username, email, password_hash, display_name):
 
 
 def get_user_by_username(username):
+    # Normalise to lowercase — usernames are stored lowercase since registration normalises them
+    username = username.strip().lower()
     with get_session() as s:
-        u = s.query(User).filter(User.username == username).first()
+        u = (s.query(User)
+               .filter(User.username == username)
+               .first())
         if not u:
             return None
         return {
@@ -586,6 +590,7 @@ def get_user_by_username(username):
 
 
 def username_exists(username):
+    username = username.strip().lower()
     with get_session() as s:
         return s.query(User).filter(User.username == username).first() is not None
 
