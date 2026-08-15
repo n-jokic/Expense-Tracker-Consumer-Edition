@@ -10,17 +10,23 @@ ok=False with reason="ocr_unavailable" and the UI shows a setup hint.
 import io
 import re
 
-_AMOUNT_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+\.\d{2}")
+_AMOUNT_RE = re.compile(r"(?<![\d.,])(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+\.\d{2}|\d+,\d{2})")
+_DATE_RE = re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _TOTAL_KEYS = ("total", "ukupno", "suma", "svega", "amount due",
                "to pay", "grand total", "плати", "укупно")
 
 
 def extract_amounts(text: str) -> list[float]:
-    """Parse amounts in 1.234,56 / 1,234.56 / 1234.56 formats."""
+    """Parse amounts in 1.234,56 / 1,234.56 / 1234.56 formats.
+
+    Dates are stripped first so a receipt date like 15.05.2024 is never
+    mistaken for an amount.
+    """
     out = []
     if not text:
         return out
-    for m in _AMOUNT_RE.finditer(text):
+    cleaned = _DATE_RE.sub(" ", text)
+    for m in _AMOUNT_RE.finditer(cleaned):
         raw = m.group()
         try:
             last_sep = max(raw.rfind("."), raw.rfind(","))
@@ -78,7 +84,7 @@ def ocr_image(image_bytes: bytes) -> str | None:
         return None
 
 
-def analyze_receipt(image_bytes: bytes, expenses_df=None) -> dict:
+def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     """Full pipeline: OCR → amount/merchant → category suggestion.
 
     Returns {"ok", "text", "amount", "merchant", "category", "subcategory",
@@ -99,7 +105,7 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None) -> dict:
         # 1) learned classifier on the user's own data
         try:
             from forecasting import suggest_category
-            cat, conf = suggest_category(expenses_df, merchant)
+            cat, conf = suggest_category(expenses_df, merchant, user_id=user_id)
             if cat is not None:
                 category, confidence = cat, round(conf, 2)
         except Exception:

@@ -36,9 +36,13 @@ if salary_rows.empty:
     safe_warning("No salary entry found — using the 10th as cycle start. "
                  "Log a 'Primary Salary' income entry to enable automatic detection.")
 else:
-    latest_salary = salary_rows.sort_values("date").iloc[-1]
-    period_start, period_end = compute_salary_cycle(today, SALARY_DAY,
-                                                    latest_salary["date"].date())
+    salary_rows = salary_rows[salary_rows["date"].notna()] if not salary_rows.empty else salary_rows
+    if salary_rows.empty:
+        period_start, period_end = compute_salary_cycle(today, SALARY_DAY)
+    else:
+        latest_salary = salary_rows.sort_values("date").iloc[-1]
+        period_start, period_end = compute_salary_cycle(today, SALARY_DAY,
+                                                        latest_salary["date"].date())
     st.success(f"✅ Cycle start: **{period_start.strftime('%d %b %Y')}**")
 
 days_in_period = (period_end - period_start).days + 1

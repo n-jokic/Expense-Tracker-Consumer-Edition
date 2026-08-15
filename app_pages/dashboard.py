@@ -134,8 +134,10 @@ if not df_loans.empty:
         pay_df = q.loan_payments(user_id, str(row["id"]))
         payments = [(r["date"].date(), float(r["amount_eur"]))
                     for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        start_date = (row["start_date"].date() if pd.notna(row["start_date"])
+                      else date.today())
         sched = loan_schedule(float(row["principal_eur"]), float(row["annual_rate"]),
-                              int(row["term_months"]), row["start_date"].date(),
+                              int(row["term_months"]), start_date,
                               int(row["payment_day"]), payments)
         total_debt += sched["remaining_balance"]
         if sched["payoff_date"]:
@@ -191,6 +193,25 @@ if sm > 0 and not dfb.empty and not exp.empty:
             st.markdown(f"**{c}** — {fmt(a, DC, rates)} of {fmt(b, DC, rates)} ({pct*100:.0f}%)")
             st.progress(pct)
         st.divider()
+
+# Fun money (current calendar month, regardless of the selected period)
+settings_dash = st.session_state.settings
+fun_allowance = float(settings_dash.get("fun_money") or 0.0)
+if fun_allowance > 0:
+    from utils import fun_spent, DEFAULT_FUN_CATEGORIES
+    fun_cats = settings_dash.get("fun_categories") or DEFAULT_FUN_CATEGORIES
+    fun_month = fun_spent(dfe, fun_cats, date.today().year, date.today().month)
+    bonus = 0.0
+    if settings_dash.get("fun_bonus_month") == f"{date.today().year:04d}-{date.today().month:02d}":
+        bonus = float(settings_dash.get("fun_bonus_amount") or 0.0)
+    allowance = fun_allowance + bonus
+    fpct = min(fun_month / allowance, 1.0) if allowance > 0 else 0.0
+    st.subheader("🎈 Fun money")
+    bonus_str = f" · incl. +€{bonus:.0f} milestone bonus" if bonus > 0 else ""
+    st.markdown(f"**{fmt(fun_month, DC, rates)}** of {fmt(allowance, DC, rates)} "
+                f"({fpct*100:.0f}%{bonus_str})")
+    st.progress(fpct)
+    st.divider()
 
 # Charts row 1
 r1a, r1b = st.columns(2)

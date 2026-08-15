@@ -42,7 +42,7 @@ with st.expander("📷 Scan a receipt (OCR)"):
         image_bytes = up_img.getvalue()
 
     if image_bytes is not None:
-        result = analyze_receipt(image_bytes, q.expenses(user_id))
+        result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
         if not result["ok"]:
             st.warning("📷 OCR isn't available on this machine yet. "
                        "Install Tesseract (Windows: `winget install UB-Mannheim.TesseractOCR`) "
@@ -207,6 +207,7 @@ if not df_exp.empty:
 
     if save_changes:
         changed = 0
+        rejected = 0
         for _, row in edited.iterrows():
             rid  = str(row["id"])
             orig = df_exp[df_exp["id"] == rid]
@@ -217,17 +218,27 @@ if not df_exp.empty:
             for col in ["date","category","subcategory","description","amount","currency","notes"]:
                 if not _same(row[col], orig[col]):
                     upd[col] = row[col]
-            if upd:
-                if "amount" in upd or "currency" in upd:
-                    amt = float(upd.get("amount", orig["amount"]))
-                    cur2 = str(upd.get("currency", orig["currency"]))
-                    upd["amount_eur"] = to_eur(amt, cur2, rates)
-                update_expense(user_id, rid, upd)
-                changed += 1
+            if not upd:
+                continue
+            # never write a cleared (NaN) amount or an empty description
+            if "amount" in upd and (pd.isna(row["amount"]) or float(row["amount"]) <= 0):
+                rejected += 1
+                continue
+            if "description" in upd and not str(row["description"]).strip():
+                rejected += 1
+                continue
+            if "amount" in upd or "currency" in upd:
+                amt = float(upd.get("amount", orig["amount"]))
+                cur2 = str(upd.get("currency", orig["currency"]))
+                upd["amount_eur"] = to_eur(amt, cur2, rates)
+            update_expense(user_id, rid, upd)
+            changed += 1
         if changed:
             q.bump_db_version()
             st.toast(f"✅ {changed} row(s) updated", icon="✅")
             st.rerun()
+        elif rejected:
+            safe_error(f"{rejected} row(s) not saved — amount/description must not be empty.")
         else:
             st.info("No changes detected.")
 

@@ -5,7 +5,10 @@ Tests for the server-side ML helpers (forecasting.py).
 import pandas as pd
 import pytest
 
-from forecasting import forecast_next_month, detect_anomalies, suggest_category
+from forecasting import (
+    forecast_next_month, detect_anomalies, suggest_category,
+    detect_subscriptions, cluster_month_patterns, suggest_budgets,
+)
 from forecasting import _CategorizerModel
 
 
@@ -68,3 +71,53 @@ def test_categorizer_refuses_tiny_data():
     model = _CategorizerModel()
     assert model.train(df) is False
     assert model.predict("a") == (None, 0.0)
+
+
+# ── Subscription detection ────────────────────────────────────────────────────
+
+def _monthly_rows():
+    rows = []
+    for m in range(1, 6):
+        rows.append({"date": pd.Timestamp(2025, m, 3), "category": "Entertainment",
+                     "description": "NETFLIX", "amount_eur": 12.99})
+        rows.append({"date": pd.Timestamp(2025, m, 15), "category": "Food & Dining",
+                     "description": f"groceries {m}", "amount_eur": 40.0 + m})
+    return pd.DataFrame(rows)
+
+
+def test_detect_subscriptions_finds_monthly_charges():
+    subs = detect_subscriptions(_monthly_rows())
+    assert len(subs) == 1
+    assert subs.iloc[0]["description"] == "NETFLIX"
+    assert subs.iloc[0]["months_seen"] == 5
+    assert 25 <= subs.iloc[0]["avg_gap_days"] <= 35
+
+
+def test_detect_subscriptions_ignores_irregular():
+    rows = [
+        {"date": pd.Timestamp(2025, 1, 3), "category": "X", "description": "one-off", "amount_eur": 10.0},
+        {"date": pd.Timestamp(2025, 2, 3), "category": "X", "description": "one-off", "amount_eur": 10.0},
+    ]
+    assert detect_subscriptions(pd.DataFrame(rows)).empty
+
+
+# ── Pattern clustering & budget suggestions ───────────────────────────────────
+
+def test_cluster_month_patterns():
+    df = _expenses(12, base=800.0)
+    out = cluster_month_patterns(df)
+    assert out["ok"] is True
+    assert out["label"] is not None
+    assert isinstance(out["dominant_categories"], list)
+
+
+def test_cluster_short_history():
+    out = cluster_month_patterns(_expenses(4))
+    assert out["ok"] is False
+
+
+def test_suggest_budgets_returns_categories():
+    df = _expenses(8, base=500.0)
+    out = suggest_budgets(df)
+    assert "Food & Dining" in out
+    assert out["Food & Dining"] > 0

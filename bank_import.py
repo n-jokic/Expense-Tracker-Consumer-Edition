@@ -154,6 +154,29 @@ def _pick(df: pd.DataFrame, names, fallback_idx: int) -> pd.Series:
     return pd.Series(index=df.index, dtype=object)
 
 
+def _to_numeric_locale(series: pd.Series) -> pd.Series:
+    """Locale-aware numeric parsing: handles '12,50', '1.234,56', '1,234.56'."""
+    num = pd.to_numeric(series, errors="coerce")
+    if num.notna().all():
+        return num
+
+    def conv(v):
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):   # EU: dots are thousands
+                s = s.replace(".", "").replace(",", ".")
+            else:                             # US: commas are thousands
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(",", ".")
+        return s
+
+    alt = pd.to_numeric(series.map(conv), errors="coerce")
+    return num.fillna(alt)
+
+
 def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
     """Return DataFrame with columns: date, description, amount, currency."""
     try:
@@ -161,7 +184,7 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             out = pd.DataFrame()
             out["date"]        = pd.to_datetime(_pick(df, ["Started Date"], 0), errors="coerce")
             out["description"] = _pick(df, ["Description"], 2).astype(str)
-            out["amount"]      = pd.to_numeric(_pick(df, ["Amount"], 5), errors="coerce")
+            out["amount"]      = _to_numeric_locale(_pick(df, ["Amount"], 5))
             out["currency"]    = df.get("Currency", "EUR")
 
         elif bank_format == "n26":
@@ -171,15 +194,15 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             amt_col = next((c for c in df.columns if "amount" in c.lower()), None)
             amt = df[amt_col] if amt_col is not None else (
                 df.iloc[:, -1] if df.shape[1] else pd.Series(dtype=object))
-            out["amount"]      = pd.to_numeric(amt, errors="coerce")
+            out["amount"]      = _to_numeric_locale(amt)
             out["currency"]    = "EUR"
 
         elif bank_format == "wise":
             out = pd.DataFrame()
             out["date"]        = pd.to_datetime(_pick(df, ["Date"], 0), errors="coerce")
             out["description"] = _pick(df, ["Description"], 2).astype(str)
-            out["amount"]      = pd.to_numeric(
-                _pick(df, ["Source amount (after fees)", "Amount"], 3), errors="coerce")
+            out["amount"]      = _to_numeric_locale(
+                _pick(df, ["Source amount (after fees)", "Amount"], 3))
             out["currency"]    = df.get("Source currency", "EUR")
 
         else:  # generic
@@ -195,7 +218,7 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             cur_col  = next((c for c in df.columns if "currency" in c.lower()), None)
             out["date"]        = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.Series(dtype=object)
             out["description"] = df[desc_col].astype(str) if desc_col else pd.Series(dtype=object)
-            out["amount"]      = pd.to_numeric(df[amt_col], errors="coerce") if amt_col else pd.Series(dtype=object)
+            out["amount"]      = _to_numeric_locale(df[amt_col]) if amt_col else pd.Series(dtype=object)
             out["currency"]    = df[cur_col] if cur_col else "EUR"
 
         return out.dropna(subset=["date", "amount"])
@@ -237,24 +260,42 @@ def render_bank_import_page(user_id: int, rates: dict):
         - Rows that match an expense you already logged are skipped automatically.
         """)
 
-    uploaded = st.file_uploader("Upload your bank CSV", type=["csv"])
+    uploaded = st.file_uploader("Upload your bank statement", type=["csv", "pdf"])
     if not uploaded:
         return
 
-    try:
-        raw = pd.read_csv(uploaded)
-    except Exception as e:
-        st.error(f"Could not read the file: {e}")
-        return
+    raw = None
+    normalised = None
+    bank_fmt = None
 
-    st.subheader("📋 Preview")
-    st.dataframe(raw.head(5), hide_index=True)
+    if uploaded.name.lower().endswith(".pdf"):
+        # PDF statements: parse with pdfplumber into the same normalized shape
+        from pdf_import import extract_transactions_from_pdf
+        normalised = extract_transactions_from_pdf(uploaded.getvalue())
+        bank_fmt = "pdf"
+        if normalised.empty:
+            st.warning("Couldn't find transactions in this PDF. "
+                       "Check the statement layout or export a CSV instead.")
+            return
+    else:
+        try:
+            raw = pd.read_csv(uploaded)
+        except Exception as e:
+            st.error(f"Could not read the file: {e}")
+            return
 
-    bank_fmt  = detect_bank_format(raw)
-    st.caption(f"Detected format: **{bank_fmt.capitalize()}**")
+    if raw is not None:
+        st.subheader("📋 Preview")
+        st.dataframe(raw.head(5), hide_index=True)
+        bank_fmt  = detect_bank_format(raw)
+        st.caption(f"Detected format: **{bank_fmt.capitalize()}**")
+        normalised = normalize_bank_csv(raw, bank_fmt)
+    else:
+        st.subheader("📋 Preview")
+        st.dataframe(normalised.head(5), hide_index=True)
+        st.caption("Detected format: **PDF statement**")
 
-    normalised = normalize_bank_csv(raw, bank_fmt)
-    if normalised.empty:
+    if normalised is None or normalised.empty:
         st.warning("No valid rows found. Please check the file format.")
         return
 
@@ -271,10 +312,21 @@ def render_bank_import_page(user_id: int, rates: dict):
         st.warning("No importable rows found.")
         return
 
-    # Auto-categorise
-    expenses_only[["category", "subcategory"]] = expenses_only["description"].apply(
-        lambda d: pd.Series(categorize_expense(d))
-    )
+    # Auto-categorise: learned classifier first, keyword map as fallback
+    from forecasting import suggest_category
+    user_exp = q.expenses(user_id)
+    cats, subs = [], []
+    for d in expenses_only["description"]:
+        cat, conf = suggest_category(user_exp, d, user_id=user_id)
+        if cat:
+            cats.append(cat)
+            subs.append("")
+        else:
+            c, s = categorize_expense(d)
+            cats.append(c)
+            subs.append(s)
+    expenses_only["category"] = cats
+    expenses_only["subcategory"] = subs
 
     # Convert to EUR using the user's rate table
     expenses_only["amount_eur"] = expenses_only.apply(
@@ -292,7 +344,7 @@ def render_bank_import_page(user_id: int, rates: dict):
         review,
         num_rows="fixed",
         hide_index=True,
-        key="bank_review",
+        key=f"bank_review_{uploaded.name}_{uploaded.size}",
         column_config={
             "date": st.column_config.DateColumn("Date"),
             "description": st.column_config.TextColumn("Description"),
@@ -320,6 +372,7 @@ def render_bank_import_page(user_id: int, rates: dict):
 
         imported = 0
         skipped  = 0
+        failed   = 0
         for _, row in edited[edited["include"]].iterrows():
             try:
                 ae = float(row["amount_eur"])
@@ -343,14 +396,19 @@ def render_bank_import_page(user_id: int, rates: dict):
                     "notes": "Imported from bank statement",
                 })
                 imported += 1
-            except Exception:
-                skipped += 1
+            except Exception as e:
+                import logging
+                logging.getLogger("bank_import").warning("import row failed: %s", e)
+                failed += 1
 
         if imported > 0:
             q.bump_db_version()
             st.success(f"✅ Successfully imported **{imported}** expenses!")
             if skipped:
                 st.caption(f"{skipped} row(s) skipped (invalid amounts or duplicates).")
+            if failed:
+                st.warning(f"{failed} row(s) failed to save — see the server log for details.")
             st.balloons()
         else:
-            st.error("No expenses could be imported. Please check the data.")
+            st.error(f"No expenses could be imported ({skipped} skipped, {failed} failed). "
+                     "Please check the data.")

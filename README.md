@@ -67,9 +67,15 @@ Three options, in order of simplicity:
    or nginx in front for HTTPS, set a domain, and optionally point
    `DATABASE_URL` at a PostgreSQL instance. Disable open registration.
 
-### Receipt OCR setup (optional)
+### Phone sync API (offline PWA groundwork)
 
-The "📷 Scan a receipt" feature needs Tesseract installed on the server:
+The sync API (`python api.py`, port 8502) pairs a phone app with a one-time
+code (Settings → Sync) and accepts device changes with conflict detection:
+records edited on both sides since the last sync are parked in Settings →
+Sync for manual resolution (keep device / keep server). The offline PWA client
+itself is the next milestone — the server contract is ready.
+
+### Receipt OCR setup (optional)
 
 ```bat
 winget install UB-Mannheim.TesseractOCR
@@ -102,8 +108,18 @@ app works normally and the scan control shows a friendly hint instead.
   model with per-category predictions
 - **Insights** — month-over-month, top merchants, no-spend days, unusual
   expenses (rule-based + IsolationForest ML scan), salary/bonus highlights
-- **Bank import** — Revolut / N26 / Wise / generic CSV with auto-categorisation
-  (keywords + a classifier learned from your own data) and duplicate detection
+- **Bank import** — Revolut / N26 / Wise / generic CSV **and PDF statements**
+  (pdfplumber table/text extraction) with auto-categorisation (keywords + a
+  classifier learned from your own data) and duplicate detection
+- **🎈 Fun money** — a monthly guilt-free allowance across categories you pick,
+  tracked on the Dashboard and Insights
+- **Milestone rewards** — financial milestones (budget champion, debt-free,
+  raise, fun-keeper…) unlock persistent badges *and* fun-money bonuses
+- **🎒 Travel budget** — a yearly allowance for flights/hotels/vacations with
+  on-pace checking and a link to your vacation savings goal
+- **Subscription detection** — the app spots regular monthly charges and offers
+  one-click "add to Recurring" (plus KMeans spending-pattern insights and
+  budget suggestions from your history)
 - **Household** — share a combined dashboard with family via invite code
 - **Gamification** — streaks, badges, salary/raise/bonus milestones
 - **Audit log** — every change is recorded

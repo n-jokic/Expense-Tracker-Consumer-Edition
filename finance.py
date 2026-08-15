@@ -43,11 +43,16 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     r = (annual_rate_pct / 100) / 12
     asof = asof or date.today()
 
+    # Attribute payments to the accrual month they fall in: a payment made
+    # on any day between two due dates counts towards the earlier due date's
+    # month (users rarely pay on the exact payment_day).
     by_due = {}
     for p_date, amt in payments:
         if p_date is None:
             continue
-        by_due[p_date] = by_due.get(p_date, 0.0) + float(amt or 0.0)
+        k = (p_date.year - start_date.year) * 12 + (p_date.month - start_date.month)
+        due = _next_due(start_date, payment_day, max(k, 0))
+        by_due[due] = by_due.get(due, 0.0) + float(amt or 0.0)
 
     bal = float(principal)
     interest_paid = 0.0

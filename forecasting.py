@@ -141,16 +141,21 @@ class _CategorizerModel:
 
 
 @st.cache_resource
-def get_categorizer() -> _CategorizerModel:
+def get_categorizer(user_id=None) -> _CategorizerModel:
+    """One classifier per user (cache_resource keys on the argument), so
+    accounts never leak training data into each other's suggestions."""
     return _CategorizerModel()
 
 
 def suggest_category(expenses_df: pd.DataFrame, text: str,
-                     min_confidence: float = 0.5):
+                     min_confidence: float = 0.5, user_id=None):
     """Train-on-demand categorizer. Returns (category, confidence) or
     (None, conf) when untrained or below confidence."""
-    model = get_categorizer()
+    model = get_categorizer(user_id)
     if model.clf is None:
+        model.train(expenses_df)
+    elif expenses_df is not None and len(expenses_df) >= int(model.trained_rows * 1.5) + 20:
+        # enough new labelled data — retrain
         model.train(expenses_df)
     if model.clf is None:
         return None, 0.0
@@ -158,3 +163,116 @@ def suggest_category(expenses_df: pd.DataFrame, text: str,
     if conf >= min_confidence:
         return cat, conf
     return None, conf
+
+
+# ── 4. Subscription / recurring detection ────────────────────────────────────
+
+def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.DataFrame:
+    """Find (description, amount) pairs that repeat monthly — likely bills.
+
+    Returns a DataFrame with description, amount_eur, months_seen, avg_gap_days
+    and last_date, sorted by most recent.
+    """
+    if expenses_df is None or expenses_df.empty:
+        return pd.DataFrame()
+    df = expenses_df.copy()
+    df["key"] = (df["description"].str.strip().str.lower()
+                 + "|" + df["amount_eur"].round(2).astype(str))
+    groups = []
+    for key, grp in df.groupby("key"):
+        if len(grp) < min_months:
+            continue
+        dates = grp["date"].dropna().sort_values()
+        if len(dates) < min_months:
+            continue
+        gaps = dates.diff().dropna().dt.days
+        avg_gap = float(gaps.mean()) if len(gaps) else 0.0
+        if not (25 <= avg_gap <= 35):
+            continue
+        groups.append({
+            "description": grp.iloc[0]["description"],
+            "category": grp.iloc[0]["category"],
+            "amount_eur": float(grp.iloc[0]["amount_eur"]),
+            "months_seen": len(grp),
+            "avg_gap_days": round(avg_gap, 1),
+            "last_date": dates.iloc[-1],
+        })
+    out = pd.DataFrame(groups)
+    if out.empty:
+        return out
+    return out.sort_values("last_date", ascending=False)
+
+
+# ── 5. Monthly spending-pattern clustering (KMeans) ──────────────────────────
+
+def cluster_month_patterns(expenses_df: pd.DataFrame, n_clusters: int = 3) -> dict:
+    """Cluster months by their category spending mix; describe the current
+    month's cluster. Returns {"ok", "label", "dominant_categories", ...}."""
+    if expenses_df is None or expenses_df.empty:
+        return {"ok": False}
+    df = expenses_df.copy()
+    df["ym"] = df["date"].dt.to_period("M")
+    pivot = (df.pivot_table(index="ym", columns="category",
+                            values="amount_eur", aggfunc="sum")
+             .fillna(0))
+    if len(pivot) < MIN_HISTORY_MONTHS:
+        return {"ok": False, "reason": "short_history"}
+
+    try:
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+    except Exception:
+        return {"ok": False, "reason": "no_sklearn"}
+
+    X = StandardScaler().fit_transform(pivot.values)
+    km = KMeans(n_clusters=min(n_clusters, len(pivot)), random_state=42, n_init=10)
+    labels = km.fit_predict(X)
+
+    current = pivot.index[-1]
+    current_label = int(labels[-1])
+    # dominant categories: average profile of this cluster minus overall avg
+    cluster_mask = labels == current_label
+    profile = pivot.values[cluster_mask].mean(axis=0)
+    overall = pivot.values.mean(axis=0)
+    diff = profile - overall
+    dom_idx = diff.argsort()[::-1][:3]
+    dom = [(pivot.columns[i], float(diff[i])) for i in dom_idx if diff[i] > 0]
+
+    return {
+        "ok": True,
+        "month": str(current),
+        "label": int(current_label),
+        "n_months_in_cluster": int(cluster_mask.sum()),
+        "dominant_categories": dom,
+        "avg_total": float(pivot.values[cluster_mask].sum(axis=1).mean()),
+    }
+
+
+# ── 6. Budget recommender (linear trend) ─────────────────────────────────────
+
+def suggest_budgets(expenses_df: pd.DataFrame, months: int = 6) -> dict:
+    """Per-category budget suggestion: recent mean + linear trend.
+
+    Returns {category: suggested_monthly_eur} for categories with enough data.
+    """
+    if expenses_df is None or expenses_df.empty:
+        return {}
+    df = expenses_df.copy()
+    df["ym"] = df["date"].dt.to_period("M")
+    pivot = (df.pivot_table(index="ym", columns="category",
+                            values="amount_eur", aggfunc="sum")
+             .fillna(0).tail(months))
+    out = {}
+    for cat in pivot.columns:
+        series = pivot[cat]
+        if len(series) < 3 or float(series.sum()) <= 0:
+            continue
+        mean = float(series.mean())
+        # linear trend over month index
+        import numpy as np
+        x = np.arange(len(series), dtype=float)
+        y = series.values.astype(float)
+        slope = float(np.polyfit(x, y, 1)[0])
+        suggestion = mean + slope  # one step ahead
+        out[cat] = round(max(suggestion, 0.0), 2)
+    return out

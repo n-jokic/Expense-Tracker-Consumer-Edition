@@ -18,11 +18,12 @@ CATEGORIES = {
     "Food & Dining": ["Groceries","Restaurants & Takeaway","Coffee & Snacks",
                       "Food Delivery","Work Lunch"],
     "Transport":     ["Fuel","Public Transit","Taxi / Uber","Car Insurance",
-                      "Car Maintenance","Parking","Tolls"],
+                      "Car Maintenance","Parking","Tolls","Flights & Trains"],
     "Health":        ["Gym & Fitness","Pharmacy","Doctor / Specialist","Dental",
                       "Supplements","Mental Health"],
     "Entertainment": ["Streaming Services","Cinema & Theater","Concerts & Events",
-                      "Going Out","Hobbies","Books & Courses","Vacation / Travel"],
+                      "Going Out","Hobbies","Books & Courses","Vacation / Travel",
+                      "Hotels & Lodging"],
     "Personal":      ["Clothing & Accessories","Beauty & Skincare","Haircut & Grooming","Gifts"],
     "Loans & Debt":  ["Loan Repayment","Interest","Credit Card","Other Debt"],
     "Other":         ["Subscriptions & Software","Taxes & Fees","Charity & Donations","Miscellaneous"],
@@ -65,6 +66,14 @@ BACKUP_RETENTION_DAYS = 30
 APP_PORT              = 8501
 MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
+
+DEFAULT_FUN_CATEGORIES    = ["Entertainment"]
+# "Category › Subcategory" pairs; empty subcategory = whole category counts.
+DEFAULT_TRAVEL_CATEGORIES = [
+    "Entertainment › Vacation / Travel",
+    "Entertainment › Hotels & Lodging",
+    "Transport › Flights & Trains",
+]
 
 
 # ── Currency engine ───────────────────────────────────────────────────────────
@@ -157,16 +166,20 @@ def compute_salary_cycle(today: _date, salary_day: int = 10,
     """Return (period_start, period_end) for a salary cycle.
 
     period_end is the day before the next cycle start. Month-end salary days
-    (29/30/31) are clamped with calendar.monthrange so they never raise.
+    (29/30/31) are clamped with calendar.monthrange at EVERY construction so
+    they never raise.
     """
+    def _clamped(y, m):
+        return _date(y, m, min(salary_day, calendar.monthrange(y, m)[1]))
+
     if latest_salary is not None:
         period_start = latest_salary
     elif today.day >= salary_day:
-        period_start = _date(today.year, today.month, salary_day)
+        period_start = _clamped(today.year, today.month)
     elif today.month > 1:
-        period_start = _date(today.year, today.month - 1, salary_day)
+        period_start = _clamped(today.year, today.month - 1)
     else:
-        period_start = _date(today.year - 1, 12, salary_day)
+        period_start = _clamped(today.year - 1, 12)
 
     next_m  = period_start.month + 1 if period_start.month < 12 else 1
     next_y  = period_start.year if period_start.month < 12 else period_start.year + 1
@@ -183,6 +196,37 @@ def pbar(pct: float, color: str) -> str:
     return (f'<div class="pw">'
             f'<div class="pb" style="width:{width:.1f}%;background:{color};"></div>'
             f'</div>')
+
+
+# ── Fun money & travel pools ─────────────────────────────────────────────────
+
+def fun_spent(expenses_df, categories, year: int, month: int) -> float:
+    """EUR spent this month across the fun-money categories."""
+    if expenses_df is None or expenses_df.empty or not categories:
+        return 0.0
+    m = expenses_df[(expenses_df["date"].dt.year == year) &
+                    (expenses_df["date"].dt.month == month)]
+    return float(m[m["category"].isin(categories)]["amount_eur"].sum())
+
+
+def travel_spent(expenses_df, pairs, year: int) -> float:
+    """EUR spent this year on travel pairs like 'Entertainment › Vacation / Travel'.
+    An empty subcategory means the whole category counts."""
+    if expenses_df is None or expenses_df.empty or not pairs:
+        return 0.0
+    y = expenses_df[expenses_df["date"].dt.year == year]
+    total = 0.0
+    for pair in pairs:
+        if " › " in pair:
+            cat, sub = pair.split(" › ", 1)
+        else:
+            cat, sub = pair, ""
+        if sub:
+            total += float(y[(y["category"] == cat) &
+                             (y["subcategory"] == sub)]["amount_eur"].sum())
+        else:
+            total += float(y[y["category"] == cat]["amount_eur"].sum())
+    return total
 
 
 # ── Big-purchase priority matrix ──────────────────────────────────────────────

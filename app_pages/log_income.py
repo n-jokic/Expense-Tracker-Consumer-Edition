@@ -6,6 +6,7 @@ Logging a salary above the stored fixed salary offers to record the raise.
 import calendar
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
 import queries as q
@@ -38,9 +39,10 @@ with st.expander("💼 My fixed salary"):
                                     min_value=0.0, max_value=MAX_AMOUNT,
                                     step=10.0, format="%.2f")
         with s2:
+            s_cur_default = settings.get("salary_currency", "EUR")
             s_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
-                                 index=list(SUPPORTED_CURRENCIES.keys()).index(
-                                     settings.get("salary_currency", "EUR")))
+                                 index=list(SUPPORTED_CURRENCIES.keys()).index(s_cur_default)
+                                 if s_cur_default in SUPPORTED_CURRENCIES else 0)
         with s3:
             s_day = st.number_input("Payday (day of month)",
                                     value=int(settings.get("salary_day") or 1),
@@ -199,11 +201,12 @@ if not dfi.empty:
 
     with st.expander("🗑️ Delete an income entry"):
         del_ids = dfi["id"].tolist()
-        del_labels = [f"{r['date'].strftime('%d %b %Y')} — {r['income_type']} {fmt(r['actual_eur'], DC, rates)}"
+        del_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['income_type']} {fmt(r['actual_eur'], DC, rates)}"
                       for _, r in dfi.iterrows()]
-        sel = st.selectbox("Select entry", del_labels, key="inc_del_sel")
+        sel_idx = st.selectbox("Select entry", range(len(del_labels)),
+                               format_func=lambda i: del_labels[i], key="inc_del_sel")
         if st.button("🗑️ Move to trash", type="secondary", key="inc_del_btn", width="stretch"):
-            soft_delete_income(user_id, del_ids[del_labels.index(sel)])
+            soft_delete_income(user_id, del_ids[sel_idx])
             q.bump_db_version()
             st.toast("Income entry moved to trash.", icon="🗑️")
             st.rerun()
@@ -214,7 +217,7 @@ if not dfi.empty:
         with st.expander(f"🗑️ Recently deleted income ({len(df_deleted)})"):
             for _, row in df_deleted.iterrows():
                 rc1, rc2, rc3 = st.columns([3, 2, 1])
-                with rc1: st.write(f"{row['income_type']} — {row['date'].strftime('%d %b %Y')}")
+                with rc1: st.write(f"{row['income_type']} — {row['date'].strftime('%d %b %Y') if pd.notna(row['date']) else '—'}")
                 with rc2: st.write(fmt(row["actual_eur"], DC, rates))
                 with rc3:
                     if st.button("↩️ Restore", key=f"rst_inc_{row['id']}", width="stretch"):

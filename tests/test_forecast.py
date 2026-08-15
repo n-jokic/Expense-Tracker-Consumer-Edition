@@ -47,3 +47,14 @@ def test_latest_salary_overrides_default_day():
                                       latest_salary=date(2025, 3, 25))
     assert start == date(2025, 3, 25)
     assert end == date(2025, 4, 24)
+
+
+def test_month_end_salary_day_clamps_previous_month_start():
+    """Regression: salary_day 31 with today May 1 must not raise — the
+    previous month's start is clamped to April 30."""
+    start, end = compute_salary_cycle(date(2025, 5, 1), salary_day=31)
+    assert start == date(2025, 4, 30)
+    assert end == date(2025, 5, 29)  # day before next start (May 30)
+
+    start, end = compute_salary_cycle(date(2025, 3, 1), salary_day=30)
+    assert start == date(2025, 2, 28)  # non-leap February clamp

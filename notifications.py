@@ -20,7 +20,7 @@ import pandas as pd
 
 import queries as q
 from db import BASE_DIR
-from utils import NEAR_LIMIT_THRESHOLD
+from utils import NEAR_LIMIT_THRESHOLD, fmt
 
 
 # ── SMTP password encryption (Fernet) ─────────────────────────────────────────
@@ -177,6 +177,21 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
 
 # ── In-app alert checkers ─────────────────────────────────────────────────────
 
+def _sent_markers(settings: dict) -> dict:
+    return dict(settings.get("sent_markers") or {})
+
+
+def _persist_marker(user_id: int, settings: dict, kind: str, month_key: str,
+                    item_key: str) -> dict:
+    """Record that an alert was sent (survives session loss / restarts)."""
+    markers = _sent_markers(settings)
+    items = set(markers.get(kind + "_" + month_key, []))
+    items.add(item_key)
+    markers[kind + "_" + month_key] = sorted(items)
+    q.save_settings(user_id, {"sent_markers": markers})
+    return markers
+
+
 def due_reminder_day(due_day: int, days_before: int, month_length: int) -> int:
     """Day of the month to send a bill reminder, clamped to the month length.
 
@@ -236,9 +251,11 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
     if m_exp.empty or m_bud.empty:
         return
 
-    alerted_key = f"budget_alerted_{today.year}_{today.month}"
-    if alerted_key not in st.session_state:
-        st.session_state[alerted_key] = set()
+    month_key = f"{today.year}_{today.month}"
+    alerted_key = f"budget_alerted_{month_key}"
+    markers = _sent_markers(settings)
+    alerted = (set(st.session_state.get(alerted_key, set())) |
+               set(markers.get(f"budget_{month_key}", [])))
 
     ca = m_exp.groupby("category")["amount_eur"].sum()
     cb = m_bud.groupby("category")["budgeted_eur"].sum()
@@ -248,12 +265,14 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
         act_val = float(ca.get(cat, 0))
         if bud_val <= 0:
             continue
-        if act_val >= bud_val * NEAR_LIMIT_THRESHOLD and cat not in st.session_state[alerted_key]:
-            st.session_state[alerted_key].add(cat)
+        if act_val >= bud_val * NEAR_LIMIT_THRESHOLD and cat not in alerted:
+            alerted.add(cat)
+            st.session_state[alerted_key] = alerted
+            _persist_marker(user_id, settings, "budget", month_key, cat)
             over = act_val > bud_val
             icon = "🔴" if over else "🟡"
             msg  = (f"{icon} **{cat}** budget {'exceeded' if over else 'nearly full'}: "
-                    f"€{act_val:,.2f} of €{bud_val:,.2f}")
+                    f"{fmt(act_val, DC, rates)} of {fmt(bud_val, DC, rates)}")
             st.toast(msg, icon="⚠️")
 
             # Send email if configured (background thread — never blocks the UI)
@@ -295,8 +314,11 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
 
     days_before  = int(settings.get("bill_reminder_days", 2) or 2)
     month_length = calendar.monthrange(today.year, today.month)[1]
-    sent_key = f"reminder_sent_{today.year}_{today.month}"
-    sent = set(st.session_state.get(sent_key, set()))
+    month_key    = f"{today.year}_{today.month}"
+    sent_key = f"reminder_sent_{month_key}"
+    markers = _sent_markers(settings)
+    sent = (set(st.session_state.get(sent_key, set())) |
+            set(markers.get(f"bill_{month_key}", [])))
 
     for row in unlogged[:5]:
         key = str(row.get("id"))
@@ -314,6 +336,8 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
             due_note = "Due this month"
 
         sent.add(key)
+        st.session_state[sent_key] = sent
+        _persist_marker(user_id, settings, "bill", month_key, key)
         amt_str = f"€{float(row['amount_eur']):,.2f}"
         html = build_bill_reminder_email(
             st.session_state.get("display_name", ""),
@@ -325,7 +349,6 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
             settings["alert_email"],
             f"Bill Reminder: {row['description']}", html
         )
-    st.session_state[sent_key] = sent
 
 
 def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
@@ -359,8 +382,11 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
 
     days_before  = int(settings.get("bill_reminder_days", 2) or 2)
     month_length = calendar.monthrange(today.year, today.month)[1]
-    sent_key = f"loan_reminder_sent_{today.year}_{today.month}"
-    sent = set(st.session_state.get(sent_key, set()))
+    month_key    = f"{today.year}_{today.month}"
+    sent_key = f"loan_reminder_sent_{month_key}"
+    markers = _sent_markers(settings)
+    sent = (set(st.session_state.get(sent_key, set())) |
+            set(markers.get(f"loan_{month_key}", [])))
 
     from finance import annuity_payment
     for row in unlogged[:5]:
@@ -371,6 +397,8 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
         if today.day != due_reminder_day(payment_day, days_before, month_length):
             continue
         sent.add(key)
+        st.session_state[sent_key] = sent
+        _persist_marker(user_id, settings, "loan", month_key, key)
         monthly = annuity_payment(float(row["principal_eur"] or 0),
                                   float(row["annual_rate"] or 0),
                                   int(row["term_months"] or 12))
@@ -385,7 +413,6 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
             settings["alert_email"],
             f"Loan Payment Reminder: {row['name']}", html
         )
-    st.session_state[sent_key] = sent
 
 
 def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,

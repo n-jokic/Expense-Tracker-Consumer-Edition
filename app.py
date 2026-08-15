@@ -11,11 +11,13 @@ from db import init_db, backup_db, get_settings
 from auth import require_auth, logout
 from onboarding import render_onboarding
 from utils import (
-    SUPPORTED_CURRENCIES, get_rates, get_currency_symbol,
+    SUPPORTED_CURRENCIES, get_rates,
     get_lan_urls, get_server_port, qr_png,
     inject_mobile_css,
 )
-from gamification import render_gamification_sidebar
+from gamification import (
+    render_gamification_sidebar, get_earned_milestones, award_new_milestones,
+)
 from notifications import (
     check_and_send_budget_alerts, check_and_send_bill_reminders,
     check_and_send_weekly_summary, check_loan_reminders,
@@ -57,6 +59,20 @@ settings = st.session_state.settings
 rates    = get_rates(settings)
 st.session_state.rates = rates
 
+# ── Milestone unlocks & rewards (persisted once; fun-money bonuses) ───────────
+earned_ms = get_earned_milestones(
+    q.expenses(user_id), q.income(user_id), q.savings(user_id), q.budgets(user_id),
+    settings=settings, loans_df=q.loans(user_id),
+)
+new_ms, ms_bonus = award_new_milestones(user_id, earned_ms, settings)
+if new_ms:
+    names = ", ".join(f"{m['icon']} {m['title']}" for m in new_ms)
+    st.toast(f"🏅 Milestone unlocked: {names}"
+             + (f" — +€{ms_bonus:.0f} fun money next month!" if ms_bonus > 0 else ""),
+             icon="🏅")
+    st.balloons()
+    settings = st.session_state.settings  # refresh after reward save
+
 # ── Shared sidebar ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(f"## 👋 {display_name}")
@@ -67,10 +83,9 @@ with st.sidebar:
     dc_idx    = cur_list.index(dc_default) if dc_default in cur_list else 0
     DC = st.selectbox("Currency", cur_list, index=dc_idx, key="dc_sidebar")
     st.session_state.dc = DC
-    SYM = get_currency_symbol(DC)
 
     with st.form("rate_form"):
-        rsd_val = st.number_input(f"Exchange rate (1 EUR = ? {SYM})",
+        rsd_val = st.number_input("Exchange rate (1 EUR = ? din)",
                                   value=float(rates.get("RSD", 117.0)),
                                   step=1.0, format="%.2f")
         saved_rate = st.form_submit_button("💱 Update rate")
@@ -87,6 +102,7 @@ with st.sidebar:
     render_gamification_sidebar(
         q.expenses(user_id), q.income(user_id),
         q.savings(user_id), q.budgets(user_id),
+        settings=settings, loans_df=q.loans(user_id),
     )
 
     st.divider()
@@ -136,6 +152,7 @@ pg = st.navigation([
     st.Page("app_pages/recurring.py", title="Recurring", icon=":material/event_repeat:"),
     st.Page("app_pages/loans.py", title="Loans", icon=":material/account_balance:"),
     st.Page("app_pages/big_purchases.py", title="Big purchases", icon=":material/shopping_bag:"),
+    st.Page("app_pages/travel.py", title="Travel budget", icon=":material/flight:"),
     st.Page("app_pages/forecast.py", title="Forecast", icon=":material/query_stats:"),
     st.Page("app_pages/insights_view.py", title="Insights", icon=":material/lightbulb:"),
     st.Page("app_pages/bank_import_view.py", title="Bank import", icon=":material/account_balance_wallet:"),

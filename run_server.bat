@@ -30,6 +30,9 @@ if errorlevel 1 (
     )
 )
 
+rem Optionally start the phone sync API (port 8502)
+start "ExpenseTracker Sync API" /min python api.py
+
 streamlit run app.py --server.address 0.0.0.0
 
 pause

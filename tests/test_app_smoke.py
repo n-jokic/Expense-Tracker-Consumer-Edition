@@ -27,6 +27,7 @@ PAGES = [
     "recurring.py",
     "loans.py",
     "big_purchases.py",
+    "travel.py",
     "forecast.py",
     "insights_view.py",
     "bank_import_view.py",
@@ -111,3 +112,33 @@ def test_onboarding_gate_blocks_new_users(smoke_user):
     assert not at.exception
     # Onboarding step 0 shows the welcome heading
     assert any("Welcome" in str(md.value) for md in at.markdown)
+
+
+def test_onboarding_flow_submits_without_name_errors(smoke_user):
+    """Regression: the full onboarding flow (incl. save_settings on submit)
+    must run without NameError/exception."""
+    at = _authenticated_at(smoke_user)
+    at.session_state["onboarding_complete"] = False
+    at.session_state["onboarding_step"] = 0
+    at.run()
+    assert not at.exception
+
+    # step 0 -> step 1
+    for b in at.button:
+        if "started" in (b.label or ""):
+            b.click()
+            break
+    at.run()
+    assert not at.exception
+    assert at.session_state["onboarding_step"] == 1
+
+    # submit step 1 (currency + budget save)
+    at.number_input[0].set_value(118.0)
+    at.number_input[1].set_value(500.0)
+    for b in at.button:
+        if "Continue" in (b.label or ""):
+            b.click()
+            break
+    at.run()
+    assert not at.exception, f"onboarding submit failed: {at.exception}"
+    assert at.session_state["onboarding_step"] == 2

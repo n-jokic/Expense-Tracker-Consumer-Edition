@@ -34,4 +34,7 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
+# Optionally start the phone sync API (port 8502) in a separate window
+Start-Process python -ArgumentList "api.py" -WindowStyle Minimized
+
 streamlit run app.py --server.address 0.0.0.0

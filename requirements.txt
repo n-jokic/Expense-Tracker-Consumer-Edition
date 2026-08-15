@@ -11,3 +11,6 @@ pillow>=10.0
 scikit-learn>=1.4
 statsmodels>=0.14
 pytesseract>=0.3
+pdfplumber>=0.11
+fastapi>=0.110
+uvicorn>=0.29

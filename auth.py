@@ -89,6 +89,8 @@ def _valid_email(email: str) -> bool:
 def _valid_password(password: str) -> tuple[bool, str]:
     if len(password) < 8:
         return False, "Password must be at least 8 characters."
+    if len(password.encode("utf-8")) > 72:
+        return False, "Password must be at most 72 bytes (bcrypt limit)."
     if not any(c.isdigit() for c in password):
         return False, "Password must contain at least one number."
     return True, ""
@@ -126,7 +128,8 @@ def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
     username = username.strip().lower()          # normalise — matches registration
     password = password.strip()                  # remove accidental whitespace
 
-    if _throttled(f"{_client_key()}|{username}"):
+    throttle_key = f"{_client_key()}|{username}"
+    if _throttled(throttle_key):
         return False, None, "Too many attempts. Please wait a minute and try again."
 
     user = get_user_by_username(username)
@@ -136,6 +139,8 @@ def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
     if not verify_password(password, user["password_hash"]):
         return False, None, "Incorrect username or password."
 
+    # successful logins don't count towards the lockout budget
+    _attempts.pop(throttle_key, None)
     return True, user, "Welcome back!"
 
 

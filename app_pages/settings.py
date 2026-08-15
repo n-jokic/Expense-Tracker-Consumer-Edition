@@ -13,12 +13,15 @@ import queries as q
 from db import (
     add_budget, delete_budget, get_budgets, BACKUP_DIR,
     update_user_display_name, delete_user_account, backup_db,
+    create_pairing_device, get_devices, revoke_device,
+    get_sync_conflicts, resolve_sync_conflict, apply_record_fields,
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
 from rates import refresh_rates_if_due
 from utils import (
     CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
+    DEFAULT_FUN_CATEGORIES,
     fmt, to_eur, get_currency_symbol,
     safe_error, to_excel,
 )
@@ -31,8 +34,8 @@ display_name = st.session_state.display_name
 
 st.title("⚙️ Settings")
 
-tab_cur, tab_bud, tab_notif, tab_acct, tab_data = st.tabs(
-    ["💱 Currency", "💰 Budget", "📧 Notifications", "🔐 Account", "📦 Data"]
+tab_cur, tab_bud, tab_notif, tab_acct, tab_data, tab_sync = st.tabs(
+    ["💱 Currency", "💰 Budget", "📧 Notifications", "🔐 Account", "📦 Data", "🔗 Sync"]
 )
 
 # ── Currency tab ──────────────────────────────────────────────────────────────
@@ -41,10 +44,11 @@ with tab_cur:
     st.caption("Amounts are stored in EUR; these rates convert them for display. "
                "They refresh automatically on login when older than 3 days.")
     with st.form("cur_form"):
+        dc_default = settings.get("default_currency","EUR")
         dc2 = st.selectbox("Default display currency",
                             list(SUPPORTED_CURRENCIES.keys()),
-                            index=list(SUPPORTED_CURRENCIES.keys()).index(
-                                settings.get("default_currency","EUR")))
+                            index=list(SUPPORTED_CURRENCIES.keys()).index(dc_default)
+                            if dc_default in SUPPORTED_CURRENCIES else 0)
         st.markdown("**Rates (1 EUR = ?)**")
         new_rates = {}
         for c in [c for c in SUPPORTED_CURRENCIES if c != "EUR"]:
@@ -134,6 +138,32 @@ with tab_bud:
                 q.bump_db_version()
                 st.toast("Budget row deleted.", icon="🗑️")
                 st.rerun()
+
+    # ── Fun money ────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("🎈 Fun money")
+    st.caption("A monthly allowance for guilt-free spending (Entertainment, "
+               "eating out, hobbies…). Tracked on the Dashboard and Insights.")
+    with st.form("fun_form"):
+        f_amt = st.number_input("Monthly fun money (€)", min_value=0.0,
+                                step=10.0, format="%.2f",
+                                value=float(settings.get("fun_money") or 0.0))
+        f_cats = st.multiselect("Categories in the fun pool", CAT_LIST,
+                                default=[c for c in (settings.get("fun_categories")
+                                                     or DEFAULT_FUN_CATEGORIES)
+                                         if c in CAT_LIST])
+        if st.form_submit_button("💾 Save fun money", type="primary"):
+            q.save_settings(user_id, {"fun_money": float(f_amt), "fun_categories": f_cats})
+            st.success("✅ Fun money saved!")
+            st.rerun()
+    bonus = float(settings.get("fun_bonus_amount") or 0.0)
+    bonus_month = settings.get("fun_bonus_month")
+    if bonus > 0:
+        this_month = f"{date.today().year:04d}-{date.today().month:02d}"
+        if bonus_month == this_month:
+            st.success(f"🎁 Milestone bonus active this month: +€{bonus:.0f} fun money!")
+        else:
+            st.caption(f"🎁 Milestone bonus queued for {bonus_month}: +€{bonus:.0f} fun money.")
 
 # ── Notifications tab ─────────────────────────────────────────────────────────
 with tab_notif:
@@ -231,3 +261,75 @@ with tab_data:
         st.download_button("⬇️ audit_log.xlsx", data=to_excel(df_audit_exp),
                            file_name="audit_log.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ── Sync tab (phone pairing + conflicts) ─────────────────────────────────────
+with tab_sync:
+    st.subheader("🔗 Sync & phone pairing")
+    st.caption("Pair a phone app with this server using a one-time code. "
+               "The sync API runs on port 8502 (`python api.py`).")
+
+    st.markdown("**Paired devices**")
+    devices = get_devices(user_id)
+    if devices:
+        for dev in devices:
+            d1, d2 = st.columns([3, 1])
+            with d1:
+                last = dev["last_sync_at"].strftime("%d %b %Y %H:%M") if dev["last_sync_at"] else "never"
+                st.write(f"📱 **{dev['name']}** · last sync: {last}")
+            with d2:
+                if st.button("Revoke", key=f"revoke_{dev['id']}", width="stretch"):
+                    revoke_device(user_id, dev["id"])
+                    st.toast("Device revoked.", icon="🔒")
+                    st.rerun()
+    else:
+        st.caption("No devices paired yet.")
+
+    st.markdown("**Pair a new device**")
+    if st.button("➕ Generate pairing code", width="stretch"):
+        dev_id, code = create_pairing_device(user_id)
+        st.session_state.pair_code = code
+    pair_code = st.session_state.get("pair_code")
+    if pair_code:
+        st.success(f"Pairing code: **`{pair_code}`** — valid for 10 minutes. "
+                   "Enter it in the phone app (or the /api/pair endpoint).")
+        if st.button("Clear code"):
+            st.session_state.pop("pair_code", None)
+            st.rerun()
+
+    st.divider()
+    st.subheader("⚠️ Sync conflicts")
+    st.caption("When a record was edited on both the server and a device since "
+               "the last sync, it lands here for manual resolution.")
+    conflicts = get_sync_conflicts(user_id, resolved=False)
+    if not conflicts:
+        st.info("No unresolved sync conflicts. 🎉")
+    for c in conflicts:
+        with st.container(border=True):
+            st.markdown(f"**{c['table_name']}** · record `{c['record_id']}` · "
+                        f"{pd.Timestamp(c['created_at']).strftime('%d %b %H:%M')}")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.markdown("**📱 Device value**")
+                st.json(c["device_value"] or {})
+            with cc2:
+                st.markdown("**🖥️ Server value**")
+                st.json(c["server_value"] or {})
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Keep device value", key=f"kdev_{c['id']}", width="stretch"):
+                    ok = apply_record_fields(user_id, c["table_name"], c["record_id"],
+                                             c["device_value"] or {})
+                    if ok:
+                        resolve_sync_conflict(user_id, c["id"])
+                        q.bump_db_version()
+                        st.toast("Device value applied and conflict resolved.", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error("Could not apply the device value (record missing?).")
+            with b2:
+                if st.button("Keep server value", key=f"ksrv_{c['id']}", width="stretch"):
+                    resolve_sync_conflict(user_id, c["id"])
+                    q.bump_db_version()
+                    st.toast("Conflict resolved — server value kept.", icon="✅")
+                    st.rerun()

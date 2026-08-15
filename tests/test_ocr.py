@@ -22,6 +22,18 @@ def test_extract_amounts_plain_decimals():
     assert 12.5 in extract_amounts("item 12.50 item 4.99")
 
 
+def test_extract_amounts_comma_decimal_without_thousands():
+    """Regression: '1234,56' must parse as 1234.56, not 234.56."""
+    assert extract_amounts("Ukupno 1234,56") == [1234.56]
+
+
+def test_extract_amounts_ignores_dates():
+    """Regression: receipt dates like 15.05.2024 must not become amounts."""
+    text = "15.05.2024 14:33\nMAXI\nBread 120,00\nTOTAL 120,00"
+    amounts = extract_amounts(text)
+    assert amounts == [120.0, 120.0]
+
+
 def test_guess_total_prefers_total_line():
     text = "Market ABC\nBread 120,00\nMilk 180,00\nUKUPNO 300,00"
     assert guess_total_amount(text) == 300.0

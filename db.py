@@ -120,6 +120,7 @@ class Expense(Base):
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
+    updated_at   = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class Income(Base):
@@ -140,6 +141,7 @@ class Income(Base):
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
+    updated_at   = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class Savings(Base):
@@ -158,6 +160,7 @@ class Savings(Base):
     is_deleted    = Column(Boolean, default=False)
     deleted_at    = Column(DateTime, nullable=True)
     created_at    = Column(DateTime, default=_utcnow)
+    updated_at    = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class Budget(Base):
@@ -254,6 +257,37 @@ class HoldingPrice(Base):
     price      = Column(Float, default=0.0)
 
 
+class Device(Base):
+    __tablename__ = "devices"
+    id           = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name         = Column(String, default="Phone")
+    pairing_code = Column(String, nullable=True)   # shown to the user; cleared after pairing
+    token_hash   = Column(String, nullable=True)   # sha256 of the device token
+    created_at   = Column(DateTime, default=_utcnow)
+    last_sync_at = Column(DateTime, nullable=True)
+
+
+class UserMilestone(Base):
+    __tablename__ = "user_milestones"
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
+    milestone_id = Column(String, nullable=False)
+    earned_at    = Column(DateTime, default=_utcnow)
+
+
+class SyncConflict(Base):
+    __tablename__ = "sync_conflicts"
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
+    table_name   = Column(String, nullable=False)
+    record_id    = Column(String, nullable=False)
+    device_value = Column(JSON, nullable=True)   # what the device wanted to write
+    server_value = Column(JSON, nullable=True)   # what the server currently holds
+    created_at   = Column(DateTime, default=_utcnow)
+    resolved     = Column(Boolean, default=False)
+
+
 class UserSettings(Base):
     __tablename__ = "user_settings"
     id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -276,6 +310,14 @@ class UserSettings(Base):
     weekly_summary_last_sent = Column(Date, nullable=True)
     # Big purchases math
     hourly_rate      = Column(Float, default=0.0)
+    # Fun money & travel budgets
+    fun_money        = Column(Float, default=0.0)          # monthly allowance, EUR
+    fun_categories   = Column(JSON, nullable=True)          # category names in the fun pool
+    fun_bonus_amount = Column(Float, default=0.0)          # reward bonus, EUR
+    fun_bonus_month  = Column(String, nullable=True)        # "YYYY-MM" the bonus applies to
+    travel_budget    = Column(Float, default=0.0)          # yearly allowance, EUR
+    travel_categories = Column(JSON, nullable=True)         # "Category › Subcategory" pairs
+    sent_markers     = Column(JSON, nullable=True)          # per-month alert dedupe markers
     email_alerts     = Column(Boolean, default=False)
     alert_email      = Column(String, nullable=True)
     smtp_host        = Column(String, nullable=True)
@@ -310,6 +352,13 @@ def _migrate(engine):
     _add_missing_columns(engine, "user_settings", {
         "currency_rates": "JSON",
         "rates_updated_at": "TIMESTAMP",
+        "fun_money": "FLOAT DEFAULT 0",
+        "fun_categories": "JSON",
+        "fun_bonus_amount": "FLOAT DEFAULT 0",
+        "fun_bonus_month": "VARCHAR",
+        "travel_budget": "FLOAT DEFAULT 0",
+        "travel_categories": "JSON",
+        "sent_markers": "JSON",
         "salary_amount": "FLOAT DEFAULT 0",
         "salary_currency": "VARCHAR DEFAULT 'EUR'",
         "salary_day": "INTEGER DEFAULT 1",
@@ -330,6 +379,13 @@ def _migrate(engine):
     _add_missing_columns(engine, "expenses", {
         "rec_template_id": "VARCHAR",
         "loan_id": "VARCHAR",
+        "updated_at": "TIMESTAMP",
+    })
+    _add_missing_columns(engine, "income", {
+        "updated_at": "TIMESTAMP",
+    })
+    _add_missing_columns(engine, "savings", {
+        "updated_at": "TIMESTAMP",
     })
 
 
@@ -372,7 +428,7 @@ def _parse_dates(df, cols):
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
              "amount","currency","amount_eur","recurring","rec_template_id","loan_id","notes",
-             "is_deleted","deleted_at","created_at"]
+             "is_deleted","deleted_at","created_at","updated_at"]
 
 def get_expenses(user_id, include_deleted=False):
     with get_session() as s:
@@ -440,7 +496,7 @@ def restore_expense(user_id, expense_id):
 
 _INC_COLS = ["id","user_id","date","source","income_type","hours","rate",
              "budgeted","actual","currency","budgeted_eur","actual_eur",
-             "notes","is_deleted","deleted_at","created_at"]
+             "notes","is_deleted","deleted_at","created_at","updated_at"]
 
 # Legacy installs stored the type inside `source`; map those labels on read.
 _LEGACY_INCOME_TYPES = {
@@ -515,7 +571,7 @@ def restore_income(user_id, income_id):
 
 _SAV_COLS = ["id","user_id","date","goal_name","target_eur","deposited","currency",
              "deposited_eur","interest_rate","balance_eur","notes",
-             "is_deleted","deleted_at","created_at"]
+             "is_deleted","deleted_at","created_at","updated_at"]
 
 def get_savings(user_id, include_deleted=False):
     with get_session() as s:
@@ -897,6 +953,10 @@ def add_holding_price(holding_id, price, when=None):
 _SETTINGS_DEFAULTS = {
     "exchange_rate": 117.0, "default_currency": "EUR", "monthly_budget": 0.0,
     "currency_rates": None, "rates_updated_at": None,
+    "fun_money": 0.0, "fun_categories": None,
+    "fun_bonus_amount": 0.0, "fun_bonus_month": None,
+    "travel_budget": 0.0, "travel_categories": None,
+    "sent_markers": None,
     "salary_amount": 0.0, "salary_currency": "EUR", "salary_day": 1,
     "salary_active": False,
     "bill_reminder_days": 2, "weekly_summary": False,
@@ -947,7 +1007,10 @@ def _random_invite_code(length=8):
 
 def create_household(user_id, name):
     with get_session() as s:
-        code = _random_invite_code()
+        for _ in range(5):  # invite codes are unique; retry on collision
+            code = _random_invite_code()
+            if not s.query(Household).filter(Household.invite_code == code).first():
+                break
         hh = Household(name=name, invite_code=code)
         s.add(hh)
         s.flush()
@@ -1079,6 +1142,16 @@ def update_user_display_name(user_id, display_name):
 def delete_user_account(user_id):
     """Hard delete all user data."""
     with get_session() as s:
+        holding_ids = [h.id for h in s.query(Holding).filter(Holding.user_id == user_id).all()]
+        if holding_ids:
+            s.query(HoldingPrice).filter(HoldingPrice.holding_id.in_(holding_ids)).delete(
+                synchronize_session=False)
+        s.query(Holding).filter(Holding.user_id == user_id).delete()
+        s.query(Device).filter(Device.user_id == user_id).delete()
+        s.query(UserMilestone).filter(UserMilestone.user_id == user_id).delete()
+        s.query(SyncConflict).filter(SyncConflict.user_id == user_id).delete()
+        s.query(Loan).filter(Loan.user_id == user_id).delete()
+        s.query(BigPurchase).filter(BigPurchase.user_id == user_id).delete()
         s.query(Expense).filter(Expense.user_id == user_id).delete()
         s.query(Income).filter(Income.user_id == user_id).delete()
         s.query(Savings).filter(Savings.user_id == user_id).delete()
@@ -1146,3 +1219,157 @@ def backup_db(force: bool = False):
             except OSError:
                 pass
     return dest
+
+
+# ── Devices (phone pairing / sync) ───────────────────────────────────────────
+
+def create_pairing_device(user_id):
+    """Create a pending device row with a pairing code. Returns (device_id, code)."""
+    code = _random_invite_code(6)
+    with get_session() as s:
+        dev = Device(user_id=user_id, pairing_code=code)
+        s.add(dev)
+        s.flush()
+        dev_id = dev.id
+    return dev_id, code
+
+
+def complete_pairing(code, device_name="Phone", token=None):
+    """Validate a pairing code and bind a token. Returns token or None."""
+    import hashlib
+    from datetime import timedelta
+    code = (code or "").strip().upper()
+    with get_session() as s:
+        dev = s.query(Device).filter(Device.pairing_code == code).first()
+        if not dev:
+            return None
+        # codes expire after 10 minutes (created_at reads back as naive UTC)
+        created = dev.created_at
+        if created.tzinfo is not None:
+            created = created.replace(tzinfo=None)
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        if (now_naive - created) > timedelta(minutes=10):
+            return None
+        token = token or uuid.uuid4().hex
+        dev.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        dev.name = device_name or dev.name
+        dev.pairing_code = None
+        return token
+
+
+def get_devices(user_id):
+    with get_session() as s:
+        rows = s.query(Device).filter(Device.user_id == user_id,
+                                      Device.token_hash.isnot(None)).all()
+        return [{"id": d.id, "name": d.name, "created_at": d.created_at,
+                 "last_sync_at": d.last_sync_at} for d in rows]
+
+
+def device_by_token(token):
+    """Resolve a device (and its user) from a raw token. Returns dict or None."""
+    import hashlib
+    h = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+    with get_session() as s:
+        dev = s.query(Device).filter(Device.token_hash == h).first()
+        if not dev:
+            return None
+        return {"id": dev.id, "user_id": dev.user_id, "name": dev.name}
+
+
+def touch_device_sync(device_id):
+    with get_session() as s:
+        dev = s.query(Device).filter(Device.id == device_id).first()
+        if dev:
+            dev.last_sync_at = _utcnow()
+
+
+def revoke_device(user_id, device_id):
+    with get_session() as s:
+        dev = s.query(Device).filter(Device.id == device_id,
+                                     Device.user_id == user_id).first()
+        if not dev:
+            return False
+        s.delete(dev)
+        log_audit(s, user_id, "DELETE", "devices", device_id, {})
+    return True
+
+
+# ── Milestones (persistent unlocks + rewards) ────────────────────────────────
+
+def get_earned_milestone_ids(user_id):
+    with get_session() as s:
+        rows = (s.query(UserMilestone)
+                .filter(UserMilestone.user_id == user_id).all())
+        return {m.milestone_id for m in rows}
+
+
+def record_milestones(user_id, milestone_ids):
+    """Persist newly earned milestones (idempotent). Returns the new ids."""
+    with get_session() as s:
+        existing = {m.milestone_id for m in
+                    s.query(UserMilestone).filter(UserMilestone.user_id == user_id).all()}
+        new_ids = [mid for mid in milestone_ids if mid not in existing]
+        for mid in new_ids:
+            s.add(UserMilestone(user_id=user_id, milestone_id=mid))
+            log_audit(s, user_id, "CREATE", "user_milestones", mid, {})
+    return new_ids
+
+
+# ── Sync conflicts ───────────────────────────────────────────────────────────
+
+def add_sync_conflict(user_id, table_name, record_id, device_value, server_value):
+    with get_session() as s:
+        c = SyncConflict(
+            user_id=user_id, table_name=table_name, record_id=record_id,
+            device_value=device_value, server_value=server_value,
+        )
+        s.add(c)
+        s.flush()
+        cid = c.id
+    return cid
+
+
+def get_sync_conflicts(user_id, resolved=False):
+    with get_session() as s:
+        rows = (s.query(SyncConflict)
+                .filter(SyncConflict.user_id == user_id,
+                        SyncConflict.resolved == resolved)
+                .order_by(SyncConflict.created_at.desc()).all())
+        return [{"id": c.id, "table_name": c.table_name, "record_id": c.record_id,
+                 "device_value": c.device_value, "server_value": c.server_value,
+                 "created_at": c.created_at} for c in rows]
+
+
+def resolve_sync_conflict(user_id, conflict_id):
+    with get_session() as s:
+        c = s.query(SyncConflict).filter(SyncConflict.id == conflict_id,
+                                         SyncConflict.user_id == user_id).first()
+        if not c:
+            return False
+        c.resolved = True
+        log_audit(s, user_id, "UPDATE", "sync_conflicts", conflict_id, {"resolved": True})
+    return True
+
+
+_SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings}
+
+
+def apply_record_fields(user_id, table_name, record_id, fields) -> bool:
+    """Generic field update used by 'keep device value' conflict resolution
+    and the sync API. Protected fields are ignored."""
+    model = _SYNC_MODELS.get(table_name)
+    if not model:
+        return False
+    with get_session() as s:
+        obj = (s.query(model)
+               .filter(model.id == record_id, model.user_id == user_id).first())
+        if not obj:
+            return False
+        for k, v in fields.items():
+            if k in ("id", "user_id", "created_at", "updated_at"):
+                continue
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", table_name, record_id,
+                  {"fields": list(fields.keys()), "via": "sync"})
+    return True

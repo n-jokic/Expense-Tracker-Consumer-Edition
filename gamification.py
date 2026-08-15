@@ -25,9 +25,12 @@ MILESTONES = [
     {"id": "no_luxury_month", "icon": "🧘", "title": "Mindful Month",   "desc": "A full month with zero Entertainment spend"},
     {"id": "first_budget",    "icon": "📋", "title": "Budget Setter",   "desc": "Set your first category budget"},
     {"id": "first_salary",    "icon": "💼", "title": "Salary Sorted",   "desc": "Logged your first salary"},
-    {"id": "raise_earned",    "icon": "📈", "title": "Level Up",        "desc": "Got a raise"},
+    {"id": "raise_earned",    "icon": "📈", "title": "Level Up",        "desc": "Got a raise", "reward": 20.0},
     {"id": "first_bonus",     "icon": "🎁", "title": "Bonus Time",      "desc": "Logged a bonus"},
     {"id": "first_hourly",    "icon": "⏱️", "title": "Side Hustle",     "desc": "Logged hourly income"},
+    {"id": "fun_keeper",      "icon": "🎈", "title": "Fun Master",      "desc": "Stayed within your fun money for a full month", "reward": 10.0},
+    {"id": "budget_keeper_3", "icon": "🏅", "title": "Budget Champion", "desc": "Stayed under budget 3 months in a row", "reward": 25.0},
+    {"id": "debt_free",       "icon": "🕊️", "title": "Debt Free",       "desc": "Paid off all your loans", "reward": 50.0},
 ]
 
 MILESTONE_INDEX = {m["id"]: m for m in MILESTONES}
@@ -100,7 +103,9 @@ def detect_raise(income_df: pd.DataFrame) -> bool:
 
 
 def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
-                           savings_df: pd.DataFrame, budgets_df: pd.DataFrame) -> list[dict]:
+                           savings_df: pd.DataFrame, budgets_df: pd.DataFrame,
+                           settings: dict | None = None,
+                           loans_df: pd.DataFrame | None = None) -> list[dict]:
     """Return list of milestone dicts that have been earned."""
     earned = []
     today  = date.today()
@@ -145,6 +150,26 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         adh = get_budget_adherence_streak(expenses_df, budgets_df, today.year, today.month)
         if adh >= 1:
             earned.append(MILESTONE_INDEX["budget_keeper"])
+        if adh >= 3:
+            earned.append(MILESTONE_INDEX["budget_keeper_3"])
+
+    # fun money keeper (previous full month within the allowance)
+    if settings and float(settings.get("fun_money") or 0.0) > 0:
+        from utils import fun_spent
+        cats = settings.get("fun_categories") or ["Entertainment"]
+        prev_m = today.month - 1 if today.month > 1 else 12
+        prev_y = today.year if today.month > 1 else today.year - 1
+        spent = fun_spent(expenses_df, cats, prev_y, prev_m)
+        if spent <= float(settings["fun_money"]) and not expenses_df.empty:
+            any_prev = expenses_df[(expenses_df["date"].dt.year == prev_y) &
+                                   (expenses_df["date"].dt.month == prev_m)]
+            if not any_prev.empty:
+                earned.append(MILESTONE_INDEX["fun_keeper"])
+
+    # debt free
+    if loans_df is not None and not loans_df.empty:
+        if (loans_df["status"] == "paid_off").all():
+            earned.append(MILESTONE_INDEX["debt_free"])
 
     # savings totals
     if not savings_df.empty:
@@ -194,6 +219,34 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     return unique_earned
 
 
+# ── Persistent unlocks + rewards ─────────────────────────────────────────────
+
+def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
+    """Persist newly earned milestones once and grant their fun-money rewards.
+
+    Returns (new_milestone_dicts, total_bonus). Rewards land in
+    fun_bonus_amount for NEXT month (fun_bonus_month).
+    """
+    from db import record_milestones
+    import queries as q
+
+    new_ids = record_milestones(user_id, [m["id"] for m in earned])
+    if not new_ids:
+        return [], 0.0
+
+    new_ms = [MILESTONE_INDEX[i] for i in new_ids if i in MILESTONE_INDEX]
+    bonus = sum(float(m.get("reward") or 0.0) for m in new_ms)
+    if bonus > 0:
+        today = date.today()
+        nxt_m = today.month + 1 if today.month < 12 else 1
+        nxt_y = today.year if today.month < 12 else today.year + 1
+        q.save_settings(user_id, {
+            "fun_bonus_amount": float(settings.get("fun_bonus_amount") or 0.0) + bonus,
+            "fun_bonus_month": f"{nxt_y:04d}-{nxt_m:02d}",
+        })
+    return new_ms, bonus
+
+
 def _next_milestone_hint(expenses_df: pd.DataFrame, earned_ids: set) -> str | None:
     """Return a hint string for the closest unearned milestone."""
     exp_count = len(expenses_df) if not expenses_df.empty else 0
@@ -215,10 +268,13 @@ def _next_milestone_hint(expenses_df: pd.DataFrame, earned_ids: set) -> str | No
 # ── Streamlit sidebar renderer ────────────────────────────────────────────────
 
 def render_gamification_sidebar(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
-                                  savings_df: pd.DataFrame, budgets_df: pd.DataFrame):
+                                  savings_df: pd.DataFrame, budgets_df: pd.DataFrame,
+                                  settings: dict | None = None,
+                                  loans_df: pd.DataFrame | None = None):
     """Render streak and badges in the sidebar."""
     streak  = get_logging_streak(expenses_df)
-    earned  = get_earned_milestones(expenses_df, income_df, savings_df, budgets_df)
+    earned  = get_earned_milestones(expenses_df, income_df, savings_df, budgets_df,
+                                    settings=settings, loans_df=loans_df)
     ids     = {m["id"] for m in earned}
 
     # Streak display

@@ -16,7 +16,7 @@ from finance import portfolio_metrics
 from market_data import refresh_prices_if_due, fetch_price, _fetch_cached
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET, CHART_COLORS,
-    fmt, fmt_row, to_eur, get_currency_symbol, get_rates,
+    fmt, fmt_row, to_display, to_eur, get_currency_symbol, get_rates,
     help_expander,
 )
 
@@ -109,7 +109,7 @@ for _, h in df_hold.iterrows():
         "last_price_date": h.get("last_price_date"),
     })
 view = pd.DataFrame(rows)
-m = portfolio_metrics(view)
+m = portfolio_metrics(view.rename(columns={"price_eur": "last_price_eur"}).to_dict("records"))
 
 st.divider()
 k1, k2, k3, k4 = st.columns(4)
@@ -149,13 +149,17 @@ with r2:
             hrow = view[view["symbol"] == p["symbol"]]
             if hrow.empty:
                 continue
+            cur = str(hrow.iloc[0]["currency"])
             qty = float(hrow.iloc[0]["quantity"])
+            price_eur = float(p["price"])
+            if cur != "EUR" and price_eur > 0:
+                price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
             vhist.append({"date": p["date"], "symbol": p["symbol"],
-                          "value": qty * float(p["price"])})
+                          "value_eur": qty * price_eur})
         if vhist:
             vdf = pd.DataFrame(vhist)
-            vsum = vdf.groupby("date")["value"].sum().reset_index()
-            vsum["d"] = vsum["value"].apply(lambda x: x / (rates.get(DC, 1.0) or 1.0) if DC != "EUR" else x)
+            vsum = vdf.groupby("date")["value_eur"].sum().reset_index()
+            vsum["d"] = vsum["value_eur"].apply(lambda x: to_display(x, DC, rates))
             figv = px.area(vsum, x="date", y="d",
                            labels={"d": f"Value ({get_currency_symbol(DC)})", "date": "Date"})
             figv.update_layout(plot_bgcolor="rgba(0,0,0,0)",

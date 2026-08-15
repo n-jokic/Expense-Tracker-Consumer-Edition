@@ -9,9 +9,10 @@ import calendar
 import pandas as pd
 import streamlit as st
 
-from utils import fmt, NEAR_LIMIT_THRESHOLD
+from utils import fmt, NEAR_LIMIT_THRESHOLD, DEFAULT_TRAVEL_CATEGORIES
 from gamification import detect_raise
-from forecasting import detect_anomalies
+from forecasting import detect_anomalies, detect_subscriptions
+import queries as q
 
 
 # ── Analysis functions ────────────────────────────────────────────────────────
@@ -101,9 +102,14 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": 0, "projected_date": date.today()}
 
-    # Average monthly deposit over last 3 months
+    # Average monthly deposit over the last 3 calendar months with deposits
     if len(rows) >= 2:
-        monthly_dep = float(rows["deposited_eur"].tail(3).mean())
+        monthly = (rows.set_index("date")["deposited_eur"]
+                   .resample("MS").sum().dropna())
+        if monthly.empty:
+            monthly_dep = float(rows["deposited_eur"].mean())
+        else:
+            monthly_dep = float(monthly.tail(3).mean())
     else:
         monthly_dep = float(rows["deposited_eur"].mean())
 
@@ -136,7 +142,8 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
 def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict,
                     recurring_df: pd.DataFrame | None = None,
-                    loans_df: pd.DataFrame | None = None):
+                    loans_df: pd.DataFrame | None = None,
+                    user_id: int | None = None):
     """Render the full insights page."""
     st.title("💡 Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
@@ -282,10 +289,12 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         if detect_raise(income_df):
             sal = income_df[income_df["income_type"].fillna("Other") == "Salary"].sort_values("date")
             if len(sal) >= 2:
-                cards.append(("success",
-                    f"📈 Raise detected! Your latest salary is "
-                    f"**{fmt(float(sal.iloc[-1]['actual_eur']), DC, rates)}** "
-                    f"(up from {fmt(float(sal.iloc[-2]['actual_eur']), DC, rates)})."))
+                latest, prev = float(sal.iloc[-1]["actual_eur"]), float(sal.iloc[-2]["actual_eur"])
+                if latest > prev:
+                    cards.append(("success",
+                        f"📈 Raise detected! Your latest salary is "
+                        f"**{fmt(latest, DC, rates)}** "
+                        f"(up from {fmt(prev, DC, rates)})."))
 
         bonus = income_df[income_df["income_type"].fillna("Other").isin(["Bonus / Raise", "Bonus"])]
         bonus = bonus[bonus["date"].dt.year == year]
@@ -331,6 +340,38 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 f"💳 You have **{len(active)} active loan(s)** — "
                 f"**{fmt(monthly_total, DC, rates)}/month** in scheduled payments."))
 
+    # ── Insight 13: Fun money ─────────────────────────────────────────────────
+    fun_money = float(settings.get("fun_money") or 0.0)
+    if fun_money > 0 and not expenses_df.empty:
+        from utils import fun_spent
+        cats = settings.get("fun_categories") or ["Entertainment"]
+        spent = fun_spent(expenses_df, cats, year, month)
+        if spent > fun_money:
+            cards.append(("warning",
+                f"🎈 Fun money exhausted: **{fmt(spent, DC, rates)}** of "
+                f"{fmt(fun_money, DC, rates)} — {fmt(spent - fun_money, DC, rates)} over."))
+        elif spent > fun_money * NEAR_LIMIT_THRESHOLD:
+            cards.append(("warning",
+                f"🎈 Fun money almost gone: {fmt(fun_money - spent, DC, rates)} left this month."))
+        else:
+            cards.append(("success",
+                f"🎈 Fun money on track: **{fmt(fun_money - spent, DC, rates)}** left this month."))
+
+    # ── Insight 14: Travel budget ─────────────────────────────────────────────
+    travel_budget = float(settings.get("travel_budget") or 0.0)
+    if travel_budget > 0 and not expenses_df.empty:
+        from utils import travel_spent
+        pairs = settings.get("travel_categories") or DEFAULT_TRAVEL_CATEGORIES
+        spent_t = travel_spent(expenses_df, pairs, year)
+        days_in_year = 366 if calendar.isleap(year) else 365
+        year_pct = today.timetuple().tm_yday / days_in_year * 100
+        budget_pct = spent_t / travel_budget * 100
+        lvl = "error" if spent_t > travel_budget else ("warning" if budget_pct > year_pct else "info")
+        cards.append((lvl,
+            f"🎒 Travel budget: **{fmt(spent_t, DC, rates)}** of "
+            f"{fmt(travel_budget, DC, rates)} this year ({budget_pct:.0f}% used, "
+            f"{year_pct:.0f}% of the year gone)."))
+
     # ── Render cards ──────────────────────────────────────────────────────────
     if not cards:
         st.info("💡 Log some expenses and income to start seeing personalised insights here.")
@@ -359,6 +400,39 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         show["vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
         st.dataframe(show[["date","description","category","Amount","vs median"]],
                      hide_index=True)
+
+    # ── Subscription / recurring detection ────────────────────────────────────
+    subs = detect_subscriptions(expenses_df)
+    if not subs.empty:
+        from db import add_recurring
+        st.divider()
+        st.subheader("🔁 These look like subscriptions")
+        st.caption("Regular monthly charges detected — add them as recurring "
+                   "templates to get due-day reminders.")
+        for idx, row in enumerate(subs.head(6).itertuples()):
+            # itertuples gives named access to the subscription rows
+            s1, s2, s3 = st.columns([3, 1.4, 1.4])
+            with s1:
+                st.markdown(f"**{row.description}** · {row.months_seen} months "
+                            f"· every ~{row.avg_gap_days:.0f} days")
+            with s2:
+                st.write(fmt(float(row.amount_eur), DC, rates))
+            with s3:
+                if user_id is None:
+                    st.caption("")
+                    continue
+                if st.button("➕ Add", key=f"sub_{idx}_{row.last_date}", width="stretch"):
+                    add_recurring(user_id, {
+                        "category": row.category, "subcategory": "",
+                        "description": str(row.description),
+                        "amount": float(row.amount_eur),
+                        "currency": "EUR", "amount_eur": float(row.amount_eur),
+                        "due_day": None, "notes": "Detected from your spending",
+                        "active": True,
+                    })
+                    q.bump_db_version()
+                    st.toast(f"✅ Added '{row.description}' to Recurring", icon="🔁")
+                    st.rerun()
 
     # ── Month-over-month table ────────────────────────────────────────────────
     st.divider()

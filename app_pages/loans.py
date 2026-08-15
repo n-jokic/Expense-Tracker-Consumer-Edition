@@ -80,9 +80,11 @@ else:
         pay_df = q.loan_payments(user_id, loan_id)
         payments = [(r["date"].date(), float(r["amount_eur"]))
                     for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        start_date = (row["start_date"].date() if pd.notna(row["start_date"])
+                      else date.today())
         sched = loan_schedule(
             float(row["principal_eur"]), float(row["annual_rate"]),
-            int(row["term_months"]), row["start_date"].date(),
+            int(row["term_months"]), start_date,
             int(row["payment_day"]), payments, today)
 
         if row["status"] == "active":
@@ -125,10 +127,14 @@ else:
                     with st.popover("Log payment", key=f"loan_pay_{loan_id}"):
                         lcur = str(row["currency"])
                         lsym = get_currency_symbol(lcur)
+                        # prefill the expected payment converted into the loan's currency
+                        monthly_in_cur = float(sched["monthly_payment"])
+                        if lcur != "EUR":
+                            monthly_in_cur = monthly_in_cur * (rates.get(lcur, 1.0) or 1.0)
                         st.markdown(f"Expected payment: {fmt(sched['monthly_payment'], DC, rates)}")
                         p_date = st.date_input("Date", value=today, key=f"loan_pd_{loan_id}")
                         p_amt  = st.number_input(f"Amount ({lsym})",
-                                                 value=float(sched["monthly_payment"]),
+                                                 value=monthly_in_cur,
                                                  min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                                  step=10.0, format="%.2f", key=f"loan_pa_{loan_id}")
                         if st.button("✅ Log", key=f"loan_pc_{loan_id}", type="primary", width="stretch"):

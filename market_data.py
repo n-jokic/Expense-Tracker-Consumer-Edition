@@ -23,6 +23,8 @@ from db import get_holdings, update_holding, add_holding_price
 
 logger = logging.getLogger(__name__)
 
+_refresh_lock = threading.Lock()   # prevents overlapping background refreshes
+
 PRICES_MAX_AGE_DAYS = 1
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
 STOOQ_URL = "https://stooq.com/q/l/?s={sym}&f=sd2t2ohlcv&h&e=csv"
@@ -79,16 +81,24 @@ def _fetch_cached(symbol: str):
 
 
 def prices_are_stale(holdings_df: pd.DataFrame) -> bool:
-    """True when any holding's price is missing or older than the max age."""
+    """True when any holding's price is missing or older than the max age.
+
+    All comparisons happen in UTC: refresh timestamps are written in UTC and
+    the SQLite column reads back timezone-naive, so comparing against local
+    date.today() would drift by the local offset around midnight.
+    """
     if holdings_df is None or holdings_df.empty:
         return False
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     for _, h in holdings_df.iterrows():
         d = h.get("last_price_date")
         if d is None or pd.isna(d):
             return True
         try:
-            d = d.date() if hasattr(d, "date") else d
-            if (date.today() - d).days >= PRICES_MAX_AGE_DAYS:
+            ts = pd.Timestamp(d)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert("UTC").tz_localize(None)
+            if (now_utc - ts).days >= PRICES_MAX_AGE_DAYS:
                 return True
         except Exception:
             return True
@@ -126,15 +136,21 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
 
 def maybe_refresh_in_background(user_id: int):
     """Kick off a daily price refresh in a daemon thread (never blocks the
-    UI). The next page interaction picks the new prices up from the cache."""
+    UI). A process-wide lock prevents overlapping refreshes; new prices are
+    picked up by the cached readers on their next TTL expiry (2 min)."""
     try:
         holdings = get_holdings(user_id)
         if holdings.empty or not prices_are_stale(holdings):
             return
     except Exception:
         return
-    threading.Thread(
-        target=refresh_prices_if_due,
-        args=(user_id, False, False),  # uncached fetch inside the thread
-        daemon=True,
-    ).start()
+    if not _refresh_lock.acquire(blocking=False):
+        return
+
+    def _worker():
+        try:
+            refresh_prices_if_due(user_id, force=False, cached=False)
+        finally:
+            _refresh_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()

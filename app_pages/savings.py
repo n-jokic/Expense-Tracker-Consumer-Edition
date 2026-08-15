@@ -212,11 +212,12 @@ if not dfs.empty:
     # ── Manage entries ───────────────────────────────────────────────────────
     with st.expander("🗑️ Delete a savings entry"):
         del_ids = dfs["id"].tolist()
-        del_labels = [f"{r['date'].strftime('%d %b %Y')} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"
+        del_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"
                       for _, r in dfs.iterrows()]
-        sel = st.selectbox("Select entry", del_labels, key="sav_del_sel")
+        sel_idx = st.selectbox("Select entry", range(len(del_labels)),
+                               format_func=lambda i: del_labels[i], key="sav_del_sel")
         if st.button("🗑️ Move to trash", type="secondary", key="sav_del_btn", width="stretch"):
-            soft_delete_savings(user_id, del_ids[del_labels.index(sel)])
+            soft_delete_savings(user_id, del_ids[sel_idx])
             q.bump_db_version()
             st.toast("Savings entry moved to trash.", icon="🗑️")
             st.rerun()
@@ -227,7 +228,7 @@ if not dfs.empty:
         with st.expander(f"🗑️ Recently deleted savings ({len(df_deleted)})"):
             for _, row in df_deleted.iterrows():
                 rc1, rc2, rc3 = st.columns([3, 2, 1])
-                with rc1: st.write(f"{row['goal_name']} — {row['date'].strftime('%d %b %Y')}")
+                with rc1: st.write(f"{row['goal_name']} — {row['date'].strftime('%d %b %Y') if pd.notna(row['date']) else '—'}")
                 with rc2: st.write(fmt(row["deposited_eur"], DC, rates))
                 with rc3:
                     if st.button("↩️ Restore", key=f"rst_sav_{row['id']}", width="stretch"):

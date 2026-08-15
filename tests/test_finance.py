@@ -69,6 +69,19 @@ def test_schedule_ignores_future_payments():
     assert s["months_paid"] == 1  # January's due date has passed (unpaid)
 
 
+def test_schedule_applies_payments_made_off_due_day():
+    """Regression: payments logged on any day of the month must count
+    towards that month's due date (users rarely pay on the exact day)."""
+    payments = [
+        (date(2025, 1, 15), 100.0),   # 5 days after the Jan 10 due
+        (date(2025, 2, 3), 100.0),    # before the Feb 10 due, same month
+    ]
+    s = loan_schedule(1200, 0, 12, date(2025, 1, 10), 10, payments,
+                      asof=date(2025, 2, 15))
+    assert s["remaining_balance"] == 1000.0
+    assert s["months_paid"] == 2
+
+
 def test_portfolio_metrics():
     m = portfolio_metrics([
         {"quantity": 2, "last_price_eur": 50.0, "cost_eur": 80.0},
