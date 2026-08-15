@@ -114,6 +114,7 @@ class Expense(Base):
     currency     = Column(String, default="EUR")
     amount_eur   = Column(Float, default=0.0)
     recurring    = Column(Boolean, default=False)
+    rec_template_id = Column(String, nullable=True)  # links to recurring.id when logged from a template
     notes        = Column(String, default="")
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
@@ -126,6 +127,9 @@ class Income(Base):
     user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
     date         = Column(Date)
     source       = Column(String)
+    income_type  = Column(String, default="Other")  # Salary | Hourly | Bonus / Raise | Freelance | Investment | Rental | Other
+    hours        = Column(Float, nullable=True)     # for hourly work
+    rate         = Column(Float, nullable=True)     # hourly rate (original currency)
     budgeted     = Column(Float, default=0.0)
     actual       = Column(Float, default=0.0)
     currency     = Column(String, default="EUR")
@@ -176,6 +180,7 @@ class Recurring(Base):
     amount      = Column(Float, default=0.0)
     currency    = Column(String, default="EUR")
     amount_eur  = Column(Float, default=0.0)
+    due_day     = Column(Integer, nullable=True)   # day of month (1-31); None = no due day
     notes       = Column(String, default="")
     active      = Column(Boolean, default=True)
 
@@ -192,6 +197,22 @@ class AuditLog(Base):
     ip_address = Column(String, nullable=True)
 
 
+class BigPurchase(Base):
+    __tablename__ = "big_purchases"
+    id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name        = Column(String)
+    category    = Column(String, default="Other")
+    price       = Column(Float, default=0.0)
+    currency    = Column(String, default="EUR")
+    price_eur   = Column(Float, default=0.0)
+    usage_hours = Column(Float, default=0.0)   # expected use, hours per month
+    importance  = Column(Integer, default=3)    # 1-5
+    status      = Column(String, default="wishlist")  # wishlist | saving | bought
+    notes       = Column(String, default="")
+    created_at  = Column(DateTime, default=_utcnow)
+
+
 class UserSettings(Base):
     __tablename__ = "user_settings"
     id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -201,6 +222,19 @@ class UserSettings(Base):
     monthly_budget   = Column(Float, default=0.0)
     # Per-currency exchange rates: {"USD": 1.08, "RSD": 117.0, ...} (1 EUR = X)
     currency_rates   = Column(JSON, nullable=True)
+    # When currency_rates was last refreshed from the live-rate API
+    rates_updated_at = Column(DateTime, nullable=True)
+    # Fixed salary setup (income page)
+    salary_amount    = Column(Float, default=0.0)
+    salary_currency  = Column(String, default="EUR")
+    salary_day       = Column(Integer, default=1)
+    salary_active    = Column(Boolean, default=False)
+    # Notifications
+    bill_reminder_days = Column(Integer, default=2)
+    weekly_summary      = Column(Boolean, default=False)
+    weekly_summary_last_sent = Column(Date, nullable=True)
+    # Big purchases math
+    hourly_rate      = Column(Float, default=0.0)
     email_alerts     = Column(Boolean, default=False)
     alert_email      = Column(String, nullable=True)
     smtp_host        = Column(String, nullable=True)
@@ -217,15 +251,44 @@ def init_db():
     _migrate(engine)
 
 
-def _migrate(engine):
-    """Lightweight additive migrations for installs created before new columns."""
+def _add_missing_columns(engine, table: str, columns: dict):
+    """Additive migration: ALTER TABLE for each missing column (SQLite + Postgres)."""
     from sqlalchemy import inspect, text
     insp = inspect(engine)
-    if "user_settings" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("user_settings")}
-        if "currency_rates" not in cols:
+    if table not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns(table)}
+    for name, ddl in columns.items():
+        if name not in existing:
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE user_settings ADD COLUMN currency_rates JSON"))
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
+def _migrate(engine):
+    """Lightweight additive migrations for installs created before new columns."""
+    _add_missing_columns(engine, "user_settings", {
+        "currency_rates": "JSON",
+        "rates_updated_at": "TIMESTAMP",
+        "salary_amount": "FLOAT DEFAULT 0",
+        "salary_currency": "VARCHAR DEFAULT 'EUR'",
+        "salary_day": "INTEGER DEFAULT 1",
+        "salary_active": "BOOLEAN DEFAULT 0",
+        "bill_reminder_days": "INTEGER DEFAULT 2",
+        "weekly_summary": "BOOLEAN DEFAULT 0",
+        "weekly_summary_last_sent": "DATE",
+        "hourly_rate": "FLOAT DEFAULT 0",
+    })
+    _add_missing_columns(engine, "income", {
+        "income_type": "VARCHAR DEFAULT 'Other'",
+        "hours": "FLOAT",
+        "rate": "FLOAT",
+    })
+    _add_missing_columns(engine, "recurring", {
+        "due_day": "INTEGER",
+    })
+    _add_missing_columns(engine, "expenses", {
+        "rec_template_id": "VARCHAR",
+    })
 
 
 # ── Audit helper ──────────────────────────────────────────────────────────────
@@ -266,7 +329,7 @@ def _parse_dates(df, cols):
 # ── Expenses ──────────────────────────────────────────────────────────────────
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
-             "amount","currency","amount_eur","recurring","notes",
+             "amount","currency","amount_eur","recurring","rec_template_id","notes",
              "is_deleted","deleted_at","created_at"]
 
 def get_expenses(user_id, include_deleted=False):
@@ -288,6 +351,7 @@ def add_expense(user_id, row):
             subcategory=row.get("subcategory",""), description=row.get("description",""),
             amount=float(row.get("amount",0)), currency=row.get("currency","EUR"),
             amount_eur=float(row.get("amount_eur",0)), recurring=bool(row.get("recurring",False)),
+            rec_template_id=row.get("rec_template_id"),
             notes=row.get("notes","")
         )
         s.add(obj)
@@ -331,8 +395,26 @@ def restore_expense(user_id, expense_id):
 
 # ── Income ────────────────────────────────────────────────────────────────────
 
-_INC_COLS = ["id","user_id","date","source","budgeted","actual","currency",
-             "budgeted_eur","actual_eur","notes","is_deleted","deleted_at","created_at"]
+_INC_COLS = ["id","user_id","date","source","income_type","hours","rate",
+             "budgeted","actual","currency","budgeted_eur","actual_eur",
+             "notes","is_deleted","deleted_at","created_at"]
+
+# Legacy installs stored the type inside `source`; map those labels on read.
+_LEGACY_INCOME_TYPES = {
+    "Primary Salary": "Salary",
+    "Freelance / Side Income": "Freelance",
+    "Investment Returns": "Investment",
+    "Rental Income": "Rental",
+}
+
+
+def _fill_income_types(df: pd.DataFrame) -> pd.DataFrame:
+    if not df.empty and "income_type" in df.columns:
+        df["income_type"] = (df["income_type"]
+                             .fillna(df["source"].map(_LEGACY_INCOME_TYPES))
+                             .fillna("Other"))
+    return df
+
 
 def get_income(user_id, include_deleted=False):
     with get_session() as s:
@@ -341,7 +423,8 @@ def get_income(user_id, include_deleted=False):
             q = q.filter(Income.is_deleted == False)
         rows = q.order_by(Income.date.desc()).all()
     df = _to_df(rows, _INC_COLS)
-    return _parse_dates(df, ["date", "created_at", "deleted_at"])
+    df = _parse_dates(df, ["date", "created_at", "deleted_at"])
+    return _fill_income_types(df)
 
 
 def add_income(user_id, row):
@@ -350,6 +433,8 @@ def add_income(user_id, row):
         obj = Income(
             id=inc_id, user_id=user_id,
             date=row.get("date"), source=row.get("source",""),
+            income_type=row.get("income_type","Other"),
+            hours=row.get("hours"), rate=row.get("rate"),
             budgeted=float(row.get("budgeted",0)), actual=float(row.get("actual",0)),
             currency=row.get("currency","EUR"),
             budgeted_eur=float(row.get("budgeted_eur",0)),
@@ -406,7 +491,8 @@ def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
     Interest is compounded monthly on the elapsed months between consecutive
     deposits (using the earlier deposit's interest rate), so the balance stays
     consistent even when rows are edited, deleted, or two deposits land in the
-    same month.
+    same month. Withdrawals (negative deposits) are supported; the balance is
+    clamped at 0.
     """
     if df.empty:
         return df
@@ -432,7 +518,7 @@ def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
                 if months > 0 and prev_rate > 0:
                     bal = bal * ((1 + prev_rate / 100 / 12) ** months)
                 bal += dep
-            df.at[idx, "balance_eur"] = round(bal, 4)
+            df.at[idx, "balance_eur"] = max(round(bal, 4), 0.0)
             if not pd.isna(d):
                 prev_date = d
             prev_rate = float(r["interest_rate"] or 0.0)
@@ -517,7 +603,7 @@ def delete_budget(user_id, budget_id):
 # ── Recurring ─────────────────────────────────────────────────────────────────
 
 _REC_COLS = ["id","user_id","category","subcategory","description",
-             "amount","currency","amount_eur","notes","active"]
+             "amount","currency","amount_eur","due_day","notes","active"]
 
 def get_recurring(user_id):
     with get_session() as s:
@@ -534,6 +620,7 @@ def add_recurring(user_id, row):
             description=row.get("description",""),
             amount=float(row.get("amount",0)), currency=row.get("currency","EUR"),
             amount_eur=float(row.get("amount_eur",0)),
+            due_day=row.get("due_day"),
             notes=row.get("notes",""), active=bool(row.get("active",True))
         )
         s.add(obj)
@@ -553,11 +640,72 @@ def update_recurring(user_id, rec_id, updates):
     return True
 
 
+# ── Big purchases ─────────────────────────────────────────────────────────────
+
+_BIG_COLS = ["id","user_id","name","category","price","currency","price_eur",
+             "usage_hours","importance","status","notes","created_at"]
+
+BIG_STATUSES = ["wishlist", "saving", "bought"]
+
+
+def get_big_purchases(user_id):
+    with get_session() as s:
+        rows = (s.query(BigPurchase)
+                .filter(BigPurchase.user_id == user_id)
+                .order_by(BigPurchase.created_at.desc()).all())
+    df = _to_df(rows, _BIG_COLS)
+    return _parse_dates(df, ["created_at"])
+
+
+def add_big_purchase(user_id, row):
+    bp_id = str(uuid.uuid4())
+    with get_session() as s:
+        obj = BigPurchase(
+            id=bp_id, user_id=user_id,
+            name=row.get("name",""), category=row.get("category","Other"),
+            price=float(row.get("price",0)), currency=row.get("currency","EUR"),
+            price_eur=float(row.get("price_eur",0)),
+            usage_hours=float(row.get("usage_hours",0)),
+            importance=int(row.get("importance",3)),
+            status=row.get("status","wishlist"),
+            notes=row.get("notes",""),
+        )
+        s.add(obj)
+        log_audit(s, user_id, "CREATE", "big_purchases", bp_id, row)
+    return bp_id
+
+
+def update_big_purchase(user_id, bp_id, updates):
+    with get_session() as s:
+        obj = s.query(BigPurchase).filter(BigPurchase.id == bp_id, BigPurchase.user_id == user_id).first()
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "big_purchases", bp_id, updates)
+    return True
+
+
+def delete_big_purchase(user_id, bp_id):
+    with get_session() as s:
+        obj = s.query(BigPurchase).filter(BigPurchase.id == bp_id, BigPurchase.user_id == user_id).first()
+        if not obj:
+            return False
+        s.delete(obj)
+        log_audit(s, user_id, "DELETE", "big_purchases", bp_id, {})
+    return True
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 _SETTINGS_DEFAULTS = {
     "exchange_rate": 117.0, "default_currency": "EUR", "monthly_budget": 0.0,
-    "currency_rates": None,
+    "currency_rates": None, "rates_updated_at": None,
+    "salary_amount": 0.0, "salary_currency": "EUR", "salary_day": 1,
+    "salary_active": False,
+    "bill_reminder_days": 2, "weekly_summary": False,
+    "weekly_summary_last_sent": None, "hourly_rate": 0.0,
     "email_alerts": False, "alert_email": None, "smtp_host": None,
     "smtp_port": 587, "smtp_user": None, "smtp_password_enc": None,
 }

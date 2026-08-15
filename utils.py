@@ -28,6 +28,7 @@ CATEGORIES = {
 }
 
 INCOME_SOURCES  = ["Primary Salary","Freelance / Side Income","Investment Returns","Rental Income","Other"]
+INCOME_TYPES    = ["Salary","Hourly","Bonus / Raise","Freelance","Investment","Rental","Other"]
 SAVINGS_GOALS   = ["Emergency Fund","Vacation / Travel","Investment Account","Down Payment","Other"]
 CHART_COLORS    = ["#0F3460","#E94560","#00B050","#F4A261","#457B9D","#A8DADC","#E9C46A","#2A9D8F"]
 CAT_LIST        = list(CATEGORIES.keys())
@@ -183,6 +184,30 @@ def pbar(pct: float, color: str) -> str:
             f'</div>')
 
 
+# ── Big-purchase priority matrix ──────────────────────────────────────────────
+
+QUADRANT_COLORS = {
+    "Quick wins":   "#00B050",
+    "Plan & save":  "#0F3460",
+    "Maybe later":  "#A8A8A8",
+    "Reconsider":   "#E94560",
+}
+
+
+def classify_quadrant(work_hours: float, usage_hours: float,
+                      median_work: float, median_usage: float) -> str:
+    """4-square priority matrix: expected usage vs work-hours needed to buy."""
+    high_usage = usage_hours > median_usage
+    high_work  = work_hours > median_work
+    if high_usage and not high_work:
+        return "Quick wins"
+    if high_usage and high_work:
+        return "Plan & save"
+    if not high_usage and not high_work:
+        return "Maybe later"
+    return "Reconsider"
+
+
 def to_excel(df) -> bytes:
     buf = io.BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")
@@ -329,11 +354,16 @@ def get_lan_urls(port: int):
     return urls, hostname
 
 
-def qr_svg(url: str) -> str:
-    """Return an inline SVG QR code for the given URL (pure Python, no Pillow)."""
+def qr_png(url: str) -> bytes:
+    """Return a PNG QR code for the given URL.
+
+    PNG is used instead of SVG because qrcode's SVG uses namespace-prefixed
+    elements (<svg:rect>) that the HTML parser can't map when injected into
+    the page, which rendered as an invisible image.
+    """
+    import io
     import qrcode
-    from qrcode.image.svg import SvgImage
-    img = qrcode.make(url, image_factory=SvgImage)
+    img = qrcode.make(url)
     buf = io.BytesIO()
-    img.save(buf)
-    return buf.getvalue().decode("utf-8")
+    img.save(buf, format="PNG")
+    return buf.getvalue()

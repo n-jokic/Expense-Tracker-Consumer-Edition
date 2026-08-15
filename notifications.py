@@ -10,9 +10,10 @@ import base64
 import hashlib
 import smtplib
 import threading
+import calendar
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -176,6 +177,50 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
 
 # ── In-app alert checkers ─────────────────────────────────────────────────────
 
+def due_reminder_day(due_day: int, days_before: int, month_length: int) -> int:
+    """Day of the month to send a bill reminder, clamped to the month length.
+
+    due_day 29-31 in a short month remind on the last day; reminders never
+    wrap before day 1.
+    """
+    day = int(due_day) - int(days_before)
+    if day < 1:
+        day = 1
+    return min(day, int(month_length))
+
+
+def _unlogged_templates(recurring_df: pd.DataFrame, expenses_df: pd.DataFrame,
+                        today: date) -> list:
+    """Active templates with no expense logged this month.
+
+    Matching: expense.rec_template_id == template id (new rows), with a
+    description+amount fallback for rows logged before template links existed.
+    """
+    active = recurring_df[recurring_df["active"] == True]
+    if active.empty:
+        return []
+
+    template_ids = set()
+    desc_amounts = set()
+    if not expenses_df.empty:
+        m_exp = expenses_df[(expenses_df["date"].dt.year == today.year) &
+                             (expenses_df["date"].dt.month == today.month)]
+        if "rec_template_id" in m_exp.columns:
+            template_ids = set(m_exp["rec_template_id"].dropna().astype(str))
+        desc_amounts = set(zip(m_exp["description"].str.strip().str.lower(),
+                               m_exp["amount_eur"].round(2)))
+
+    unlogged = []
+    for _, row in active.iterrows():
+        tid = str(row.get("id"))
+        key = (str(row["description"]).strip().lower(),
+               round(float(row["amount_eur"] or 0.0), 2))
+        if tid in template_ids or key in desc_amounts:
+            continue
+        unlogged.append(row)
+    return unlogged
+
+
 def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                                   budgets_df: pd.DataFrame, settings: dict,
                                   rates: dict, DC: str):
@@ -228,49 +273,96 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
 
 def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
                                    expenses_df: pd.DataFrame, settings: dict):
-    """Show sidebar count of unlogged recurring bills this month."""
+    """Show sidebar count of unlogged recurring bills and email reminders.
+
+    Templates with a due_day are emailed N days before the due date (setting
+    bill_reminder_days); templates without one keep the old "on/after the 25th"
+    fallback. One email per template per month.
+    """
     if recurring_df.empty:
         return
 
     today   = date.today()
-    active  = recurring_df[recurring_df["active"] == True]
-    if active.empty:
-        return
-
-    logged = set()
-    if not expenses_df.empty:
-        m_exp = expenses_df[(expenses_df["date"].dt.year == today.year) &
-                             (expenses_df["date"].dt.month == today.month)]
-        logged = set(zip(m_exp["description"].str.strip().str.lower(),
-                         m_exp["amount_eur"].round(2)))
-
-    unlogged = [row for _, row in active.iterrows()
-                if (row["description"].strip().lower(),
-                    round(float(row["amount_eur"] or 0.0), 2)) not in logged]
-
+    unlogged = _unlogged_templates(recurring_df, expenses_df, today)
     if not unlogged:
         return
 
     st.sidebar.warning(f"🔔 **{len(unlogged)} bill(s)** not yet logged this month")
 
-    # Send email reminder if it's late in the month and not yet sent this month
-    sent_key = f"reminder_sent_{today.year}_{today.month}"
-    if (today.day >= 25 and sent_key not in st.session_state and
-            settings.get("email_alerts") and settings.get("alert_email") and
+    if not (settings.get("email_alerts") and settings.get("alert_email") and
             settings.get("smtp_host") and settings.get("smtp_user")):
-        st.session_state[sent_key] = True
-        for row in unlogged[:3]:  # limit to first 3
-            amt_str = f"€{float(row['amount_eur']):,.2f}"
-            html = build_bill_reminder_email(
-                st.session_state.get("display_name", ""),
-                row["description"], amt_str, "Due this month"
-            )
-            send_email_async(
-                settings["smtp_host"], int(settings.get("smtp_port", 587)),
-                settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
-                settings["alert_email"],
-                f"Bill Reminder: {row['description']}", html
-            )
+        return
+
+    days_before  = int(settings.get("bill_reminder_days", 2) or 2)
+    month_length = calendar.monthrange(today.year, today.month)[1]
+    sent_key = f"reminder_sent_{today.year}_{today.month}"
+    sent = set(st.session_state.get(sent_key, set()))
+
+    for row in unlogged[:5]:
+        key = str(row.get("id"))
+        if key in sent:
+            continue
+
+        due_day = row.get("due_day")
+        if due_day is not None and not pd.isna(due_day):
+            if today.day != due_reminder_day(int(due_day), days_before, month_length):
+                continue
+            due_note = f"Due {calendar.month_name[today.month]} {int(due_day)}"
+        else:
+            if today.day < 25:
+                continue
+            due_note = "Due this month"
+
+        sent.add(key)
+        amt_str = f"€{float(row['amount_eur']):,.2f}"
+        html = build_bill_reminder_email(
+            st.session_state.get("display_name", ""),
+            row["description"], amt_str, due_note
+        )
+        send_email_async(
+            settings["smtp_host"], int(settings.get("smtp_port", 587)),
+            settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
+            settings["alert_email"],
+            f"Bill Reminder: {row['description']}", html
+        )
+    st.session_state[sent_key] = sent
+
+
+def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
+                                  settings: dict):
+    """Send the weekly spending summary email on Mondays (once per week)."""
+    if not settings.get("weekly_summary"):
+        return
+    if not (settings.get("email_alerts") and settings.get("alert_email") and
+            settings.get("smtp_host") and settings.get("smtp_user")):
+        return
+
+    today  = date.today()
+    if today.weekday() != 0:  # Monday only
+        return
+
+    this_monday = today - timedelta(days=7)
+    last = settings.get("weekly_summary_last_sent")
+    if last is not None:
+        try:
+            last = pd.to_datetime(last).date()
+        except Exception:
+            last = None
+        if last is not None and last >= this_monday:
+            return
+
+    week = (expenses_df[expenses_df["date"] >= pd.Timestamp(this_monday)]
+            if not expenses_df.empty else pd.DataFrame())
+    html = build_weekly_summary_email(
+        st.session_state.get("display_name", ""), week, 117.0, "EUR")
+
+    send_email_async(
+        settings["smtp_host"], int(settings.get("smtp_port", 587)),
+        settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
+        settings["alert_email"],
+        "Your Weekly Spending Summary", html
+    )
+    q.save_settings(user_id, {"weekly_summary_last_sent": today})
 
 
 # ── Settings UI ───────────────────────────────────────────────────────────────
@@ -302,6 +394,16 @@ def render_notification_settings(user_id: int, settings: dict):
             smtp_pass = st.text_input("SMTP password / app password",
                                        type="password",
                                        placeholder="Leave blank to keep existing password")
+            c3, c4 = st.columns(2)
+            with c3:
+                days_before = st.number_input(
+                    "Bill reminder: days before due",
+                    value=int(settings.get("bill_reminder_days") or 2),
+                    min_value=0, max_value=14, step=1,
+                    help="Bills with a due day get an email this many days before they are due.")
+            with c4:
+                weekly = st.toggle("Weekly summary email (Mondays)",
+                                   value=bool(settings.get("weekly_summary", False)))
             c_save, c_test = st.columns(2)
             with c_save:
                 saved = st.form_submit_button("💾 Save", type="primary", width="stretch")
@@ -315,6 +417,8 @@ def render_notification_settings(user_id: int, settings: dict):
                 "smtp_host": smtp_host,
                 "smtp_port": smtp_port,
                 "smtp_user": smtp_user,
+                "bill_reminder_days": int(days_before),
+                "weekly_summary": bool(weekly),
             }
             if smtp_pass:
                 updates["smtp_password_enc"] = _encrypt(smtp_pass)

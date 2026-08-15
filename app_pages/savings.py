@@ -1,9 +1,11 @@
 """
-Savings goals page: deposits with monthly compound interest, goal progress and charts.
+Savings goals page: deposits (and withdrawals) with monthly compound interest,
+custom goals, yearly KPIs, goal progress and projections.
 """
 
 from datetime import date
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -20,14 +22,22 @@ user_id = st.session_state.user_id
 DC      = st.session_state.dc
 rates   = st.session_state.rates
 SYM     = get_currency_symbol(DC)
+today   = date.today()
 
 st.title("🎯 Savings goals")
-st.caption("Log each deposit. Compound interest is calculated monthly on your running balance.")
+st.caption("Log each deposit (or withdrawal — use a negative amount). "
+           "Compound interest is calculated monthly on your running balance.")
 help_expander("How compound interest works",
               "Each time you log a deposit, the app calculates: "
               "`new balance = previous_balance × (1 + monthly_rate) + deposit`. "
-              "The monthly rate is your annual interest rate ÷ 12, and interest is applied "
-              "for each whole month between deposits.")
+              "The monthly rate is your annual interest rate ÷ 12, applied for each "
+              "whole month between deposits. Withdrawals are negative deposits and "
+              "the balance never goes below zero.")
+
+# ── Entry form ────────────────────────────────────────────────────────────────
+dfs_all = q.savings(user_id)
+existing_goals = sorted(set(dfs_all["goal_name"].dropna())) if not dfs_all.empty else []
+goal_options = ["➕ New goal..."] + [g for g in SAVINGS_GOALS if g not in existing_goals] + existing_goals
 
 oc, _ = st.columns([1, 3])
 with oc:
@@ -37,13 +47,17 @@ sym = get_currency_symbol(cur)
 with st.form("sav_form", clear_on_submit=False):
     c1, c2 = st.columns(2)
     with c1:
-        sd  = st.date_input("Date", value=date.today())
-        gn  = st.selectbox("Goal", SAVINGS_GOALS)
+        sd      = st.date_input("Date", value=today)
+        gn_sel  = st.selectbox("Goal", goal_options)
+        new_goal = ""
+        if gn_sel == "➕ New goal...":
+            new_goal = st.text_input("New goal name", placeholder="e.g. New laptop")
         tgt = st.number_input(f"Target ({sym})", min_value=0.0,
                               max_value=MAX_SAVINGS_TARGET, step=100.0, format="%.2f")
     with c2:
-        dep  = st.number_input(f"Amount deposited ({sym})", min_value=0.0,
-                               max_value=MAX_AMOUNT, step=10.0, format="%.2f")
+        dep  = st.number_input(f"Amount deposited ({sym}) — negative = withdrawal",
+                               min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
+                               step=10.0, format="%.2f")
         ir   = st.number_input("Annual interest rate (%)", min_value=0.0,
                                max_value=100.0, step=0.01, format="%.2f",
                                help="e.g. 4.50 for 4.5% p.a., compounded monthly")
@@ -51,26 +65,63 @@ with st.form("sav_form", clear_on_submit=False):
     saved = st.form_submit_button("✅ Save entry", width="stretch", type="primary")
 
 if saved:
-    de = to_eur(dep, cur, rates)
-    te = to_eur(tgt, cur, rates)
-    dfs_prev = q.savings(user_id)
-    pb = 0.0
-    if not dfs_prev.empty:
-        pr = dfs_prev[dfs_prev["goal_name"] == gn]
-        if not pr.empty:
-            pb = float(pr.sort_values("date").iloc[-1]["balance_eur"])
-    mr = (ir / 100) / 12
-    nb = round(pb * (1 + mr) + de, 4)
-    add_savings(user_id, {
-        "date": sd, "goal_name": gn, "target_eur": te,
-        "deposited": dep, "currency": cur,
-        "deposited_eur": de, "interest_rate": ir, "balance_eur": nb, "notes": notes,
-    })
-    q.bump_db_version()
-    st.success(f"✅ {gn} — new balance: {fmt(nb, DC, rates)}")
+    goal_name = (new_goal.strip() if gn_sel == "➕ New goal..." else gn_sel)
+    if not goal_name:
+        st.error("Please name your new goal.")
+    else:
+        de = to_eur(dep, cur, rates)
+        te = to_eur(tgt, cur, rates)
+        pb = 0.0
+        if not dfs_all.empty:
+            pr = dfs_all[dfs_all["goal_name"] == goal_name]
+            if not pr.empty:
+                pb = float(pr.sort_values("date").iloc[-1]["balance_eur"])
+        mr = (ir / 100) / 12
+        nb = round(pb * (1 + mr) + de, 4)
+        if nb < 0:
+            st.warning("This withdrawal is larger than the goal balance — the balance is clipped at 0.")
+            nb = 0.0
+        add_savings(user_id, {
+            "date": sd, "goal_name": goal_name, "target_eur": te,
+            "deposited": dep, "currency": cur,
+            "deposited_eur": de, "interest_rate": ir, "balance_eur": nb, "notes": notes,
+        })
+        q.bump_db_version()
+        action = "withdrawn from" if dep < 0 else "saved to"
+        st.success(f"✅ {fmt(abs(de), DC, rates)} {action} **{goal_name}** — balance: {fmt(nb, DC, rates)}")
 
 dfs = q.savings(user_id)
 if not dfs.empty:
+    # ── Yearly KPIs ──────────────────────────────────────────────────────────
+    ydf = dfs[dfs["date"].dt.year == today.year]
+    interest_total = 0.0
+    total_balance  = 0.0
+    for g in dfs["goal_name"].unique():
+        rows = dfs[dfs["goal_name"] == g].sort_values("date")
+        bal = float(rows.iloc[-1]["balance_eur"])
+        dep_sum = float(rows["deposited_eur"].sum())
+        interest_total += bal - dep_sum
+        total_balance  += bal
+    saved_year = float(ydf["deposited_eur"].sum()) if not ydf.empty else 0.0
+
+    st.divider()
+    k1, k2, k3, k4 = st.columns(4)
+    for col, lbl, val, cls in [
+        (k1, "Total balance",   total_balance,   "pos"),
+        (k2, "Saved this year", saved_year,      "pos"),
+        (k3, "Interest earned", interest_total,  "pos"),
+        (k4, "Active goals",    None,            "neu"),
+    ]:
+        with col:
+            v = f"{dfs['goal_name'].nunique()}" if lbl == "Active goals" else fmt(val, DC, rates)
+            st.markdown(
+                f'<div class="kpi">'
+                f'<div class="kpi-lbl">{lbl}</div>'
+                f'<div class="kpi-val {cls}">{v}</div>'
+                f'</div>', unsafe_allow_html=True
+            )
+
+    # ── Goal progress ────────────────────────────────────────────────────────
     st.divider()
     st.subheader("Goal progress")
     for g in dfs["goal_name"].unique():
@@ -83,6 +134,7 @@ if not dfs.empty:
         tgtv  = float(tr["target_eur"].iloc[-1]) if not tr.empty else 0
         pct   = min(bal / tgtv * 100, 100) if tgtv > 0 else 0
         col   = "#00B050" if pct >= 75 else ("#F4A261" if pct >= 40 else "#E94560")
+        avg_dep = float(rows["deposited_eur"].tail(3).mean()) if not rows.empty else 0.0
 
         gc1, gc2 = st.columns([4, 1])
         with gc1:
@@ -96,7 +148,8 @@ if not dfs.empty:
                 f"Balance: **{fmt(bal, DC, rates)}** · "
                 f"Target: {fmt(tgtv, DC, rates) if tgtv > 0 else '—'} · "
                 f"Interest earned: {fmt(interest, DC, rates)} · "
-                f"Rate: {lat['interest_rate']:.2f}%"
+                f"Rate: {lat['interest_rate']:.2f}% · "
+                f"~{fmt(avg_dep, DC, rates)}/mo"
                 + proj_str
             )
         with gc2:
@@ -123,6 +176,28 @@ if not dfs.empty:
                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig2, width="stretch")
 
+    # ── Goal projections ─────────────────────────────────────────────────────
+    st.subheader("📈 Goal projections")
+    proj_rows = []
+    for g in dfs["goal_name"].unique():
+        proj = savings_projection(dfs, g)
+        if proj["months_to_goal"] and proj["months_to_goal"] > 0 and proj["projected_date"]:
+            proj_rows.append({"goal": g, "date": today,
+                              "balance": to_display(proj["current_balance"], DC, rates)})
+            proj_rows.append({"goal": g, "date": proj["projected_date"],
+                              "balance": to_display(proj["target"], DC, rates)})
+    if proj_rows:
+        pdf = pd.DataFrame(proj_rows)
+        figp = px.line(pdf, x="date", y="balance", color="goal", markers=True,
+                       labels={"balance": f"Balance ({SYM})", "date": "Date", "goal": "Goal"},
+                       color_discrete_sequence=CHART_COLORS)
+        figp.update_layout(legend_title_text="",
+                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(figp, width="stretch")
+    else:
+        st.info("Set a target for a goal to see its projection (today → target date).")
+
+    # ── Manage entries ───────────────────────────────────────────────────────
     with st.expander("🗑️ Delete a savings entry"):
         del_ids = dfs["id"].tolist()
         del_labels = [f"{r['date'].strftime('%d %b %Y')} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"

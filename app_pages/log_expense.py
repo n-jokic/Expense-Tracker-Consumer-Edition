@@ -51,21 +51,23 @@ if saved:
         safe_error("Please add a description so you can find this expense later.")
     else:
         ae = to_eur(amount, cur, rates)
-        add_expense(user_id, {
-            "date": exp_date, "category": cat,
-            "subcategory": subcat if subcat != "—" else "",
-            "description": desc, "amount": amount,
-            "currency": cur, "amount_eur": ae,
-            "recurring": is_rec, "notes": notes,
-        })
+        rec_id = None
         if is_rec:
-            add_recurring(user_id, {
+            rec_id = add_recurring(user_id, {
                 "category": cat,
                 "subcategory": subcat if subcat != "—" else "",
                 "description": desc, "amount": amount,
                 "currency": cur, "amount_eur": ae,
                 "notes": notes, "active": True,
             })
+        add_expense(user_id, {
+            "date": exp_date, "category": cat,
+            "subcategory": subcat if subcat != "—" else "",
+            "description": desc, "amount": amount,
+            "currency": cur, "amount_eur": ae,
+            "recurring": is_rec, "rec_template_id": rec_id,
+            "notes": notes,
+        })
         q.bump_db_version()
         st.success(f"✅ **{desc}** — {fmt_dual(amount, cur, ae)}")
         st.balloons()

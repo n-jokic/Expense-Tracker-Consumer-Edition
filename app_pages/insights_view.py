@@ -17,4 +17,5 @@ render_insights(
     st.session_state.settings,
     st.session_state.dc,
     st.session_state.rates,
+    q.recurring(user_id),
 )

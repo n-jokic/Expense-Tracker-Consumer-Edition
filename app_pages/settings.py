@@ -3,17 +3,20 @@ Settings page: currency & rates, budgets, notifications, account, data export/ba
 """
 
 import calendar
+import os
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
 import queries as q
 from db import (
-    add_budget, delete_budget, get_budgets,
+    add_budget, delete_budget, get_budgets, BACKUP_DIR,
     update_user_display_name, delete_user_account, backup_db,
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
+from rates import refresh_rates_if_due
 from utils import (
     CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     fmt, to_eur, get_currency_symbol,
@@ -35,7 +38,8 @@ tab_cur, tab_bud, tab_notif, tab_acct, tab_data = st.tabs(
 # ── Currency tab ──────────────────────────────────────────────────────────────
 with tab_cur:
     st.subheader("💱 Currency & exchange rates")
-    st.caption("Amounts are stored in EUR; these rates convert them for display.")
+    st.caption("Amounts are stored in EUR; these rates convert them for display. "
+               "They refresh automatically on login when older than 3 days.")
     with st.form("cur_form"):
         dc2 = st.selectbox("Default display currency",
                             list(SUPPORTED_CURRENCIES.keys()),
@@ -51,6 +55,29 @@ with tab_cur:
             q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
             st.success("✅ Saved — rates updated for every page.")
             st.rerun()
+
+    st.divider()
+    last = settings.get("rates_updated_at")
+    if last is not None:
+        try:
+            last_str = pd.Timestamp(last).strftime("%d %b %Y %H:%M")
+        except Exception:
+            last_str = str(last)
+        st.caption(f"🕐 Rates last updated from the live API: **{last_str}**")
+    else:
+        st.caption("🕐 Rates never fetched from the live API — using built-in defaults.")
+
+    c_ref, _ = st.columns([1, 2])
+    with c_ref:
+        if st.button("🔄 Refresh rates now", key="refresh_rates_btn"):
+            new_settings, ok = refresh_rates_if_due(user_id, st.session_state.settings, force=True)
+            if ok:
+                got = new_settings.get("currency_rates") or {}
+                st.success(f"✅ Rates refreshed! 1 EUR = {float(got.get('RSD', 0)):,.2f} din")
+                st.rerun()
+            else:
+                st.error("😕 Couldn't reach the rate service — keeping your last known rates. "
+                         "Check your internet connection and try again.")
 
 # ── Budget tab ────────────────────────────────────────────────────────────────
 with tab_bud:
@@ -184,6 +211,12 @@ with tab_data:
     st.divider()
     st.subheader("💾 Database backup")
     st.caption("A backup is saved automatically once per day. You can also create one now.")
+    marker = os.path.join(BACKUP_DIR, ".last_backup")
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            st.caption(f"Last automatic backup: **{f.read().strip()}**")
+    except OSError:
+        pass
     if st.button("💾 Back up database now"):
         path = backup_db(force=True)
         if path:

@@ -85,3 +85,15 @@ def test_savings_projection_reaches_goal():
 
 def test_savings_projection_empty_goal():
     assert savings_projection(pd.DataFrame(), "G")["months_to_goal"] is None
+
+
+def test_savings_projection_with_net_withdrawals_has_no_projection():
+    df = _df([
+        {"goal_name": "G", "date": "2025-01-01", "balance_eur": 100.0,
+         "target_eur": 500.0, "deposited_eur": -20.0, "interest_rate": 0.0},
+        {"goal_name": "G", "date": "2025-02-01", "balance_eur": 80.0,
+         "target_eur": 500.0, "deposited_eur": -20.0, "interest_rate": 0.0},
+    ])
+    p = savings_projection(df, "G")
+    assert p["months_to_goal"] is None
+    assert p["projected_date"] is None

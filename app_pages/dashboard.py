@@ -58,9 +58,28 @@ def flt(df):
     if sm > 0: mask = mask & (df["date"].dt.month == sm)
     return df[mask]
 
+def prev_flt(df):
+    """Same filter, shifted one period back (month or year)."""
+    if df.empty: return df
+    if sm > 0:
+        py, pm = (sy, sm - 1) if sm > 1 else (sy - 1, 12)
+        mask = (df["date"].dt.year == py) & (df["date"].dt.month == pm)
+    else:
+        mask = df["date"].dt.year == sy - 1
+    return df[mask]
+
+def _delta(cur, prev):
+    if prev and prev > 0:
+        pct = (cur - prev) / prev * 100
+        arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+        return f"{arrow} {abs(pct):.0f}% vs prev"
+    return ""
+
 exp   = flt(dfe)
 inc   = flt(dfi)
 svyr  = dfs[dfs["date"].dt.year == sy] if not dfs.empty else dfs
+prev_exp = prev_flt(dfe)
+prev_inc = prev_flt(dfi)
 
 ie = float(inc["actual_eur"].sum())  if not inc.empty  else 0.0
 ee = float(exp["amount_eur"].sum())  if not exp.empty  else 0.0
@@ -68,26 +87,41 @@ sd = float(svyr["deposited_eur"].sum()) if not svyr.empty else 0.0
 ne = ie - ee - sd
 sr = (sd / ie * 100) if ie > 0 else 0.0
 
+pie = float(prev_inc["actual_eur"].sum()) if not prev_inc.empty else 0.0
+pee = float(prev_exp["amount_eur"].sum()) if not prev_exp.empty else 0.0
+
 st.divider()
 k1, k2, k3, k4, k5 = st.columns(5)
-for col, lbl, eur, cls in [
-    (k1, "Income",       ie,   "pos"),
-    (k2, "Expenses",     ee,   "neg"),
-    (k3, "Saved",        sd,   "pos"),
-    (k4, "Net Balance",  ne,   "pos" if ne >= 0 else "neg"),
-    (k5, "Savings Rate", None, "pos" if sr >= 15 else "neg"),
+for col, lbl, eur, cls, dlt in [
+    (k1, "Income",       ie,   "pos", _delta(ie, pie)),
+    (k2, "Expenses",     ee,   "neg", _delta(ee, pee)),
+    (k3, "Saved",        sd,   "pos", ""),
+    (k4, "Net Balance",  ne,   "pos" if ne >= 0 else "neg", ""),
+    (k5, "Savings Rate", None, "pos" if sr >= 15 else "neg", ""),
 ]:
     with col:
         v   = f"{sr:.1f}%" if lbl == "Savings Rate" else fmt(eur, DC, rates)
         sub = "" if lbl == "Savings Rate" else (
             f'<div class="kpi-sub">{fmt(eur, "EUR" if DC != "EUR" else "RSD", rates)}</div>'
         )
+        dlt_html = f'<div class="kpi-sub">{dlt}</div>' if dlt else ""
         st.markdown(
             f'<div class="kpi">'
             f'<div class="kpi-lbl">{lbl}</div>'
-            f'<div class="kpi-val {cls}">{v}</div>{sub}'
+            f'<div class="kpi-val {cls}">{v}</div>{sub}{dlt_html}'
             f'</div>', unsafe_allow_html=True
         )
+
+# Fixed costs metric
+rec_df = q.recurring(user_id)
+if not rec_df.empty:
+    rec_active = rec_df[rec_df["active"] == True]
+    if not rec_active.empty:
+        yearly = float(rec_active["amount_eur"].sum()) * 12
+        st.caption("")
+        st.metric("🔁 Fixed costs / year (recurring bills)",
+                  f"{fmt(yearly, DC, rates)} · {len(rec_active)} bills")
+
 st.divider()
 
 # Budget alerts
@@ -112,6 +146,23 @@ if not dfb.empty and not exp.empty:
         for icon, lvl, c, a, b, msg in alts:
             fn = st.error if lvl == "error" else st.warning
             fn(f"{icon} **{c}** — spent {fmt(a, DC, rates)} of {fmt(b, DC, rates)} budget. {msg}")
+        st.divider()
+
+# Budget progress bars for the selected month
+if sm > 0 and not dfb.empty and not exp.empty:
+    bf3 = dfb[(dfb["year"] == sy) & (dfb["month"] == sm)]
+    if not bf3.empty:
+        st.subheader(f"📊 Budget progress — {calendar.month_name[sm]}")
+        cb3 = bf3.groupby("category")["budgeted_eur"].sum()
+        ca3 = exp.groupby("category")["amount_eur"].sum()
+        for c in ca3.index:
+            b = float(cb3.get(c, 0))
+            if b <= 0:
+                continue
+            a = float(ca3.get(c, 0))
+            pct = min(a / b, 1.0)
+            st.markdown(f"**{c}** — {fmt(a, DC, rates)} of {fmt(b, DC, rates)} ({pct*100:.0f}%)")
+            st.progress(pct)
         st.divider()
 
 # Charts row 1
@@ -183,6 +234,24 @@ for col3, clr, dsh in [("Income","#00B050","solid"),("Expenses","#E94560","solid
 fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                   legend=dict(orientation="h", y=1.06), margin=dict(t=20,b=0), yaxis_title=SYM)
 st.plotly_chart(fig, width="stretch")
+
+# Cumulative net cash flow
+st.subheader("Cumulative net cash flow")
+cf = pd.DataFrame([{
+    "Month": calendar.month_abbr[m],
+    "Net": to_display(mv(dfi, "actual_eur", m) - mv(dfe, "amount_eur", m) - mv(dfs, "deposited_eur", m),
+                      DC, rates),
+} for m in range(1, 13)])
+cf["Cumulative"] = cf["Net"].cumsum()
+figc = go.Figure()
+figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Net"], name="Monthly net",
+                          mode="lines+markers", line=dict(color="#457B9D", width=2)))
+figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Cumulative"], name="Cumulative",
+                          mode="lines+markers", line=dict(color="#0F3460", width=2.5)))
+figc.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                   legend=dict(orientation="h", y=1.1), margin=dict(t=20,b=0),
+                   yaxis_title=SYM)
+st.plotly_chart(figc, width="stretch")
 
 # Savings rate chart
 r3a, r3b = st.columns(2)

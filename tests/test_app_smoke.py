@@ -24,6 +24,7 @@ PAGES = [
     "log_income.py",
     "savings.py",
     "recurring.py",
+    "big_purchases.py",
     "forecast.py",
     "insights_view.py",
     "bank_import_view.py",
@@ -40,6 +41,10 @@ def smoke_user():
     else:
         from db import get_user_by_username
         uid = get_user_by_username(TEST_USERNAME)["id"]
+    # Keep rates "fresh" so the smoke run never triggers a live network fetch.
+    from db import save_settings as _save_settings
+    from datetime import datetime, timezone
+    _save_settings(uid, {"rates_updated_at": datetime.now(timezone.utc)})
     yield uid
     delete_user_account(uid)
 
@@ -84,6 +89,10 @@ def test_main_app_renders_and_navigates(smoke_user):
     assert not at.exception, f"main app failed: {at.exception}"
     sidebar_text = " ".join(str(md.value) for md in at.sidebar.markdown)
     assert "Smoke Tester" in sidebar_text
+
+    # Regression: the phone-access QR code must render as an image element
+    qr_images = [img for img in at.sidebar.image if img.value is not None]
+    assert qr_images, "QR code image missing from the sidebar phone-access panel"
 
     for page in PAGES:
         at.switch_page(os.path.join(APP_DIR, "app_pages", page))

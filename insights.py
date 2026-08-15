@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from utils import fmt, NEAR_LIMIT_THRESHOLD
+from gamification import detect_raise
 
 
 # ── Analysis functions ────────────────────────────────────────────────────────
@@ -105,6 +106,11 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
     else:
         monthly_dep = float(rows["deposited_eur"].mean())
 
+    # Withdrawals (or zero deposits) can't reach the goal — no projection.
+    if monthly_dep <= 0:
+        return {"current_balance": balance, "target": target,
+                "months_to_goal": None, "projected_date": None}
+
     monthly_rate = (interest_rate / 100) / 12
     cur_bal = balance
     months  = 0
@@ -127,7 +133,8 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
 # ── Main render function ───────────────────────────────────────────────────────
 
 def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
-                    savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict):
+                    savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict,
+                    recurring_df: pd.DataFrame | None = None):
     """Render the full insights page."""
     st.title("💡 Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
@@ -237,6 +244,77 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 cards.append(("error",
                     f"💸 Your expenses (**{fmt(exp_mom['current'], DC, rates)}**) exceed your income "
                     f"(**{fmt(inc_mom['current'], DC, rates)}**) this month. Review your spending."))
+
+    # ── Insight 7: Top merchants this month ───────────────────────────────────
+    if not expenses_df.empty:
+        m_exp = expenses_df[(expenses_df["date"].dt.year == year) &
+                            (expenses_df["date"].dt.month == month)]
+        if not m_exp.empty:
+            merch = m_exp.groupby("description")["amount_eur"].sum().nlargest(3)
+            top_list = ", ".join(
+                f"**{d}** ({fmt(a, DC, rates)})" for d, a in merch.items())
+            cards.append(("info", f"🛍️ Top spending this month: {top_list}."))
+
+    # ── Insight 8: No-spend days ──────────────────────────────────────────────
+    if not expenses_df.empty:
+        m_exp = expenses_df[(expenses_df["date"].dt.year == year) &
+                            (expenses_df["date"].dt.month == month)]
+        if not m_exp.empty:
+            spent_days = set(m_exp["date"].dt.day.dropna())
+            no_spend = today.day - len(spent_days)
+            if no_spend >= 3:
+                cards.append(("success",
+                    f"🧘 You've had **{no_spend} no-spend days** so far this month. Nice discipline!"))
+
+    # ── Insight 9: Fixed costs (recurring) ────────────────────────────────────
+    if recurring_df is not None and not recurring_df.empty:
+        rec_active = recurring_df[recurring_df["active"] == True]
+        if not rec_active.empty:
+            monthly = float(rec_active["amount_eur"].sum())
+            cards.append(("info",
+                f"🔁 Your fixed costs are **{fmt(monthly, DC, rates)}/month** "
+                f"({fmt(monthly * 12, DC, rates)}/year) across {len(rec_active)} recurring bills."))
+
+    # ── Insight 10: Income highlights (raise / bonus / types) ─────────────────
+    if not income_df.empty:
+        if detect_raise(income_df):
+            sal = income_df[income_df["income_type"].fillna("Other") == "Salary"].sort_values("date")
+            if len(sal) >= 2:
+                cards.append(("success",
+                    f"📈 Raise detected! Your latest salary is "
+                    f"**{fmt(float(sal.iloc[-1]['actual_eur']), DC, rates)}** "
+                    f"(up from {fmt(float(sal.iloc[-2]['actual_eur']), DC, rates)})."))
+
+        bonus = income_df[income_df["income_type"].fillna("Other").isin(["Bonus / Raise", "Bonus"])]
+        bonus = bonus[bonus["date"].dt.year == year]
+        if not bonus.empty:
+            cards.append(("success",
+                f"🎁 Bonuses this year: **{fmt(float(bonus['actual_eur'].sum()), DC, rates)}**. "
+                f"Nice extra!"))
+
+        m_inc = income_df[(income_df["date"].dt.year == year) &
+                          (income_df["date"].dt.month == month)]
+        if not m_inc.empty:
+            by_type = m_inc.groupby("income_type")["actual_eur"].sum()
+            top_type, top_val = by_type.idxmax(), float(by_type.max())
+            cards.append(("info",
+                f"💼 Income this month is led by **{top_type}** "
+                f"({fmt(top_val, DC, rates)})."))
+
+    # ── Insight 11: Last 30 days vs previous 30 days ──────────────────────────
+    if not expenses_df.empty:
+        recent = expenses_df[expenses_df["date"] >= pd.Timestamp(today) - pd.Timedelta(days=30)]
+        prev   = expenses_df[(expenses_df["date"] < pd.Timestamp(today) - pd.Timedelta(days=30)) &
+                             (expenses_df["date"] >= pd.Timestamp(today) - pd.Timedelta(days=60))]
+        r_sum, p_sum = float(recent["amount_eur"].sum()), float(prev["amount_eur"].sum())
+        if p_sum > 0:
+            pct = (r_sum - p_sum) / p_sum * 100
+            if abs(pct) >= 10:
+                kind = "error" if pct > 0 else "success"
+                direction = "more" if pct > 0 else "less"
+                cards.append((kind,
+                    f"📆 You spent **{abs(pct):.0f}% {direction}** in the last 30 days "
+                    f"({fmt(r_sum, DC, rates)}) than the 30 days before ({fmt(p_sum, DC, rates)})."))
 
     # ── Render cards ──────────────────────────────────────────────────────────
     if not cards:

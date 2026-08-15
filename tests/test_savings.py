@@ -67,3 +67,27 @@ def test_recompute_handles_missing_dates_gracefully():
         {"goal_name": "G", "date": "2025-02-01", "deposited_eur": 50.0, "interest_rate": 0.0},
     ])
     assert df.iloc[-1]["balance_eur"] == 100.0
+
+
+def test_withdrawal_reduces_balance_with_interest():
+    df = _savings_df([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
+        {"goal_name": "G", "date": "2025-02-01", "deposited_eur": -30.0, "interest_rate": 12.0},
+    ])
+    # 100 * 1.01 - 30 = 71.0
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(71.0, abs=1e-3)
+
+
+def test_withdrawal_cannot_push_balance_below_zero():
+    df = _savings_df([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 0.0},
+        {"goal_name": "G", "date": "2025-02-01", "deposited_eur": -250.0, "interest_rate": 0.0},
+    ])
+    assert df.iloc[-1]["balance_eur"] == 0.0
+
+
+def test_negative_first_deposit_clamped_to_zero():
+    df = _savings_df([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": -50.0, "interest_rate": 0.0},
+    ])
+    assert df.iloc[0]["balance_eur"] == 0.0

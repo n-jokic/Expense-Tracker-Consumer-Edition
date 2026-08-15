@@ -24,6 +24,10 @@ MILESTONES = [
     {"id": "goal_reached",    "icon": "🎉", "title": "Goal Crusher",    "desc": "Reached a savings goal"},
     {"id": "no_luxury_month", "icon": "🧘", "title": "Mindful Month",   "desc": "A full month with zero Entertainment spend"},
     {"id": "first_budget",    "icon": "📋", "title": "Budget Setter",   "desc": "Set your first category budget"},
+    {"id": "first_salary",    "icon": "💼", "title": "Salary Sorted",   "desc": "Logged your first salary"},
+    {"id": "raise_earned",    "icon": "📈", "title": "Level Up",        "desc": "Got a raise"},
+    {"id": "first_bonus",     "icon": "🎁", "title": "Bonus Time",      "desc": "Logged a bonus"},
+    {"id": "first_hourly",    "icon": "⏱️", "title": "Side Hustle",     "desc": "Logged hourly income"},
 ]
 
 MILESTONE_INDEX = {m["id"]: m for m in MILESTONES}
@@ -79,6 +83,22 @@ def get_budget_adherence_streak(expenses_df: pd.DataFrame, budgets_df: pd.DataFr
 
 # ── Milestone checker ─────────────────────────────────────────────────────────
 
+def detect_raise(income_df: pd.DataFrame) -> bool:
+    """True when some salary entry is higher than every earlier salary entry."""
+    if income_df.empty or "income_type" not in income_df.columns:
+        return False
+    sal = income_df[income_df["income_type"].fillna("Other") == "Salary"].sort_values("date")
+    if len(sal) < 2:
+        return False
+    prev_max = float(sal.iloc[0]["actual_eur"] or 0.0)
+    for _, r in sal.iloc[1:].iterrows():
+        a = float(r["actual_eur"] or 0.0)
+        if a > prev_max:
+            return True
+        prev_max = max(prev_max, a)
+    return False
+
+
 def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                            savings_df: pd.DataFrame, budgets_df: pd.DataFrame) -> list[dict]:
     """Return list of milestone dicts that have been earned."""
@@ -92,6 +112,18 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     # first_income
     if not income_df.empty:
         earned.append(MILESTONE_INDEX["first_income"])
+
+    # income types
+    if not income_df.empty and "income_type" in income_df.columns:
+        types = income_df["income_type"].fillna("Other")
+        if (types == "Salary").any():
+            earned.append(MILESTONE_INDEX["first_salary"])
+        if (types == "Hourly").any():
+            earned.append(MILESTONE_INDEX["first_hourly"])
+        if types.isin(["Bonus / Raise", "Bonus"]).any():
+            earned.append(MILESTONE_INDEX["first_bonus"])
+        if detect_raise(income_df):
+            earned.append(MILESTONE_INDEX["raise_earned"])
 
     # expense counts
     exp_count = len(expenses_df) if not expenses_df.empty else 0

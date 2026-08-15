@@ -24,7 +24,12 @@ today   = date.today()
 dfi_all = q.income(user_id)
 SALARY_DAY = 10
 
-salary_rows = dfi_all[dfi_all["source"] == "Primary Salary"] if not dfi_all.empty else pd.DataFrame()
+salary_rows = pd.DataFrame()
+if not dfi_all.empty:
+    if "income_type" in dfi_all.columns:
+        salary_rows = dfi_all[dfi_all["income_type"].fillna("Other") == "Salary"]
+    if salary_rows.empty:
+        salary_rows = dfi_all[dfi_all["source"] == "Primary Salary"]
 if salary_rows.empty:
     period_start, period_end = compute_salary_cycle(today, SALARY_DAY)
     safe_warning("No salary entry found — using the 10th as cycle start. "

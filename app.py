@@ -12,13 +12,15 @@ from auth import require_auth, logout
 from onboarding import render_onboarding
 from utils import (
     SUPPORTED_CURRENCIES, get_rates, get_currency_symbol,
-    get_lan_urls, get_server_port, qr_svg,
+    get_lan_urls, get_server_port, qr_png,
     inject_mobile_css,
 )
 from gamification import render_gamification_sidebar
 from notifications import (
     check_and_send_budget_alerts, check_and_send_bill_reminders,
+    check_and_send_weekly_summary,
 )
+from rates import refresh_rates_if_due
 
 # ── Page config & boot ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -41,6 +43,9 @@ display_name = st.session_state.display_name
 if "db_version" not in st.session_state:
     st.session_state.db_version = 0
 st.session_state.settings = get_settings(user_id)
+# Refresh exchange rates on login when they're older than 3 days
+# (keeps the last known values on any network failure)
+st.session_state.settings, _ = refresh_rates_if_due(user_id, st.session_state.settings)
 
 # ── Onboarding gate (default False: never skip onboarding accidentally) ───────
 if not st.session_state.get("onboarding_complete", False):
@@ -91,7 +96,7 @@ with st.sidebar:
     urls, hostname = get_lan_urls(port)
     if urls:
         st.code(urls[0], language=None)
-        st.html(f'<div style="text-align:center;margin:4px 0;">{qr_svg(urls[0])}</div>')
+        st.image(qr_png(urls[0]), width=220)
         st.caption("Scan with your phone camera — same Wi-Fi network.")
         if hostname:
             st.caption(f"or http://{hostname}:{port}")
@@ -109,6 +114,7 @@ settings = st.session_state.settings
 DC       = st.session_state.dc
 check_and_send_bill_reminders(user_id, q.recurring(user_id), q.expenses(user_id), settings)
 check_and_send_budget_alerts(user_id, q.expenses(user_id), q.budgets(user_id), settings, rates, DC)
+check_and_send_weekly_summary(user_id, q.expenses(user_id), settings)
 
 # ── Page routing ──────────────────────────────────────────────────────────────
 pg = st.navigation([
@@ -117,6 +123,7 @@ pg = st.navigation([
     st.Page("app_pages/log_income.py", title="Log income", icon=":material/payments:"),
     st.Page("app_pages/savings.py", title="Savings goals", icon=":material/savings:"),
     st.Page("app_pages/recurring.py", title="Recurring", icon=":material/event_repeat:"),
+    st.Page("app_pages/big_purchases.py", title="Big purchases", icon=":material/shopping_bag:"),
     st.Page("app_pages/forecast.py", title="Forecast", icon=":material/query_stats:"),
     st.Page("app_pages/insights_view.py", title="Insights", icon=":material/lightbulb:"),
     st.Page("app_pages/bank_import_view.py", title="Bank import", icon=":material/account_balance:"),

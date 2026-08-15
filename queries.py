@@ -11,6 +11,7 @@ from db import (
     get_expenses, get_income, get_savings, get_budgets, get_recurring,
     get_audit_log, get_settings as _db_get_settings,
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
+    get_big_purchases,
 )
 
 
@@ -52,6 +53,11 @@ def _recurring(user_id: int, version: int):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _big_purchases(user_id: int, version: int):
+    return get_big_purchases(user_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _audit(user_id: int, version: int, limit: int):
     return get_audit_log(user_id, limit=limit)
 
@@ -86,6 +92,10 @@ def budgets(user_id: int):
 
 def recurring(user_id: int):
     return _recurring(user_id, db_version())
+
+
+def big_purchases(user_id: int):
+    return _big_purchases(user_id, db_version())
 
 
 def audit(user_id: int, limit: int = 200):

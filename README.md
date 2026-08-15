@@ -54,17 +54,27 @@ stays the same forever.
 ## Features
 
 - **Log expense / income / savings** — multi-currency, subcategories, notes
-- **Recurring** — monthly bill checklist with one-tap "Log now"
-- **Dashboard** — KPIs, budget vs actual, monthly trends, savings rate
+- **Savings goals** — custom goals, deposits *and* withdrawals (balance never
+  goes negative), monthly compound interest, yearly KPIs and goal projections
+- **Income types** — salaried (fixed salary + one-tap monthly logging, raise
+  detection), hourly (hours × rate), bonuses, freelance, investment, rental
+- **Recurring** — monthly bill checklist with due days, one-tap "Log now"
+  that lets you record the actual amount (may differ from the expected)
+- **Big purchases** — 4-quadrant priority matrix (expected use vs work-hours
+  needed), status tracking, and "bought → log as expense" handoff
+- **Dashboard** — KPIs with period-over-period deltas, budget progress bars,
+  cumulative net cash flow, fixed costs per year, monthly trends, savings rate
 - **Forecast** — projects current-cycle spending (period-average or 7-day
   burn rate) against your budget
-- **Insights** — month-over-month, unusual expenses, savings projections
+- **Insights** — month-over-month, top merchants, no-spend days, unusual
+  expenses, salary/bonus highlights, savings projections
 - **Bank import** — Revolut / N26 / Wise / generic CSV with auto-categorisation
   and duplicate detection
 - **Household** — share a combined dashboard with family via invite code
-- **Gamification** — streaks and badges
+- **Gamification** — streaks, badges, salary/raise/bonus milestones
 - **Audit log** — every change is recorded
-- **Email alerts** — budget warnings and bill reminders (your own SMTP account)
+- **Email alerts** — budget warnings, due-date bill reminders (N days before
+  due), and an optional weekly summary on Mondays (your own SMTP account)
 
 ## Currency model
 
@@ -72,6 +82,12 @@ All amounts are stored in EUR plus the **original** amount and currency, and a
 per-currency rate table (Settings → Currency, or the quick RSD control in the
 sidebar). Because the original amount is preserved, changing rates later never
 rewrites your history.
+
+**Live rates:** on login, exchange rates refresh automatically from free public
+APIs (ECB via frankfurter.app, with open.er-api.com covering RSD/BAM) whenever
+the stored rates are older than 3 days. If the network is unavailable, the last
+known rates are kept untouched — you can also refresh manually or edit rates by
+hand in Settings → Currency.
 
 ## Security notes
 
