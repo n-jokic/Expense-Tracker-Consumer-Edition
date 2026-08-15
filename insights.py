@@ -127,7 +127,7 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
 # ── Main render function ───────────────────────────────────────────────────────
 
 def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
-                    savings_df: pd.DataFrame, settings: dict, DC: str, rate: float):
+                    savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict):
     """Render the full insights page."""
     st.title("💡 Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
@@ -140,8 +140,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     # ── Insight 1: Month-over-month spending ──────────────────────────────────
     if not expenses_df.empty:
         mom = month_over_month(expenses_df, "amount_eur", year, month)
-        cur_str  = fmt(mom["current"],  DC, rate)
-        prev_str = fmt(mom["previous"], DC, rate)
+        cur_str  = fmt(mom["current"],  DC, rates)
+        prev_str = fmt(mom["previous"], DC, rates)
         pct      = abs(mom["change_pct"])
         if mom["trend"] == "up":
             cards.append(("warning", f"📈 You've spent **{cur_str}** this month — "
@@ -164,7 +164,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         direction = f"up {cat_mom['change_pct']:.0f}%" if cat_mom["trend"] == "up" \
                     else (f"down {abs(cat_mom['change_pct']):.0f}%" if cat_mom["trend"] == "down" else "steady")
         cards.append(("info", f"🏆 Your biggest spend this month is **{cat}** "
-                     f"at **{fmt(amt, DC, rate)}** — {direction} vs last month."))
+                     f"at **{fmt(amt, DC, rates)}** — {direction} vs last month."))
 
     # ── Insight 3: Unusual expenses ───────────────────────────────────────────
     unusual = unusual_expenses(expenses_df, multiplier=2.5)
@@ -176,7 +176,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         cat_avg = float(expenses_df[expenses_df["category"] == row["category"]]["amount_eur"].mean())
         mult    = round(row["amount_eur"] / cat_avg, 1) if cat_avg > 0 else 0
         cards.append(("warning", f"⚠️ Unusual expense spotted: **{row['description']}** "
-                     f"({row['category']}) for **{fmt(row['amount_eur'], DC, rate)}** — "
+                     f"({row['category']}) for **{fmt(row['amount_eur'], DC, rates)}** — "
                      f"{mult}× your typical {row['category']} spend."))
 
     # ── Insight 4: Savings projections ────────────────────────────────────────
@@ -185,15 +185,15 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             proj = savings_projection(savings_df, goal)
             if proj["months_to_goal"] is not None and proj["months_to_goal"] > 0:
                 proj_str = proj["projected_date"].strftime("%b %Y") if proj["projected_date"] else "?"
-                bal_str  = fmt(proj["current_balance"], DC, rate)
-                tgt_str  = fmt(proj["target"], DC, rate)
+                bal_str  = fmt(proj["current_balance"], DC, rates)
+                tgt_str  = fmt(proj["target"], DC, rates)
                 cards.append(("success",
                     f"🏦 **{goal}**: Balance is **{bal_str}** of {tgt_str} target. "
                     f"At your current deposit rate you'll reach it in ~**{proj['months_to_goal']} months** "
                     f"({proj_str})."))
             elif proj["months_to_goal"] == 0:
                 cards.append(("success", f"🎉 **{goal}** goal reached! "
-                             f"Balance: {fmt(proj['current_balance'], DC, rate)} — "
+                             f"Balance: {fmt(proj['current_balance'], DC, rates)} — "
                              f"congratulations!"))
 
     # ── Insight 5: Budget burn rate ───────────────────────────────────────────
@@ -206,10 +206,10 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             if days_left == 0:
                 cards.append(("error",
                     f"🚨 You've already exceeded your monthly budget of "
-                    f"**{fmt(total_budget, DC, rate)}**! Time to slow down spending."))
+                    f"**{fmt(total_budget, DC, rates)}**! Time to slow down spending."))
             elif days_left < 7:
                 cards.append(("warning",
-                    f"⏰ At your current pace your budget of **{fmt(total_budget, DC, rate)}** "
+                    f"⏰ At your current pace your budget of **{fmt(total_budget, DC, rates)}** "
                     f"will run out in ~**{days_left} days**. Consider cutting back."))
             else:
                 days_in_month = calendar.monthrange(today.year, today.month)[1]
@@ -217,7 +217,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 if days_left >= days_remaining_month:
                     cards.append(("success",
                         f"✅ You're on track — your budget should last the rest of the month "
-                        f"({fmt(total_budget, DC, rate)} total)."))
+                        f"({fmt(total_budget, DC, rates)} total)."))
 
     # ── Insight 6: Income vs expense ratio ────────────────────────────────────
     if not income_df.empty and not expenses_df.empty:
@@ -235,8 +235,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     f"Aim for 20% for a healthy savings rate."))
             elif saved_pct < 0:
                 cards.append(("error",
-                    f"💸 Your expenses (**{fmt(exp_mom['current'], DC, rate)}**) exceed your income "
-                    f"(**{fmt(inc_mom['current'], DC, rate)}**) this month. Review your spending."))
+                    f"💸 Your expenses (**{fmt(exp_mom['current'], DC, rates)}**) exceed your income "
+                    f"(**{fmt(inc_mom['current'], DC, rates)}**) this month. Review your spending."))
 
     # ── Render cards ──────────────────────────────────────────────────────────
     if not cards:
@@ -263,12 +263,12 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             m = month_over_month(cat_df, "amount_eur", year, month)
             rows.append({
                 "Category": cat,
-                "This month": fmt(m["current"], DC, rate),
-                "Last month": fmt(m["previous"], DC, rate),
+                "This month": fmt(m["current"], DC, rates),
+                "Last month": fmt(m["previous"], DC, rates),
                 "Change": f"{'▲' if m['trend']=='up' else '▼' if m['trend']=='down' else '—'} "
                           f"{abs(m['change_pct']):.0f}%",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
     else:
         st.info("No expense data yet.")

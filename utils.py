@@ -1,8 +1,13 @@
 """
-utils.py — Shared constants, formatting helpers, CSS, and UI utilities.
+utils.py — Shared constants, currency engine, formatting helpers, CSS, and network utilities.
 """
 
+import io
+import os
 import socket
+import calendar
+from datetime import date as _date, timedelta as _td
+
 import streamlit as st
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -26,11 +31,29 @@ INCOME_SOURCES  = ["Primary Salary","Freelance / Side Income","Investment Return
 SAVINGS_GOALS   = ["Emergency Fund","Vacation / Travel","Investment Account","Down Payment","Other"]
 CHART_COLORS    = ["#0F3460","#E94560","#00B050","#F4A261","#457B9D","#A8DADC","#E9C46A","#2A9D8F"]
 CAT_LIST        = list(CATEGORIES.keys())
+ALL_SUBCATS     = sorted({s for subs in CATEGORIES.values() for s in subs})
 
 SUPPORTED_CURRENCIES = {
     "EUR": "€",  "RSD": "din", "USD": "$",   "GBP": "£",
     "CHF": "CHF","HRK": "kn",  "BAM": "KM",  "HUF": "Ft",
     "RON": "lei","BGN": "лв",  "PLN": "zł",  "CZK": "Kč",
+}
+
+# 1 EUR = X in that currency. These are editable fallbacks; the user's own
+# values live in user_settings.currency_rates.
+DEFAULT_RATES = {
+    "EUR": 1.0,
+    "RSD": 117.0,
+    "USD": 1.08,
+    "GBP": 0.85,
+    "CHF": 0.94,
+    "HRK": 7.5345,
+    "BAM": 1.9558,
+    "HUF": 400.0,
+    "RON": 5.0,
+    "BGN": 1.9558,
+    "PLN": 4.3,
+    "CZK": 25.0,
 }
 
 NEAR_LIMIT_THRESHOLD  = 0.85
@@ -42,32 +65,115 @@ MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
 
 
-# ── Formatting ────────────────────────────────────────────────────────────────
+# ── Currency engine ───────────────────────────────────────────────────────────
+#
+# All amounts are stored twice: the original (amount, currency) and the EUR
+# base value (amount_eur) snapshotted at entry time. Displaying the stored
+# original amount whenever the display currency matches the row's currency
+# means editing exchange rates later never rewrites history.
 
 def get_currency_symbol(currency: str) -> str:
     return SUPPORTED_CURRENCIES.get(currency, currency)
 
 
-def to_display(eur: float, currency: str, rate: float) -> float:
-    """Convert EUR amount to display currency."""
-    if currency == "RSD":
-        return eur * rate
-    return eur
+def get_rates(settings: dict) -> dict:
+    """Return the per-currency rate table (1 EUR = X) for a settings dict."""
+    rates = dict(DEFAULT_RATES)
+    stored = settings.get("currency_rates")
+    if isinstance(stored, dict):
+        for k, v in stored.items():
+            try:
+                rates[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+    else:
+        # Legacy installs: a single exchange_rate column (EUR -> RSD).
+        legacy = settings.get("exchange_rate")
+        if legacy:
+            try:
+                rates["RSD"] = float(legacy)
+            except (TypeError, ValueError):
+                pass
+    rates["EUR"] = 1.0
+    return rates
 
 
-def fmt(eur: float, currency: str, rate: float) -> str:
-    """Format a EUR value for display in the chosen currency."""
-    v = to_display(eur, currency, rate)
+def to_eur(amount: float, currency: str, rates: dict) -> float:
+    """Convert a local-currency amount into its EUR base value."""
+    if currency == "EUR":
+        return round(float(amount), 4)
+    r = rates.get(currency, 1.0) or 1.0
+    return round(float(amount) / r, 4)
+
+
+def to_display(eur: float, currency: str, rates: dict) -> float:
+    """Convert a EUR-based aggregate into the display currency."""
+    if currency == "EUR":
+        return float(eur)
+    return float(eur) * (rates.get(currency, 1.0) or 1.0)
+
+
+def to_display_row(eur: float, orig_amount: float, orig_currency: str,
+                   currency: str, rates: dict) -> float:
+    """Convert a stored row for display; the original amount wins when the
+    row's currency equals the display currency (history never mutates)."""
+    if orig_currency == currency:
+        return float(orig_amount)
+    return to_display(eur, currency, rates)
+
+
+def _fmt_number(v: float, currency: str) -> str:
     sym = get_currency_symbol(currency)
     if currency in ("RSD", "HUF", "HRK"):
         return f"{v:,.0f} {sym}"
     return f"{sym}{v:,.2f}"
 
 
-def fmt_both(eur: float, rate: float) -> str:
-    """Show value in both EUR and RSD."""
-    return f"€{eur:,.2f}  /  {eur * rate:,.0f} din"
+def fmt(eur: float, currency: str, rates: dict) -> str:
+    """Format a EUR-based aggregate in the display currency."""
+    return _fmt_number(to_display(eur, currency, rates), currency)
 
+
+def fmt_row(eur: float, orig_amount: float, orig_currency: str,
+            currency: str, rates: dict) -> str:
+    """Format a stored row in the display currency, preserving original values."""
+    return _fmt_number(to_display_row(eur, orig_amount, orig_currency, currency, rates),
+                       currency)
+
+
+def fmt_dual(orig_amount: float, orig_currency: str, eur: float) -> str:
+    """Show the original amount plus its EUR equivalent, e.g. '10,000 din / €85.47'."""
+    if orig_currency == "EUR":
+        return f"€{eur:,.2f}"
+    return f"{_fmt_number(float(orig_amount), orig_currency)} / €{eur:,.2f}"
+
+
+# ── Salary-cycle math (forecast) ──────────────────────────────────────────────
+
+def compute_salary_cycle(today: _date, salary_day: int = 10,
+                         latest_salary: _date | None = None) -> tuple[_date, _date]:
+    """Return (period_start, period_end) for a salary cycle.
+
+    period_end is the day before the next cycle start. Month-end salary days
+    (29/30/31) are clamped with calendar.monthrange so they never raise.
+    """
+    if latest_salary is not None:
+        period_start = latest_salary
+    elif today.day >= salary_day:
+        period_start = _date(today.year, today.month, salary_day)
+    elif today.month > 1:
+        period_start = _date(today.year, today.month - 1, salary_day)
+    else:
+        period_start = _date(today.year - 1, 12, salary_day)
+
+    next_m  = period_start.month + 1 if period_start.month < 12 else 1
+    next_y  = period_start.year if period_start.month < 12 else period_start.year + 1
+    last_day = calendar.monthrange(next_y, next_m)[1]
+    period_end = _date(next_y, next_m, min(period_start.day, last_day)) - _td(days=1)
+    return period_start, period_end
+
+
+# ── Formatting helpers ────────────────────────────────────────────────────────
 
 def pbar(pct: float, color: str) -> str:
     """Return an HTML progress bar string."""
@@ -75,6 +181,12 @@ def pbar(pct: float, color: str) -> str:
     return (f'<div class="pw">'
             f'<div class="pb" style="width:{width:.1f}%;background:{color};"></div>'
             f'</div>')
+
+
+def to_excel(df) -> bytes:
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
 
 
 # ── Error helpers ─────────────────────────────────────────────────────────────
@@ -94,8 +206,6 @@ def try_or_error(fn, fallback, friendly_msg: str):
         safe_error(f"{friendly_msg} (Detail: {e})")
         return fallback
 
-
-# ── Help expander ─────────────────────────────────────────────────────────────
 
 def help_expander(title: str, content: str):
     with st.expander(f"ℹ️ {title}"):
@@ -171,15 +281,59 @@ def inject_mobile_css():
     """, unsafe_allow_html=True)
 
 
-# ── Network ───────────────────────────────────────────────────────────────────
+# ── Network (LAN phone access) ───────────────────────────────────────────────
 
-@st.cache_data(ttl=300)
-def get_ip() -> str:
+def get_server_port() -> int:
+    """Port the running Streamlit server listens on."""
+    try:
+        return int(st.get_option("server.port"))
+    except Exception:
+        pass
+    try:
+        return int(os.environ.get("STREAMLIT_SERVER_PORT", APP_PORT))
+    except Exception:
+        return APP_PORT
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_lan_urls(port: int):
+    """Return (urls, hostname) for this machine's LAN addresses.
+
+    Works without internet access: the UDP probe to 8.8.8.8 is a best-effort
+    hint, and we always fall back to the hostname's own addresses.
+    """
+    ips = set()
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        ips.add(s.getsockname()[0])
         s.close()
-        return ip
     except Exception:
-        return "your-pc-ip"
+        pass
+
+    hostname = None
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except Exception:
+        pass
+
+    urls = []
+    for ip in sorted(ips):
+        if ip.startswith(("127.", "169.254.")):
+            continue
+        urls.append(f"http://{ip}:{port}")
+    return urls, hostname
+
+
+def qr_svg(url: str) -> str:
+    """Return an inline SVG QR code for the given URL (pure Python, no Pillow)."""
+    import qrcode
+    from qrcode.image.svg import SvgImage
+    img = qrcode.make(url, image_factory=SvgImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue().decode("utf-8")

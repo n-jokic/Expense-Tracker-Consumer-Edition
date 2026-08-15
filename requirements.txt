@@ -1,4 +1,4 @@
-streamlit>=1.32.0
+streamlit>=1.50
 pandas>=2.0.0
 plotly>=5.0.0
 sqlalchemy>=2.0.0
@@ -6,3 +6,4 @@ bcrypt>=4.0.0
 openpyxl>=3.0.0
 pyyaml>=6.0.0
 cryptography>=41.0.0
+qrcode>=8.0

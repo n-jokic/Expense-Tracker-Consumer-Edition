@@ -3,7 +3,12 @@ auth.py — Authentication module for Expense Tracker v3.
 Handles registration, login, session management via bcrypt + SQLite.
 """
 
+import os
 import re
+import logging
+from collections import defaultdict, deque
+from datetime import datetime
+
 import streamlit as st
 import bcrypt
 
@@ -11,6 +16,8 @@ from db import (
     create_user, get_user_by_username, username_exists, email_exists,
     update_user_password, get_session, log_audit, init_db
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Password helpers ──────────────────────────────────────────────────────────
@@ -23,10 +30,54 @@ def verify_password(plain: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
     except Exception as e:
-        # Surface real errors so they're not silently swallowed
-        import streamlit as st
-        st.error(f"Auth error (please contact support): {e}")
+        # Log for the operator; never echo the raw error to the UI.
+        logger.warning("Password verification failed: %s", e)
         return False
+
+
+# ── Login throttling (in-memory; per client + username) ──────────────────────
+
+_attempts = defaultdict(deque)
+MAX_ATTEMPTS   = 5
+WINDOW_SECONDS = 60
+
+
+def _client_key() -> str:
+    try:
+        fwd = st.context.headers.get("X-Forwarded-For")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    except Exception:
+        pass
+    return "local"
+
+
+def _throttled(key: str) -> bool:
+    now = datetime.now()
+    dq = _attempts[key]
+    while dq and (now - dq[0]).total_seconds() > WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= MAX_ATTEMPTS:
+        return True
+    dq.append(now)
+    return False
+
+
+def _registration_enabled() -> bool:
+    """Open registration for family LAN use; disable it when hosting publicly.
+
+    Defaults to ENABLED when nothing is configured; set ALLOW_REGISTRATION=false
+    (env var or st.secrets) to close sign-ups.
+    """
+    val = os.environ.get("ALLOW_REGISTRATION")
+    if val is None:
+        try:
+            val = st.secrets.get("ALLOW_REGISTRATION")
+        except Exception:
+            val = None
+    if val is None:
+        return True
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 # ── Validation helpers ────────────────────────────────────────────────────────
@@ -74,6 +125,10 @@ def register_user(username: str, email: str, password: str, display_name: str) -
 def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
     username = username.strip().lower()          # normalise — matches registration
     password = password.strip()                  # remove accidental whitespace
+
+    if _throttled(f"{_client_key()}|{username}"):
+        return False, None, "Too many attempts. Please wait a minute and try again."
+
     user = get_user_by_username(username)
 
     if not user:
@@ -106,8 +161,10 @@ def change_password(user_id: int, old_password: str, new_password: str) -> tuple
 
 def logout():
     for key in ["authenticated", "user_id", "username", "display_name",
-                "household_id", "onboarding_complete", "onboarding_step"]:
+                "household_id", "onboarding_complete", "onboarding_step",
+                "settings", "db_version", "dc", "rates"]:
         st.session_state.pop(key, None)
+    st.cache_data.clear()
 
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
@@ -122,14 +179,17 @@ def render_login_page():
 
     col_left, col_center, col_right = st.columns([1, 2, 1])
     with col_center:
-        tab_login, tab_register = st.tabs(["🔑 Login", "✨ Create Account"])
+        if _registration_enabled():
+            tab_login, tab_register = st.tabs(["🔑 Login", "✨ Create Account"])
+        else:
+            tab_login = st.tabs(["🔑 Login"])[0]
 
         # ── Login tab ─────────────────────────────────────────────────────────
         with tab_login:
             with st.form("login_form"):
                 username = st.text_input("Username", placeholder="your_username")
                 password = st.text_input("Password", type="password", placeholder="••••••••")
-                submitted = st.form_submit_button("Login →", use_container_width=True, type="primary")
+                submitted = st.form_submit_button("Login →", width="stretch", type="primary")
 
             if submitted:
                 if not username or not password:
@@ -149,29 +209,30 @@ def render_login_page():
                         st.error(f"🔒 {msg}")
 
         # ── Register tab ──────────────────────────────────────────────────────
-        with tab_register:
-            with st.form("register_form"):
-                r_display = st.text_input("Your name", placeholder="e.g. Sandra")
-                r_username = st.text_input("Username", placeholder="min. 3 characters")
-                r_email    = st.text_input("Email address", placeholder="you@example.com")
-                r_pass     = st.text_input("Password", type="password",
-                                           placeholder="min. 8 chars, include a number")
-                r_confirm  = st.text_input("Confirm password", type="password", placeholder="••••••••")
-                submitted_r = st.form_submit_button("Create Account →",
-                                                    use_container_width=True, type="primary")
+        if _registration_enabled():
+            with tab_register:
+                with st.form("register_form"):
+                    r_display = st.text_input("Your name", placeholder="e.g. Sandra")
+                    r_username = st.text_input("Username", placeholder="min. 3 characters")
+                    r_email    = st.text_input("Email address", placeholder="you@example.com")
+                    r_pass     = st.text_input("Password", type="password",
+                                               placeholder="min. 8 chars, include a number")
+                    r_confirm  = st.text_input("Confirm password", type="password", placeholder="••••••••")
+                    submitted_r = st.form_submit_button("Create Account →",
+                                                        width="stretch", type="primary")
 
-            if submitted_r:
-                if r_pass != r_confirm:
-                    st.error("Passwords don't match. Please try again.")
-                else:
-                    ok, msg = register_user(r_username, r_email, r_pass, r_display)
-                    if ok:
-                        st.success(f"✅ {msg} Please log in.")
+                if submitted_r:
+                    if r_pass != r_confirm:
+                        st.error("Passwords don't match. Please try again.")
                     else:
-                        st.error(f"⚠️ {msg}")
+                        ok, msg = register_user(r_username, r_email, r_pass, r_display)
+                        if ok:
+                            st.success(f"✅ {msg} Please log in.")
+                        else:
+                            st.error(f"⚠️ {msg}")
 
         st.markdown("<br><p style='text-align:center;color:#aaa;font-size:12px;'>"
-                    "Your data is stored locally on this device.</p>", unsafe_allow_html=True)
+                    "Your data is stored on the computer running this app.</p>", unsafe_allow_html=True)
 
 
 def require_auth() -> bool:

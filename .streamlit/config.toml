@@ -7,7 +7,9 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 10
-enableCORS = false
+# Serve on all interfaces so phones on the same Wi-Fi can connect.
+# XSRF protection stays enabled (default) — enableCORS is left alone.
+address = "0.0.0.0"
 
 [browser]
 gatherUsageStats = false

@@ -9,7 +9,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from utils import CATEGORIES, CAT_LIST, MAX_AMOUNT
+import queries as q
+from utils import CATEGORIES, CAT_LIST, ALL_SUBCATS, MAX_AMOUNT
 from db import add_expense
 
 # ── Keyword-based auto-categorisation ────────────────────────────────────────
@@ -135,44 +136,58 @@ def detect_bank_format(df: pd.DataFrame) -> str:
     return "generic"
 
 
+def _pick(df: pd.DataFrame, names, fallback_idx: int) -> pd.Series:
+    """Return the first matching column, else the column at fallback_idx (safe)."""
+    for n in names:
+        if n in df.columns:
+            return df[n]
+    if df.shape[1] > fallback_idx:
+        return df.iloc[:, fallback_idx]
+    return pd.Series(index=df.index, dtype=object)
+
+
 def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
     """Return DataFrame with columns: date, description, amount, currency."""
     try:
         if bank_format == "revolut":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(df.get("Started Date", df.iloc[:, 0]), errors="coerce")
-            out["description"] = df.get("Description", df.iloc[:, 2]).astype(str)
-            out["amount"]      = pd.to_numeric(df.get("Amount", df.iloc[:, 5]), errors="coerce")
+            out["date"]        = pd.to_datetime(_pick(df, ["Started Date"], 0), errors="coerce")
+            out["description"] = _pick(df, ["Description"], 2).astype(str)
+            out["amount"]      = pd.to_numeric(_pick(df, ["Amount"], 5), errors="coerce")
             out["currency"]    = df.get("Currency", "EUR")
 
         elif bank_format == "n26":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(df.get("Date", df.iloc[:, 0]), errors="coerce")
-            out["description"] = df.get("Payee", df.get("Partner Name", df.iloc[:, 1])).astype(str)
-            amt_col = next((c for c in df.columns if "amount" in c.lower()), df.columns[-1])
-            out["amount"]      = pd.to_numeric(df[amt_col], errors="coerce")
+            out["date"]        = pd.to_datetime(_pick(df, ["Date"], 0), errors="coerce")
+            out["description"] = _pick(df, ["Payee", "Partner Name"], 1).astype(str)
+            amt_col = next((c for c in df.columns if "amount" in c.lower()), None)
+            amt = df[amt_col] if amt_col is not None else (
+                df.iloc[:, -1] if df.shape[1] else pd.Series(dtype=object))
+            out["amount"]      = pd.to_numeric(amt, errors="coerce")
             out["currency"]    = "EUR"
 
         elif bank_format == "wise":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(df.get("Date", df.iloc[:, 0]), errors="coerce")
-            out["description"] = df.get("Description", df.iloc[:, 2]).astype(str)
-            out["amount"]      = pd.to_numeric(df.get("Source amount (after fees)",
-                                                df.get("Amount", df.iloc[:, 3])), errors="coerce")
+            out["date"]        = pd.to_datetime(_pick(df, ["Date"], 0), errors="coerce")
+            out["description"] = _pick(df, ["Description"], 2).astype(str)
+            out["amount"]      = pd.to_numeric(
+                _pick(df, ["Source amount (after fees)", "Amount"], 3), errors="coerce")
             out["currency"]    = df.get("Source currency", "EUR")
 
         else:  # generic
             out = pd.DataFrame()
             # Try to find date, description, amount columns by name pattern
-            date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
+            date_col = next((c for c in df.columns if "date" in c.lower()),
+                            df.columns[0] if df.shape[1] else None)
             desc_col = next((c for c in df.columns
                              if any(x in c.lower() for x in ["desc","payee","merchant","name","detail"])),
-                            df.columns[1])
-            amt_col  = next((c for c in df.columns if "amount" in c.lower()), df.columns[-1])
+                            df.columns[1] if df.shape[1] > 1 else None)
+            amt_col  = next((c for c in df.columns if "amount" in c.lower()),
+                            df.columns[-1] if df.shape[1] else None)
             cur_col  = next((c for c in df.columns if "currency" in c.lower()), None)
-            out["date"]        = pd.to_datetime(df[date_col], errors="coerce")
-            out["description"] = df[desc_col].astype(str)
-            out["amount"]      = pd.to_numeric(df[amt_col], errors="coerce")
+            out["date"]        = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.Series(dtype=object)
+            out["description"] = df[desc_col].astype(str) if desc_col else pd.Series(dtype=object)
+            out["amount"]      = pd.to_numeric(df[amt_col], errors="coerce") if amt_col else pd.Series(dtype=object)
             out["currency"]    = df[cur_col] if cur_col else "EUR"
 
         return out.dropna(subset=["date", "amount"])
@@ -183,7 +198,19 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 
-def render_bank_import_page(user_id: int, rate: float):
+def _to_eur_amount(amount: float, currency: str, rates: dict) -> float:
+    """Convert a bank row amount to its EUR base value."""
+    cur = str(currency or "EUR").strip().upper()
+    if cur == "EUR":
+        return round(float(amount), 4)
+    r = rates.get(cur)
+    if r:
+        return round(float(amount) / r, 4)
+    # Unknown currency: assume 1:1 and flag it to the user via the review table.
+    return round(float(amount), 4)
+
+
+def render_bank_import_page(user_id: int, rates: dict):
     st.title("🏦 Import Bank Statement")
     st.caption("Import expenses directly from your bank's CSV export — we'll auto-categorise them for you.")
 
@@ -199,6 +226,7 @@ def render_bank_import_page(user_id: int, rate: float):
         - Only **debit transactions** (expenses) will be imported — credits/income are skipped.
         - Negative amounts are treated as expenses; positive amounts are skipped.
         - You can review and correct the category for each row before importing.
+        - Rows that match an expense you already logged are skipped automatically.
         """)
 
     uploaded = st.file_uploader("Upload your bank CSV", type=["csv"])
@@ -212,7 +240,7 @@ def render_bank_import_page(user_id: int, rate: float):
         return
 
     st.subheader("📋 Preview")
-    st.dataframe(raw.head(5), use_container_width=True)
+    st.dataframe(raw.head(5), hide_index=True)
 
     bank_fmt  = detect_bank_format(raw)
     st.caption(f"Detected format: **{bank_fmt.capitalize()}**")
@@ -240,63 +268,69 @@ def render_bank_import_page(user_id: int, rate: float):
         lambda d: pd.Series(categorize_expense(d))
     )
 
-    # Convert to EUR if needed
+    # Convert to EUR using the user's rate table
     expenses_only["amount_eur"] = expenses_only.apply(
-        lambda r: r["amount"] / rate if str(r.get("currency", "EUR")).upper() == "RSD"
-        else r["amount"], axis=1
+        lambda r: _to_eur_amount(r["amount"], r.get("currency", "EUR"), rates), axis=1
     )
 
     st.subheader(f"✏️ Review & edit ({len(expenses_only)} rows)")
-    st.caption("Correct the category for any row before importing.")
+    st.caption("Correct categories and untick any row you don't want to import.")
 
-    # Editable category selection per row
-    display_rows = []
-    for i, (_, row) in enumerate(expenses_only.iterrows()):
-        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
-        with c1:
-            st.write(row["date"].strftime("%d %b %Y") if pd.notna(row["date"]) else "—")
-        with c2:
-            st.write(str(row["description"])[:35])
-        with c3:
-            cat = st.selectbox("Category", CAT_LIST,
-                               index=CAT_LIST.index(row["category"]) if row["category"] in CAT_LIST else 0,
-                               key=f"imp_cat_{i}", label_visibility="collapsed")
-        with c4:
-            sub_list = [""] + CATEGORIES.get(cat, [])
-            default_sub = row["subcategory"] if row["subcategory"] in sub_list else ""
-            sub = st.selectbox("Subcategory", sub_list,
-                               index=sub_list.index(default_sub),
-                               key=f"imp_sub_{i}", label_visibility="collapsed")
-        with c5:
-            st.write(f"€{row['amount_eur']:,.2f}")
+    review = expenses_only[["date","description","amount","currency","amount_eur",
+                            "category","subcategory"]].copy()
+    review["include"] = True
 
-        display_rows.append({
-            "date": row["date"].date() if pd.notna(row["date"]) else date.today(),
-            "description": str(row["description"]),
-            "amount": float(row["amount"]),
-            "currency": str(row.get("currency", "EUR")).upper(),
-            "amount_eur": float(row["amount_eur"]),
-            "category": cat,
-            "subcategory": sub,
-        })
+    edited = st.data_editor(
+        review,
+        num_rows="fixed",
+        hide_index=True,
+        key="bank_review",
+        column_config={
+            "date": st.column_config.DateColumn("Date"),
+            "description": st.column_config.TextColumn("Description"),
+            "category": st.column_config.SelectboxColumn("Category", options=CAT_LIST),
+            "subcategory": st.column_config.SelectboxColumn("Subcategory", options=ALL_SUBCATS),
+            "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+            "currency": st.column_config.TextColumn("Currency"),
+            "amount_eur": None,
+            "include": st.column_config.CheckboxColumn("Import", default=True),
+        },
+    )
+
+    n_include = int(edited["include"].sum()) if not edited.empty else 0
 
     st.divider()
-    if st.button(f"✅ Import {len(display_rows)} expenses", type="primary", use_container_width=True):
+    if st.button(f"✅ Import {n_include} expenses", type="primary", width="stretch"):
+        existing = q.expenses(user_id)
+        existing_keys = set()
+        if not existing.empty:
+            existing_keys = set(zip(
+                existing["date"].dt.date,
+                existing["description"].str.strip().str.lower(),
+                existing["amount_eur"].round(2),
+            ))
+
         imported = 0
         skipped  = 0
-        for row in display_rows:
+        for _, row in edited[edited["include"]].iterrows():
             try:
-                if row["amount_eur"] <= 0 or row["amount_eur"] > MAX_AMOUNT:
+                ae = float(row["amount_eur"])
+                if ae <= 0 or ae > MAX_AMOUNT:
+                    skipped += 1
+                    continue
+                d = row["date"].date() if hasattr(row["date"], "date") else pd.Timestamp(row["date"]).date()
+                key = (d, str(row["description"]).strip().lower(), round(ae, 2))
+                if key in existing_keys:
                     skipped += 1
                     continue
                 add_expense(user_id, {
-                    "date": row["date"],
+                    "date": d,
                     "category": row["category"],
-                    "subcategory": row["subcategory"],
-                    "description": row["description"],
-                    "amount": row["amount"],
-                    "currency": row["currency"],
-                    "amount_eur": row["amount_eur"],
+                    "subcategory": row["subcategory"] or "",
+                    "description": str(row["description"]),
+                    "amount": float(row["amount"]),
+                    "currency": str(row["currency"]).upper(),
+                    "amount_eur": ae,
                     "recurring": False,
                     "notes": "Imported from bank statement",
                 })
@@ -305,9 +339,10 @@ def render_bank_import_page(user_id: int, rate: float):
                 skipped += 1
 
         if imported > 0:
+            q.bump_db_version()
             st.success(f"✅ Successfully imported **{imported}** expenses!")
             if skipped:
-                st.caption(f"{skipped} row(s) skipped due to invalid amounts.")
+                st.caption(f"{skipped} row(s) skipped (invalid amounts or duplicates).")
             st.balloons()
         else:
             st.error("No expenses could be imported. Please check the data.")

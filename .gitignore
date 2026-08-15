@@ -23,6 +23,7 @@ env/
 .env
 *.env
 secrets.toml
+.secret_key
 
 # ── OS clutter ──────────────────────────────────────────────────────────────────
 .DS_Store

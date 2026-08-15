@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - app-data:/app/data
+    environment:
+      # Set to "false" when exposing this publicly
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
+      # For PostgreSQL hosting: uncomment and set, then add psycopg2-binary
+      # - DATABASE_URL=postgresql+psycopg2://user:password@host:5432/expenses
+    restart: unless-stopped
+
+volumes:
+  app-data:

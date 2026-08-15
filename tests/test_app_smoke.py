@@ -1,0 +1,100 @@
+"""
+App smoke tests: run the real app with Streamlit's AppTest harness and
+execute every page for an authenticated user, asserting no exceptions.
+"""
+
+import os
+
+import pytest
+
+from streamlit.testing.v1 import AppTest
+
+from db import create_user, delete_user_account, username_exists
+from auth import hash_password
+
+APP_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))
+APP_DIR  = os.path.dirname(APP_PATH)
+
+TEST_USERNAME = "smoke_test_user"
+TEST_EMAIL    = "smoke_test@example.com"
+
+PAGES = [
+    "dashboard.py",
+    "log_expense.py",
+    "log_income.py",
+    "savings.py",
+    "recurring.py",
+    "forecast.py",
+    "insights_view.py",
+    "bank_import_view.py",
+    "audit_log.py",
+    "household.py",
+    "settings.py",
+]
+
+
+@pytest.fixture(scope="module")
+def smoke_user():
+    if not username_exists(TEST_USERNAME):
+        uid = create_user(TEST_USERNAME, TEST_EMAIL, hash_password("smoke1234"), "Smoke Tester")
+    else:
+        from db import get_user_by_username
+        uid = get_user_by_username(TEST_USERNAME)["id"]
+    yield uid
+    delete_user_account(uid)
+
+
+def _authenticated_at(smoke_user) -> AppTest:
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.session_state["authenticated"] = True
+    at.session_state["user_id"] = smoke_user
+    at.session_state["username"] = TEST_USERNAME
+    at.session_state["display_name"] = "Smoke Tester"
+    at.session_state["household_id"] = None
+    at.session_state["onboarding_complete"] = True
+    at.session_state["onboarding_step"] = 0
+    return at
+
+
+def test_login_page_renders():
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    # The login form should be present
+    labels = {t.label for t in at.text_input}
+    assert {"Username", "Password"} <= labels
+    # Registration must be available by default (regression: it was hidden
+    # when no ALLOW_REGISTRATION env var was set)
+    tab_labels = [t.label for t in at.tabs]
+    assert any("Create Account" in lbl for lbl in tab_labels)
+
+
+def test_registration_disabled_when_configured(monkeypatch):
+    monkeypatch.setenv("ALLOW_REGISTRATION", "false")
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    tab_labels = [t.label for t in at.tabs]
+    assert not any("Create Account" in lbl for lbl in tab_labels)
+
+
+def test_main_app_renders_and_navigates(smoke_user):
+    at = _authenticated_at(smoke_user)
+    at.run()
+    assert not at.exception, f"main app failed: {at.exception}"
+    sidebar_text = " ".join(str(md.value) for md in at.sidebar.markdown)
+    assert "Smoke Tester" in sidebar_text
+
+    for page in PAGES:
+        at.switch_page(os.path.join(APP_DIR, "app_pages", page))
+        at.run()
+        assert not at.exception, f"page {page} failed: {at.exception}"
+
+
+def test_onboarding_gate_blocks_new_users(smoke_user):
+    at = _authenticated_at(smoke_user)
+    at.session_state["onboarding_complete"] = False
+    at.run()
+    assert not at.exception
+    # Onboarding step 0 shows the welcome heading
+    assert any("Welcome" in str(md.value) for md in at.markdown)

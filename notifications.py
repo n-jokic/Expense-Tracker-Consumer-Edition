@@ -1,8 +1,15 @@
 """
 notifications.py — Email alerts and bill reminders for Expense Tracker v3.
+
+SMTP passwords are stored encrypted (Fernet) and emails are sent from a
+background thread so the UI never blocks on a slow SMTP server.
 """
 
+import os
+import base64
+import hashlib
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import date
@@ -10,7 +17,49 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from utils import fmt, NEAR_LIMIT_THRESHOLD
+import queries as q
+from db import BASE_DIR
+from utils import NEAR_LIMIT_THRESHOLD
+
+
+# ── SMTP password encryption (Fernet) ─────────────────────────────────────────
+
+def _fernet_key() -> bytes:
+    try:
+        secret = st.secrets.get("encryption_key")
+    except Exception:
+        secret = None
+    if secret:
+        digest = hashlib.sha256(str(secret).encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest)
+
+    key_path = os.path.join(BASE_DIR, ".secret_key")
+    if os.path.exists(key_path):
+        with open(key_path, "rb") as f:
+            return f.read()
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key()
+    os.makedirs(BASE_DIR, exist_ok=True)
+    with open(key_path, "wb") as f:
+        f.write(key)
+    return key
+
+
+def _encrypt(plain: str) -> str:
+    if not plain:
+        return ""
+    from cryptography.fernet import Fernet
+    return Fernet(_fernet_key()).encrypt(plain.encode("utf-8")).decode("utf-8")
+
+
+def _decrypt(enc: str) -> str:
+    if not enc:
+        return ""
+    from cryptography.fernet import Fernet
+    try:
+        return Fernet(_fernet_key()).decrypt(enc.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return ""
 
 
 # ── Core email sender ─────────────────────────────────────────────────────────
@@ -31,6 +80,11 @@ def send_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_password: st
         return True, "OK"
     except Exception as e:
         return False, str(e)
+
+
+def send_email_async(*args):
+    """Fire-and-forget email from a daemon thread; never blocks the UI."""
+    threading.Thread(target=send_email, args=args, daemon=True).start()
 
 
 # ── Email template helpers ────────────────────────────────────────────────────
@@ -124,7 +178,7 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
 
 def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                                   budgets_df: pd.DataFrame, settings: dict,
-                                  rate: float, DC: str):
+                                  rates: dict, DC: str):
     """Check budget limits and show toasts + optionally send emails."""
     if expenses_df.empty or budgets_df.empty:
         return
@@ -157,16 +211,16 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                     f"€{act_val:,.2f} of €{bud_val:,.2f}")
             st.toast(msg, icon="⚠️")
 
-            # Send email if configured
+            # Send email if configured (background thread — never blocks the UI)
             if (settings.get("email_alerts") and settings.get("alert_email") and
                     settings.get("smtp_host") and settings.get("smtp_user")):
                 html = build_budget_alert_email(
                     st.session_state.get("display_name", ""),
-                    cat, act_val, bud_val, rate
+                    cat, act_val, bud_val, rates.get("RSD", 117.0)
                 )
-                send_email(
+                send_email_async(
                     settings["smtp_host"], int(settings.get("smtp_port", 587)),
-                    settings["smtp_user"], settings.get("smtp_password_enc", ""),
+                    settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
                     settings["alert_email"],
                     f"Budget Alert: {cat} at {int(act_val/bud_val*100)}%", html
                 )
@@ -187,10 +241,12 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
     if not expenses_df.empty:
         m_exp = expenses_df[(expenses_df["date"].dt.year == today.year) &
                              (expenses_df["date"].dt.month == today.month)]
-        logged = set(m_exp["description"].str.strip().tolist())
+        logged = set(zip(m_exp["description"].str.strip().str.lower(),
+                         m_exp["amount_eur"].round(2)))
 
     unlogged = [row for _, row in active.iterrows()
-                if row["description"].strip() not in logged]
+                if (row["description"].strip().lower(),
+                    round(float(row["amount_eur"] or 0.0), 2)) not in logged]
 
     if not unlogged:
         return
@@ -204,14 +260,14 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
             settings.get("smtp_host") and settings.get("smtp_user")):
         st.session_state[sent_key] = True
         for row in unlogged[:3]:  # limit to first 3
-            amt_str = f"€{row['amount_eur']:,.2f}"
+            amt_str = f"€{float(row['amount_eur']):,.2f}"
             html = build_bill_reminder_email(
                 st.session_state.get("display_name", ""),
                 row["description"], amt_str, "Due this month"
             )
-            send_email(
+            send_email_async(
                 settings["smtp_host"], int(settings.get("smtp_port", 587)),
-                settings["smtp_user"], settings.get("smtp_password_enc", ""),
+                settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
                 settings["alert_email"],
                 f"Bill Reminder: {row['description']}", html
             )
@@ -220,8 +276,6 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
 # ── Settings UI ───────────────────────────────────────────────────────────────
 
 def render_notification_settings(user_id: int, settings: dict):
-    from db import save_settings
-
     st.subheader("📧 Email Notifications")
     st.caption("Get budget alerts and bill reminders by email.")
 
@@ -250,9 +304,9 @@ def render_notification_settings(user_id: int, settings: dict):
                                        placeholder="Leave blank to keep existing password")
             c_save, c_test = st.columns(2)
             with c_save:
-                saved = st.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                saved = st.form_submit_button("💾 Save", type="primary", width="stretch")
             with c_test:
-                test  = st.form_submit_button("📤 Send test email", use_container_width=True)
+                test  = st.form_submit_button("📤 Send test email", width="stretch")
 
         if saved:
             updates = {
@@ -263,15 +317,15 @@ def render_notification_settings(user_id: int, settings: dict):
                 "smtp_user": smtp_user,
             }
             if smtp_pass:
-                updates["smtp_password_enc"] = smtp_pass
-            save_settings(user_id, updates)
+                updates["smtp_password_enc"] = _encrypt(smtp_pass)
+            q.save_settings(user_id, updates)
             st.success("✅ Notification settings saved!")
             st.rerun()
 
         if test:
             host = smtp_host or settings.get("smtp_host")
             user = smtp_user or settings.get("smtp_user")
-            pwd  = smtp_pass or settings.get("smtp_password_enc")
+            pwd  = smtp_pass or _decrypt(settings.get("smtp_password_enc") or "")
             to   = alert_email or settings.get("alert_email")
             if not all([host, user, pwd, to]):
                 st.error("Please fill in all SMTP fields before testing.")
@@ -286,7 +340,7 @@ def render_notification_settings(user_id: int, settings: dict):
                 else:
                     st.error(f"Failed to send: {msg}")
     else:
-        if st.button("💾 Save (disabled)", use_container_width=True):
-            save_settings(user_id, {"email_alerts": False})
+        if st.button("💾 Save (disabled)", width="stretch"):
+            q.save_settings(user_id, {"email_alerts": False})
             st.success("Email notifications disabled.")
             st.rerun()

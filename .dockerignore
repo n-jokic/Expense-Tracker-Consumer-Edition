@@ -1,0 +1,15 @@
+.git
+.gitignore
+data/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+.streamlit/secrets.toml
+.secret_key
+tests/
+Dockerfile
+compose.yaml
+README.md
