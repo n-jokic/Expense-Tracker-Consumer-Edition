@@ -11,7 +11,8 @@ from db import (
     get_expenses, get_income, get_savings, get_budgets, get_recurring,
     get_audit_log, get_settings as _db_get_settings,
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
-    get_big_purchases,
+    get_big_purchases, get_loans, get_loan_payments,
+    get_holdings, get_holding_prices,
 )
 
 
@@ -58,6 +59,26 @@ def _big_purchases(user_id: int, version: int):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _loans(user_id: int, version: int):
+    return get_loans(user_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _loan_payments(user_id: int, loan_id: str, version: int):
+    return get_loan_payments(user_id, loan_id)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _holdings(user_id: int, version: int):
+    return get_holdings(user_id)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _holding_prices(user_id: int, version: int):
+    return get_holding_prices(user_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _audit(user_id: int, version: int, limit: int):
     return get_audit_log(user_id, limit=limit)
 
@@ -96,6 +117,22 @@ def recurring(user_id: int):
 
 def big_purchases(user_id: int):
     return _big_purchases(user_id, db_version())
+
+
+def loans(user_id: int):
+    return _loans(user_id, db_version())
+
+
+def loan_payments(user_id: int, loan_id: str):
+    return _loan_payments(user_id, loan_id, db_version())
+
+
+def holdings(user_id: int):
+    return _holdings(user_id, db_version())
+
+
+def holding_prices(user_id: int):
+    return _holding_prices(user_id, db_version())
 
 
 def audit(user_id: int, limit: int = 200):

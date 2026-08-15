@@ -328,6 +328,66 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
     st.session_state[sent_key] = sent
 
 
+def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
+                         expenses_df: pd.DataFrame, settings: dict):
+    """Sidebar count + email reminders for loan payments not yet logged.
+
+    Loans with a payment_day are emailed N days before the due day (clamped
+    to the month length); one email per loan per month.
+    """
+    if loans_df is None or loans_df.empty:
+        return
+    today = date.today()
+
+    paid_loan_ids = set()
+    if not expenses_df.empty and "loan_id" in expenses_df.columns:
+        m_exp = expenses_df[(expenses_df["date"].dt.year == today.year) &
+                            (expenses_df["date"].dt.month == today.month)]
+        paid_loan_ids = set(m_exp["loan_id"].dropna().astype(str))
+
+    active = loans_df[loans_df["status"] == "active"]
+    unlogged = [row for _, row in active.iterrows()
+                if str(row["id"]) not in paid_loan_ids]
+    if not unlogged:
+        return
+
+    st.sidebar.warning(f"💳 **{len(unlogged)} loan payment(s)** not logged this month")
+
+    if not (settings.get("email_alerts") and settings.get("alert_email") and
+            settings.get("smtp_host") and settings.get("smtp_user")):
+        return
+
+    days_before  = int(settings.get("bill_reminder_days", 2) or 2)
+    month_length = calendar.monthrange(today.year, today.month)[1]
+    sent_key = f"loan_reminder_sent_{today.year}_{today.month}"
+    sent = set(st.session_state.get(sent_key, set()))
+
+    from finance import annuity_payment
+    for row in unlogged[:5]:
+        key = str(row["id"])
+        if key in sent:
+            continue
+        payment_day = int(row.get("payment_day") or 1)
+        if today.day != due_reminder_day(payment_day, days_before, month_length):
+            continue
+        sent.add(key)
+        monthly = annuity_payment(float(row["principal_eur"] or 0),
+                                  float(row["annual_rate"] or 0),
+                                  int(row["term_months"] or 12))
+        html = build_bill_reminder_email(
+            st.session_state.get("display_name", ""),
+            f"{row['name']} (loan)", f"€{monthly:,.2f}",
+            f"Due {calendar.month_name[today.month]} {payment_day}"
+        )
+        send_email_async(
+            settings["smtp_host"], int(settings.get("smtp_port", 587)),
+            settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
+            settings["alert_email"],
+            f"Loan Payment Reminder: {row['name']}", html
+        )
+    st.session_state[sent_key] = sent
+
+
 def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
                                   settings: dict):
     """Send the weekly spending summary email on Mondays (once per week)."""
@@ -397,10 +457,10 @@ def render_notification_settings(user_id: int, settings: dict):
             c3, c4 = st.columns(2)
             with c3:
                 days_before = st.number_input(
-                    "Bill reminder: days before due",
+                    "Bill / loan reminder: days before due",
                     value=int(settings.get("bill_reminder_days") or 2),
                     min_value=0, max_value=14, step=1,
-                    help="Bills with a due day get an email this many days before they are due.")
+                    help="Bills and loan payments with a due day get an email this many days before they are due.")
             with c4:
                 weekly = st.toggle("Weekly summary email (Mondays)",
                                    value=bool(settings.get("weekly_summary", False)))

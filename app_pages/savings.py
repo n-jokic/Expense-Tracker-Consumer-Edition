@@ -104,13 +104,25 @@ if not dfs.empty:
         total_balance  += bal
     saved_year = float(ydf["deposited_eur"].sum()) if not ydf.empty else 0.0
 
+    # Portfolio value (investments count as savings)
+    portfolio_value = 0.0
+    df_hold = q.holdings(user_id)
+    if not df_hold.empty:
+        for _, h in df_hold.iterrows():
+            cur = str(h["currency"] or "EUR")
+            price_eur = float(h["last_price"] or 0.0)
+            if cur != "EUR" and price_eur > 0:
+                price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
+            portfolio_value += float(h["quantity"] or 0.0) * price_eur
+
     st.divider()
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     for col, lbl, val, cls in [
         (k1, "Total balance",   total_balance,   "pos"),
         (k2, "Saved this year", saved_year,      "pos"),
         (k3, "Interest earned", interest_total,  "pos"),
-        (k4, "Active goals",    None,            "neu"),
+        (k4, "Portfolio",       portfolio_value, "pos"),
+        (k5, "Active goals",    None,            "neu"),
     ]:
         with col:
             v = f"{dfs['goal_name'].nunique()}" if lbl == "Active goals" else fmt(val, DC, rates)

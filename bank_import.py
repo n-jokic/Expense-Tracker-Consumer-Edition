@@ -111,6 +111,14 @@ KEYWORD_MAP = {
     "dropbox":        ("Other", "Subscriptions & Software"),
     "tax":            ("Other", "Taxes & Fees"),
     "anaf":           ("Other", "Taxes & Fees"),
+    # Loans & Debt
+    "loan payment":   ("Loans & Debt", "Loan Repayment"),
+    "installment":    ("Loans & Debt", "Loan Repayment"),
+    "kredit":         ("Loans & Debt", "Loan Repayment"),
+    "credit card":    ("Loans & Debt", "Credit Card"),
+    "mastercard":     ("Loans & Debt", "Credit Card"),
+    "visa":           ("Loans & Debt", "Credit Card"),
+    "interest":       ("Loans & Debt", "Interest"),
 }
 
 

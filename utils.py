@@ -24,6 +24,7 @@ CATEGORIES = {
     "Entertainment": ["Streaming Services","Cinema & Theater","Concerts & Events",
                       "Going Out","Hobbies","Books & Courses","Vacation / Travel"],
     "Personal":      ["Clothing & Accessories","Beauty & Skincare","Haircut & Grooming","Gifts"],
+    "Loans & Debt":  ["Loan Repayment","Interest","Credit Card","Other Debt"],
     "Other":         ["Subscriptions & Software","Taxes & Fees","Charity & Donations","Miscellaneous"],
 }
 

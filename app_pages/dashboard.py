@@ -122,6 +122,33 @@ if not rec_df.empty:
         st.metric("🔁 Fixed costs / year (recurring bills)",
                   f"{fmt(yearly, DC, rates)} · {len(rec_active)} bills")
 
+# Debt KPIs (loans)
+from finance import loan_schedule
+df_loans = q.loans(user_id)
+if not df_loans.empty:
+    total_debt = 0.0
+    free_dates = []
+    for _, row in df_loans.iterrows():
+        if row["status"] != "active":
+            continue
+        pay_df = q.loan_payments(user_id, str(row["id"]))
+        payments = [(r["date"].date(), float(r["amount_eur"]))
+                    for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        sched = loan_schedule(float(row["principal_eur"]), float(row["annual_rate"]),
+                              int(row["term_months"]), row["start_date"].date(),
+                              int(row["payment_day"]), payments)
+        total_debt += sched["remaining_balance"]
+        if sched["payoff_date"]:
+            free_dates.append(sched["payoff_date"])
+    if total_debt > 0 or free_dates:
+        st.caption("")
+        d1, d2 = st.columns(2)
+        with d1:
+            st.metric("💳 Total debt", fmt(total_debt, DC, rates))
+        with d2:
+            free = max(free_dates).strftime("%b %Y") if free_dates else "—"
+            st.metric("Debt-free by", free)
+
 st.divider()
 
 # Budget alerts

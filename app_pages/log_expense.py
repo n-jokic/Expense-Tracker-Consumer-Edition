@@ -9,6 +9,7 @@ import streamlit as st
 
 import queries as q
 from db import add_expense, update_expense, soft_delete_expense, restore_expense, add_recurring
+from ocr import analyze_receipt
 from utils import (
     CATEGORIES, CAT_LIST, ALL_SUBCATS, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt_row, fmt_dual, to_eur, get_currency_symbol,
@@ -24,7 +25,83 @@ st.title("📅 Log expense")
 help_expander("How to log an expense",
               "Choose a category first — the subcategory list will update automatically. "
               "Add a short description so you can search for it later. "
-              "Tick '🔄 Recurring' to also save it as a monthly template.")
+              "Tick '🔄 Recurring' to also save it as a monthly template. "
+              "On your phone, use '📷 Scan a receipt' to photograph the bill — "
+              "the app reads it (OCR), guesses the amount/merchant/category, "
+              "and you accept, edit, or reject the result.")
+
+# ── Receipt scan (OCR on the server; phone just sends the photo) ─────────────
+with st.expander("📷 Scan a receipt (OCR)"):
+    cam_img = st.camera_input("Take a photo of the receipt", key="receipt_cam")
+    up_img  = st.file_uploader("…or upload a photo", type=["png","jpg","jpeg"],
+                               key="receipt_up")
+    image_bytes = None
+    if cam_img is not None:
+        image_bytes = cam_img.getvalue()
+    elif up_img is not None:
+        image_bytes = up_img.getvalue()
+
+    if image_bytes is not None:
+        result = analyze_receipt(image_bytes, q.expenses(user_id))
+        if not result["ok"]:
+            st.warning("📷 OCR isn't available on this machine yet. "
+                       "Install Tesseract (Windows: `winget install UB-Mannheim.TesseractOCR`) "
+                       "and restart the app — see the README for details.")
+        else:
+            st.success("Text recognised — check the details, then save (or fix anything wrong).")
+            with st.expander("Raw OCR text", expanded=False):
+                st.code((result["text"] or "")[:500], language=None)
+
+            with st.form("receipt_form"):
+                r1, r2 = st.columns(2)
+                with r1:
+                    r_date = st.date_input("Date", value=date.today(), key="rcpt_date")
+                    r_cat  = st.selectbox(
+                        "Category", CAT_LIST,
+                        index=CAT_LIST.index(result["category"])
+                        if result["category"] in CAT_LIST else 0,
+                        key="rcpt_cat")
+                    r_sub  = st.selectbox(
+                        "Subcategory", ["—"] + CATEGORIES[r_cat],
+                        index=(list(["—"] + CATEGORIES[r_cat]).index(result["subcategory"])
+                               if result["subcategory"] in CATEGORIES[r_cat] else 0),
+                        key="rcpt_sub")
+                with r2:
+                    r_amt  = st.number_input(f"Amount ({SYM})", value=float(result["amount"] or 0.0),
+                                             min_value=0.0, max_value=MAX_AMOUNT,
+                                             step=0.50, format="%.2f", key="rcpt_amt")
+                    r_desc = st.text_input("Description", value=result["merchant"] or "",
+                                           key="rcpt_desc")
+                r_notes = st.text_input("Notes (optional)", key="rcpt_notes")
+                if result["confidence"] and result["confidence"] > 0:
+                    st.caption(f"Category suggested by your trained classifier "
+                               f"(confidence {result['confidence']:.0%}).")
+                c_save, c_rej = st.columns(2)
+                with c_save:
+                    r_save = st.form_submit_button("✅ Save expense", type="primary", width="stretch")
+                with c_rej:
+                    r_rej = st.form_submit_button("🗑️ Reject", width="stretch")
+
+            if r_save:
+                if not (r_desc.strip() and float(r_amt) > 0):
+                    safe_error("Please add a description and an amount before saving.")
+                else:
+                    ae = to_eur(float(r_amt), DC, rates)
+                    add_expense(user_id, {
+                        "date": r_date,
+                        "category": r_cat,
+                        "subcategory": r_sub if r_sub != "—" else "",
+                        "description": r_desc.strip(),
+                        "amount": float(r_amt), "currency": DC, "amount_eur": ae,
+                        "recurring": False, "notes": (r_notes or "") + " (scanned receipt)",
+                    })
+                    q.bump_db_version()
+                    st.success(f"✅ **{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}")
+                    st.balloons()
+                    st.rerun()
+            if r_rej:
+                st.toast("Receipt discarded — nothing was saved.", icon="🗑️")
+                st.rerun()
 
 oc1, oc2 = st.columns([3, 1])
 with oc1:

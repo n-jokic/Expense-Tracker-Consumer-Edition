@@ -1,0 +1,8 @@
+# Caddy reverse proxy for hosting the Expense Tracker on a VPS.
+# Place next to the app, set your domain, run:  caddy run
+# The app itself:  docker compose up -d   (or DATABASE_URL=... streamlit run app.py)
+
+expenses.example.com {
+    reverse_proxy localhost:8501
+    encode gzip
+}

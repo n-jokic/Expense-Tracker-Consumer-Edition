@@ -23,7 +23,9 @@ PAGES = [
     "log_expense.py",
     "log_income.py",
     "savings.py",
+    "portfolio.py",
     "recurring.py",
+    "loans.py",
     "big_purchases.py",
     "forecast.py",
     "insights_view.py",
@@ -93,6 +95,8 @@ def test_main_app_renders_and_navigates(smoke_user):
     # Regression: the phone-access QR code must render as an image element
     qr_images = [img for img in at.sidebar.image if img.value is not None]
     assert qr_images, "QR code image missing from the sidebar phone-access panel"
+    # ... and offer a download button for it
+    assert any("Download QR" in (b.label or "") for b in at.sidebar.download_button)
 
     for page in PAGES:
         at.switch_page(os.path.join(APP_DIR, "app_pages", page))

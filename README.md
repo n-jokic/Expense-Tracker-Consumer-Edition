@@ -51,30 +51,68 @@ stays the same forever.
 > `data/expense_tracker.db` on the PC — back it up in **Settings → Data**
 > (automatic daily backups are saved to `data/backups/`).
 
+## 🌍 Using the app outside your home network
+
+Three options, in order of simplicity:
+
+1. **Tailscale (recommended, free).** Install Tailscale on the PC and on the
+   phone; both join your private encrypted network. From anywhere, open the
+   app at the PC's tailnet address (e.g. `http://pc-name:8501`) — exactly like
+   being on the home Wi-Fi. Nothing is exposed to the public internet.
+2. **Cloudflare Tunnel (browser only, free).** Run `run_tunnel.bat` after
+   installing `cloudflared` — you get a public `https://…trycloudflare.com`
+   URL that works from any network. ⚠️ The URL is public: set
+   `ALLOW_REGISTRATION=false` first (env var or `.streamlit/secrets.toml`).
+3. **Self-host on a VPS.** `docker compose up -d`, put Caddy (see `Caddyfile`)
+   or nginx in front for HTTPS, set a domain, and optionally point
+   `DATABASE_URL` at a PostgreSQL instance. Disable open registration.
+
+### Receipt OCR setup (optional)
+
+The "📷 Scan a receipt" feature needs Tesseract installed on the server:
+
+```bat
+winget install UB-Mannheim.TesseractOCR
+```
+
+The Docker image installs it automatically. Without Tesseract, the rest of the
+app works normally and the scan control shows a friendly hint instead.
+
 ## Features
 
 - **Log expense / income / savings** — multi-currency, subcategories, notes
 - **Savings goals** — custom goals, deposits *and* withdrawals (balance never
   goes negative), monthly compound interest, yearly KPIs and goal projections
+- **Portfolio** — track stocks/ETFs with free daily prices (Yahoo Finance with
+  a Stooq fallback), gain/loss, allocation and a value-over-time chart
+- **Loans** — principal, rate, duration and payment day; real amortization
+  against your logged payments, payoff dates, and email reminders
 - **Income types** — salaried (fixed salary + one-tap monthly logging, raise
   detection), hourly (hours × rate), bonuses, freelance, investment, rental
 - **Recurring** — monthly bill checklist with due days, one-tap "Log now"
   that lets you record the actual amount (may differ from the expected)
 - **Big purchases** — 4-quadrant priority matrix (expected use vs work-hours
   needed), status tracking, and "bought → log as expense" handoff
+- **📷 Receipt scanning** — photograph a bill on your phone; Tesseract OCR
+  (runs on the server) reads it, guesses amount/merchant/category, and you
+  accept, edit or reject the result
 - **Dashboard** — KPIs with period-over-period deltas, budget progress bars,
-  cumulative net cash flow, fixed costs per year, monthly trends, savings rate
-- **Forecast** — projects current-cycle spending (period-average or 7-day
-  burn rate) against your budget
+  cumulative net cash flow, fixed costs, total debt & debt-free date
+- **Forecast** — period-average, 7-day burn rate, or an ETS machine-learning
+  model with per-category predictions
 - **Insights** — month-over-month, top merchants, no-spend days, unusual
-  expenses, salary/bonus highlights, savings projections
+  expenses (rule-based + IsolationForest ML scan), salary/bonus highlights
 - **Bank import** — Revolut / N26 / Wise / generic CSV with auto-categorisation
-  and duplicate detection
+  (keywords + a classifier learned from your own data) and duplicate detection
 - **Household** — share a combined dashboard with family via invite code
 - **Gamification** — streaks, badges, salary/raise/bonus milestones
 - **Audit log** — every change is recorded
-- **Email alerts** — budget warnings, due-date bill reminders (N days before
-  due), and an optional weekly summary on Mondays (your own SMTP account)
+- **Email alerts** — budget warnings, due-date bill & loan reminders, and an
+  optional weekly summary on Mondays (your own SMTP account)
+
+> All machine-learning models (ETS forecasting, IsolationForest anomaly scan,
+> the learned categorizer) and OCR run **on the server** — your phone only
+> displays the results, so even budget Android phones work identically.
 
 ## Currency model
 

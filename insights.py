@@ -11,6 +11,7 @@ import streamlit as st
 
 from utils import fmt, NEAR_LIMIT_THRESHOLD
 from gamification import detect_raise
+from forecasting import detect_anomalies
 
 
 # ── Analysis functions ────────────────────────────────────────────────────────
@@ -134,7 +135,8 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
 
 def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict,
-                    recurring_df: pd.DataFrame | None = None):
+                    recurring_df: pd.DataFrame | None = None,
+                    loans_df: pd.DataFrame | None = None):
     """Render the full insights page."""
     st.title("💡 Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
@@ -316,6 +318,19 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     f"📆 You spent **{abs(pct):.0f}% {direction}** in the last 30 days "
                     f"({fmt(r_sum, DC, rates)}) than the 30 days before ({fmt(p_sum, DC, rates)})."))
 
+    # ── Insight 12: Loans ─────────────────────────────────────────────────────
+    if loans_df is not None and not loans_df.empty:
+        from finance import annuity_payment
+        active = loans_df[loans_df["status"] == "active"]
+        if not active.empty:
+            monthly_total = sum(
+                annuity_payment(float(r["principal_eur"] or 0), float(r["annual_rate"] or 0),
+                                int(r["term_months"] or 12))
+                for _, r in active.iterrows())
+            cards.append(("info",
+                f"💳 You have **{len(active)} active loan(s)** — "
+                f"**{fmt(monthly_total, DC, rates)}/month** in scheduled payments."))
+
     # ── Render cards ──────────────────────────────────────────────────────────
     if not cards:
         st.info("💡 Log some expenses and income to start seeing personalised insights here.")
@@ -330,6 +345,20 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             st.error(text)
         else:
             st.info(text)
+
+    # ── ML anomaly scan (IsolationForest; runs on the server) ─────────────────
+    anomalies = detect_anomalies(expenses_df)
+    if not anomalies.empty:
+        st.divider()
+        st.subheader("🔍 ML anomaly scan")
+        st.caption("A lightweight isolation-forest model flags transactions that "
+                   "don't fit your usual spending pattern.")
+        show = anomalies.sort_values("date", ascending=False).head(10).copy()
+        show["date"]   = show["date"].dt.strftime("%d %b %Y").fillna("")
+        show["Amount"] = show["amount_eur"].apply(lambda x: fmt(x, DC, rates))
+        show["vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
+        st.dataframe(show[["date","description","category","Amount","vs median"]],
+                     hide_index=True)
 
     # ── Month-over-month table ────────────────────────────────────────────────
     st.divider()

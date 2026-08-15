@@ -115,6 +115,7 @@ class Expense(Base):
     amount_eur   = Column(Float, default=0.0)
     recurring    = Column(Boolean, default=False)
     rec_template_id = Column(String, nullable=True)  # links to recurring.id when logged from a template
+    loan_id      = Column(String, nullable=True)     # links to loans.id when logged as a loan payment
     notes        = Column(String, default="")
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
@@ -213,6 +214,46 @@ class BigPurchase(Base):
     created_at  = Column(DateTime, default=_utcnow)
 
 
+class Loan(Base):
+    __tablename__ = "loans"
+    id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name        = Column(String)
+    principal   = Column(Float, default=0.0)
+    currency    = Column(String, default="EUR")
+    principal_eur = Column(Float, default=0.0)
+    annual_rate = Column(Float, default=0.0)    # percent
+    start_date  = Column(Date)
+    term_months = Column(Integer, default=12)
+    payment_day = Column(Integer, default=1)
+    status      = Column(String, default="active")  # active | paid_off
+    notes       = Column(String, default="")
+    created_at  = Column(DateTime, default=_utcnow)
+
+
+class Holding(Base):
+    __tablename__ = "holdings"
+    id           = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
+    symbol       = Column(String)                # normalized, e.g. AAPL, VWCE.DE
+    name         = Column(String, default="")
+    quantity     = Column(Float, default=0.0)
+    currency     = Column(String, default="EUR")
+    cost_total   = Column(Float, default=0.0)    # invested, original currency
+    cost_eur     = Column(Float, default=0.0)    # invested, EUR
+    last_price   = Column(Float, default=0.0)    # last known price (original currency)
+    last_price_date = Column(DateTime, nullable=True)
+    created_at   = Column(DateTime, default=_utcnow)
+
+
+class HoldingPrice(Base):
+    __tablename__ = "holding_prices"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    holding_id = Column(String, ForeignKey("holdings.id"), nullable=False)
+    date       = Column(Date, default=date.today)
+    price      = Column(Float, default=0.0)
+
+
 class UserSettings(Base):
     __tablename__ = "user_settings"
     id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -288,6 +329,7 @@ def _migrate(engine):
     })
     _add_missing_columns(engine, "expenses", {
         "rec_template_id": "VARCHAR",
+        "loan_id": "VARCHAR",
     })
 
 
@@ -329,7 +371,7 @@ def _parse_dates(df, cols):
 # ── Expenses ──────────────────────────────────────────────────────────────────
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
-             "amount","currency","amount_eur","recurring","rec_template_id","notes",
+             "amount","currency","amount_eur","recurring","rec_template_id","loan_id","notes",
              "is_deleted","deleted_at","created_at"]
 
 def get_expenses(user_id, include_deleted=False):
@@ -352,6 +394,7 @@ def add_expense(user_id, row):
             amount=float(row.get("amount",0)), currency=row.get("currency","EUR"),
             amount_eur=float(row.get("amount_eur",0)), recurring=bool(row.get("recurring",False)),
             rec_template_id=row.get("rec_template_id"),
+            loan_id=row.get("loan_id"),
             notes=row.get("notes","")
         )
         s.add(obj)
@@ -694,6 +737,158 @@ def delete_big_purchase(user_id, bp_id):
             return False
         s.delete(obj)
         log_audit(s, user_id, "DELETE", "big_purchases", bp_id, {})
+    return True
+
+
+# ── Loans ─────────────────────────────────────────────────────────────────────
+
+_LOAN_COLS = ["id","user_id","name","principal","currency","principal_eur",
+              "annual_rate","start_date","term_months","payment_day","status",
+              "notes","created_at"]
+
+
+def get_loans(user_id):
+    with get_session() as s:
+        rows = (s.query(Loan).filter(Loan.user_id == user_id)
+                .order_by(Loan.created_at.asc()).all())
+    df = _to_df(rows, _LOAN_COLS)
+    return _parse_dates(df, ["start_date", "created_at"])
+
+
+def add_loan(user_id, row):
+    loan_id = str(uuid.uuid4())
+    with get_session() as s:
+        obj = Loan(
+            id=loan_id, user_id=user_id,
+            name=row.get("name",""),
+            principal=float(row.get("principal",0)), currency=row.get("currency","EUR"),
+            principal_eur=float(row.get("principal_eur",0)),
+            annual_rate=float(row.get("annual_rate",0)),
+            start_date=row.get("start_date"), term_months=int(row.get("term_months",12)),
+            payment_day=int(row.get("payment_day",1)),
+            status=row.get("status","active"), notes=row.get("notes",""),
+        )
+        s.add(obj)
+        log_audit(s, user_id, "CREATE", "loans", loan_id, row)
+    return loan_id
+
+
+def update_loan(user_id, loan_id, updates):
+    with get_session() as s:
+        obj = s.query(Loan).filter(Loan.id == loan_id, Loan.user_id == user_id).first()
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "loans", loan_id, updates)
+    return True
+
+
+def delete_loan(user_id, loan_id):
+    with get_session() as s:
+        obj = s.query(Loan).filter(Loan.id == loan_id, Loan.user_id == user_id).first()
+        if not obj:
+            return False
+        s.delete(obj)
+        log_audit(s, user_id, "DELETE", "loans", loan_id, {})
+    return True
+
+
+def get_loan_payments(user_id, loan_id):
+    """Payment history for a loan = non-deleted expenses linked to it."""
+    with get_session() as s:
+        rows = (s.query(Expense)
+                .filter(Expense.user_id == user_id, Expense.loan_id == loan_id,
+                        Expense.is_deleted == False)
+                .order_by(Expense.date.asc()).all())
+    df = _to_df(rows, _EXP_COLS)
+    return _parse_dates(df, ["date", "created_at", "deleted_at"])
+
+
+# ── Brokerage holdings ────────────────────────────────────────────────────────
+
+_HOLD_COLS = ["id","user_id","symbol","name","quantity","currency",
+              "cost_total","cost_eur","last_price","last_price_date","created_at"]
+
+_PRICE_COLS = ["id","holding_id","date","price"]
+
+
+def get_holdings(user_id):
+    with get_session() as s:
+        rows = (s.query(Holding).filter(Holding.user_id == user_id)
+                .order_by(Holding.symbol.asc()).all())
+    df = _to_df(rows, _HOLD_COLS)
+    return _parse_dates(df, ["last_price_date", "created_at"])
+
+
+def add_holding(user_id, row):
+    h_id = str(uuid.uuid4())
+    with get_session() as s:
+        obj = Holding(
+            id=h_id, user_id=user_id,
+            symbol=str(row.get("symbol","")).strip().upper(),
+            name=row.get("name",""),
+            quantity=float(row.get("quantity",0)),
+            currency=row.get("currency","EUR"),
+            cost_total=float(row.get("cost_total",0)),
+            cost_eur=float(row.get("cost_eur",0)),
+            last_price=float(row.get("last_price",0)),
+            last_price_date=row.get("last_price_date"),
+        )
+        s.add(obj)
+        log_audit(s, user_id, "CREATE", "holdings", h_id, row)
+    return h_id
+
+
+def update_holding(user_id, h_id, updates):
+    with get_session() as s:
+        obj = s.query(Holding).filter(Holding.id == h_id, Holding.user_id == user_id).first()
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "holdings", h_id, updates)
+    return True
+
+
+def delete_holding(user_id, h_id):
+    with get_session() as s:
+        obj = s.query(Holding).filter(Holding.id == h_id, Holding.user_id == user_id).first()
+        if not obj:
+            return False
+        s.query(HoldingPrice).filter(HoldingPrice.holding_id == h_id).delete()
+        s.delete(obj)
+        log_audit(s, user_id, "DELETE", "holdings", h_id, {})
+    return True
+
+
+def get_holding_prices(user_id):
+    """Price snapshots joined with holdings, ordered by date."""
+    with get_session() as s:
+        rows = (s.query(HoldingPrice, Holding.symbol, Holding.user_id)
+                .join(Holding, HoldingPrice.holding_id == Holding.id)
+                .filter(Holding.user_id == user_id)
+                .order_by(HoldingPrice.date.asc(), Holding.symbol.asc()).all())
+    data = [{"holding_id": hp.holding_id,
+             "symbol": sym, "date": hp.date, "price": hp.price}
+            for hp, sym, _uid in rows]
+    df = pd.DataFrame(data, columns=["holding_id","symbol","date","price"])
+    return _parse_dates(df, ["date"])
+
+
+def add_holding_price(holding_id, price, when=None):
+    """Append a price snapshot (one per holding per day)."""
+    when = when or date.today()
+    with get_session() as s:
+        existing = (s.query(HoldingPrice)
+                    .filter(HoldingPrice.holding_id == holding_id,
+                            HoldingPrice.date == when).first())
+        if existing:
+            existing.price = float(price)
+        else:
+            s.add(HoldingPrice(holding_id=holding_id, date=when, price=float(price)))
     return True
 
 

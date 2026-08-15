@@ -18,4 +18,5 @@ render_insights(
     st.session_state.dc,
     st.session_state.rates,
     q.recurring(user_id),
+    q.loans(user_id),
 )

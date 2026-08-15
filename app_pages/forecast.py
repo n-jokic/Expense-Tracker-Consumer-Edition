@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
+from forecasting import forecast_next_month
 from utils import (
     compute_salary_cycle, fmt, pbar, safe_warning,
 )
@@ -56,10 +57,10 @@ period_exp = dfe[
     (dfe["date"] >= period_start_ts) & (dfe["date"] <= period_end_ts)
 ].copy() if not dfe.empty else pd.DataFrame(columns=["amount_eur","date","category"])
 
-# Burn-rate method: whole-period average vs recent 7-day average
+# Burn-rate method: whole-period average, recent 7-day average, or the ML model
 method = st.segmented_control(
     "Forecast method",
-    ["Period average", "7-day average"],
+    ["Period average", "7-day average", "ML model"],
     default="Period average",
     key="forecast_method",
 )
@@ -69,14 +70,29 @@ st.subheader("💰 Total spending forecast")
 
 total_spent = float(period_exp["amount_eur"].sum()) if not period_exp.empty else 0.0
 
-if method == "7-day average":
+ml_result = None
+if method == "ML model":
+    ml_result = forecast_next_month(dfe if not dfe.empty else pd.DataFrame())
+    if ml_result["fallback"] or ml_result["total"] is None:
+        st.caption("Not enough history for the model yet (needs 6+ months) — "
+                   "showing the period-average projection instead.")
+        daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0
+        projected = daily_avg * days_in_period
+    else:
+        projected = float(ml_result["total"])
+        daily_avg = projected / days_in_period if days_in_period > 0 else 0.0
+        st.caption(
+            f"🧠 ETS model over {ml_result['history_months']} months of history · "
+            f"80% range: **{fmt(ml_result['lower'], DC, rates)} – {fmt(ml_result['upper'], DC, rates)}**"
+        )
+elif method == "7-day average":
     recent = period_exp[period_exp["date"] >= pd.Timestamp(today) - pd.Timedelta(days=6)]
     n_days = min(max(days_elapsed, 1), 7)
     daily_avg = float(recent["amount_eur"].sum()) / n_days if not recent.empty else 0.0
+    projected = daily_avg * days_in_period
 else:
     daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0
-
-projected = daily_avg * days_in_period
+    projected = daily_avg * days_in_period
 
 total_budget = 0.0
 overall_bud  = float(settings.get("monthly_budget", 0.0))
@@ -122,3 +138,13 @@ if total_budget > 0:
     bar_color = "#00B050" if on_track else "#E94560"
     st.markdown(f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({pct_spent:.1f}%)")
     st.markdown(pbar(pct_spent, bar_color), unsafe_allow_html=True)
+
+# Per-category ML forecast table
+if ml_result and not ml_result["fallback"] and ml_result["by_category"]:
+    st.divider()
+    st.subheader("🧠 Predicted next month by category")
+    cats = pd.DataFrame([
+        {"Category": c, "Forecast": fmt(v, DC, rates)}
+        for c, v in sorted(ml_result["by_category"].items(), key=lambda x: -x[1])
+    ])
+    st.dataframe(cats, hide_index=True)
