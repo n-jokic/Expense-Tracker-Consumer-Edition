@@ -6,7 +6,8 @@ import plotly.express as px
 import streamlit as st
 
 import queries as q
-from db import create_household, join_household, leave_household, get_user_by_username
+from db import (create_household, join_household, leave_household,
+                get_user_by_username, get_household_by_member)
 from utils import CHART_COLORS, fmt, to_display, safe_error, help_expander
 
 user_id = st.session_state.user_id
@@ -52,6 +53,14 @@ else:
     st.subheader(f"👥 {len(members)} member(s)")
     for m in members:
         st.markdown(f"- {m['display_name']}")
+
+    # The invite code persists in the households table — always show it so
+    # members can share it again after joining.
+    hh_info = get_household_by_member(user_id)
+    if hh_info and hh_info.get("invite_code"):
+        st.markdown("**Invite code**")
+        st.code(hh_info["invite_code"])
+        st.caption("Share this code — members join with it.")
 
     st.divider()
     if st.button("🚪 Leave household", type="secondary"):

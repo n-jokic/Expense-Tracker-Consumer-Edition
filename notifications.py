@@ -6,8 +6,10 @@ background thread so the UI never blocks on a slow SMTP server.
 """
 
 import os
+import ssl
 import base64
 import hashlib
+import logging
 import smtplib
 import threading
 import calendar
@@ -19,8 +21,11 @@ import streamlit as st
 import pandas as pd
 
 import queries as q
-from db import BASE_DIR
-from utils import NEAR_LIMIT_THRESHOLD, fmt
+from db import BASE_DIR, get_settings as _db_get_settings, \
+    save_settings as _db_save_settings
+from utils import NEAR_LIMIT_THRESHOLD, fmt, effective_category_budgets
+
+log = logging.getLogger("notifications")
 
 
 # ── SMTP password encryption (Fernet) ─────────────────────────────────────────
@@ -75,7 +80,8 @@ def send_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_password: st
         msg.attach(MIMEText(html_body, "html"))
         with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
             server.ehlo()
-            server.starttls()
+            # Verify the server certificate and hostname (CERT_REQUIRED).
+            server.starttls(context=ssl.create_default_context())
             server.login(smtp_user, smtp_password)
             server.sendmail(smtp_user, to_email, msg.as_string())
         return True, "OK"
@@ -83,9 +89,20 @@ def send_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_password: st
         return False, str(e)
 
 
-def send_email_async(*args):
-    """Fire-and-forget email from a daemon thread; never blocks the UI."""
-    threading.Thread(target=send_email, args=args, daemon=True).start()
+def send_email_async(*args, on_done=None):
+    """Send email from a daemon thread; never blocks the UI.
+
+    on_done(ok: bool, error: str) runs in the thread after the attempt —
+    use it to persist "sent" markers ONLY after confirmed delivery.
+    """
+    def _run():
+        ok, err = send_email(*args)
+        if on_done:
+            try:
+                on_done(ok, err)
+            except Exception as e:  # never let a marker failure crash the thread
+                log.warning("marker callback failed: %s", e)
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ── Email template helpers ────────────────────────────────────────────────────
@@ -143,14 +160,15 @@ def build_bill_reminder_email(display_name: str, bill_name: str,
 
 
 def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame,
-                                rate: float, DC: str) -> str:
-    total = float(week_expenses_df["amount_eur"].sum()) if not week_expenses_df.empty else 0.0
-    top3  = ""
+                                rates: dict, DC: str) -> str:
+    total_eur = (float(week_expenses_df["amount_eur"].sum())
+                 if not week_expenses_df.empty else 0.0)
+    top3 = ""
     if not week_expenses_df.empty:
         cats = week_expenses_df.groupby("category")["amount_eur"].sum().nlargest(3)
         rows_html = "".join(
             f"<tr><td style='padding:8px;'>{cat}</td>"
-            f"<td style='padding:8px;text-align:right;'>€{amt:,.2f}</td></tr>"
+            f"<td style='padding:8px;text-align:right;'>{fmt(amt, DC, rates)}</td></tr>"
             for cat, amt in cats.items()
         )
         top3 = f"""
@@ -160,14 +178,14 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
           {rows_html}
         </table>"""
     motivation = ("Great job keeping spending low this week! 🌟"
-                  if total < 100 else
+                  if total_eur < 100 else
                   "Every euro tracked is a step toward your financial goals. 💪")
     body = f"""
     <p>Hi {display_name},</p>
     <p>Here's your weekly spending summary:</p>
     <div style="background:#0F3460;color:#fff;border-radius:10px;padding:16px;text-align:center;margin:16px 0;">
       <div style="font-size:13px;opacity:0.8;">Total spent this week</div>
-      <div style="font-size:28px;font-weight:bold;">€{total:,.2f}</div>
+      <div style="font-size:28px;font-weight:bold;">{fmt(total_eur, DC, rates)}</div>
     </div>
     {'<h3>Top categories:</h3>' + top3 if top3 else ''}
     <p style="color:#555;">{motivation}</p>
@@ -181,15 +199,33 @@ def _sent_markers(settings: dict) -> dict:
     return dict(settings.get("sent_markers") or {})
 
 
-def _persist_marker(user_id: int, settings: dict, kind: str, month_key: str,
+def _persist_marker(user_id: int, kind: str, month_key: str,
                     item_key: str) -> dict:
-    """Record that an alert was sent (survives session loss / restarts)."""
-    markers = _sent_markers(settings)
+    """Record that an alert was sent (survives session loss / restarts).
+
+    Always merges into the LATEST markers read fresh from the DB — never the
+    caller's possibly-stale settings snapshot — so multiple checkers running
+    in the same page load can't clobber each other's markers.
+    """
+    fresh = _db_get_settings(user_id) or {}
+    markers = dict(fresh.get("sent_markers") or {})
     items = set(markers.get(kind + "_" + month_key, []))
-    items.add(item_key)
+    items.add(str(item_key))
     markers[kind + "_" + month_key] = sorted(items)
-    q.save_settings(user_id, {"sent_markers": markers})
+    _db_save_settings(user_id, {"sent_markers": markers})
     return markers
+
+
+def _marker_on_delivery(user_id: int, kind: str, month_key: str, item_key: str):
+    """on_done callback for send_email_async: the marker is persisted only
+    after confirmed delivery; failures are logged and retried next time."""
+    def _cb(ok: bool, err: str):
+        if ok:
+            _persist_marker(user_id, kind, month_key, item_key)
+        else:
+            log.warning("email not delivered (%s/%s/%s): %s — will retry",
+                        kind, month_key, item_key, err)
+    return _cb
 
 
 def due_reminder_day(due_day: int, days_before: int, month_length: int) -> int:
@@ -210,8 +246,13 @@ def _unlogged_templates(recurring_df: pd.DataFrame, expenses_df: pd.DataFrame,
 
     Matching: expense.rec_template_id == template id (new rows), with a
     description+amount fallback for rows logged before template links existed.
+    Templates whose start_month hasn't arrived yet are never "unlogged".
     """
     active = recurring_df[recurring_df["active"] == True]
+    if active.empty:
+        return []
+    from utils import filter_started_templates
+    active = filter_started_templates(active, today.year, today.month)
     if active.empty:
         return []
 
@@ -258,7 +299,7 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                set(markers.get(f"budget_{month_key}", [])))
 
     ca = m_exp.groupby("category")["amount_eur"].sum()
-    cb = m_bud.groupby("category")["budgeted_eur"].sum()
+    cb = effective_category_budgets(m_bud)
 
     for cat in ca.index:
         bud_val = float(cb.get(cat, 0))
@@ -268,14 +309,14 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
         if act_val >= bud_val * NEAR_LIMIT_THRESHOLD and cat not in alerted:
             alerted.add(cat)
             st.session_state[alerted_key] = alerted
-            _persist_marker(user_id, settings, "budget", month_key, cat)
             over = act_val > bud_val
             icon = "🔴" if over else "🟡"
             msg  = (f"{icon} **{cat}** budget {'exceeded' if over else 'nearly full'}: "
                     f"{fmt(act_val, DC, rates)} of {fmt(bud_val, DC, rates)}")
             st.toast(msg, icon="⚠️")
 
-            # Send email if configured (background thread — never blocks the UI)
+            # Send email if configured (background thread — never blocks the UI).
+            # The "sent" marker is persisted only after confirmed delivery.
             if (settings.get("email_alerts") and settings.get("alert_email") and
                     settings.get("smtp_host") and settings.get("smtp_user")):
                 html = build_budget_alert_email(
@@ -286,7 +327,8 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                     settings["smtp_host"], int(settings.get("smtp_port", 587)),
                     settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
                     settings["alert_email"],
-                    f"Budget Alert: {cat} at {int(act_val/bud_val*100)}%", html
+                    f"Budget Alert: {cat} at {int(act_val/bud_val*100)}%", html,
+                    on_done=_marker_on_delivery(user_id, "budget", month_key, cat),
                 )
 
 
@@ -337,7 +379,6 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
 
         sent.add(key)
         st.session_state[sent_key] = sent
-        _persist_marker(user_id, settings, "bill", month_key, key)
         amt_str = f"€{float(row['amount_eur']):,.2f}"
         html = build_bill_reminder_email(
             st.session_state.get("display_name", ""),
@@ -347,7 +388,8 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
             settings["smtp_host"], int(settings.get("smtp_port", 587)),
             settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
             settings["alert_email"],
-            f"Bill Reminder: {row['description']}", html
+            f"Bill Reminder: {row['description']}", html,
+            on_done=_marker_on_delivery(user_id, "bill", month_key, key),
         )
 
 
@@ -398,7 +440,6 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
             continue
         sent.add(key)
         st.session_state[sent_key] = sent
-        _persist_marker(user_id, settings, "loan", month_key, key)
         monthly = annuity_payment(float(row["principal_eur"] or 0),
                                   float(row["annual_rate"] or 0),
                                   int(row["term_months"] or 12))
@@ -411,7 +452,8 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
             settings["smtp_host"], int(settings.get("smtp_port", 587)),
             settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
             settings["alert_email"],
-            f"Loan Payment Reminder: {row['name']}", html
+            f"Loan Payment Reminder: {row['name']}", html,
+            on_done=_marker_on_delivery(user_id, "loan", month_key, key),
         )
 
 
@@ -428,28 +470,40 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
     if today.weekday() != 0:  # Monday only
         return
 
-    this_monday = today - timedelta(days=7)
+    # Skip only when a summary was already sent THIS week. Comparing against
+    # the previous Monday (today - 7d) let last week's send satisfy the check
+    # and silently skipped every second Monday.
+    week_start = today - timedelta(days=6)
     last = settings.get("weekly_summary_last_sent")
     if last is not None:
         try:
             last = pd.to_datetime(last).date()
         except Exception:
             last = None
-        if last is not None and last >= this_monday:
+        if last is not None and last >= week_start:
             return
 
-    week = (expenses_df[expenses_df["date"] >= pd.Timestamp(this_monday)]
-            if not expenses_df.empty else pd.DataFrame())
+    window = (expenses_df[expenses_df["date"] >= pd.Timestamp(today - timedelta(days=7))]
+              if not expenses_df.empty else pd.DataFrame())
+    from utils import get_rates
+    rates = get_rates(settings)
+    dc = settings.get("display_currency") or "EUR"
     html = build_weekly_summary_email(
-        st.session_state.get("display_name", ""), week, 117.0, "EUR")
+        st.session_state.get("display_name", ""), window, rates, dc)
+
+    def _on_delivered(ok: bool, err: str):
+        if ok:
+            _db_save_settings(user_id, {"weekly_summary_last_sent": today})
+        else:
+            log.warning("weekly summary not delivered: %s — will retry", err)
 
     send_email_async(
         settings["smtp_host"], int(settings.get("smtp_port", 587)),
         settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
         settings["alert_email"],
-        "Your Weekly Spending Summary", html
+        "Your Weekly Spending Summary", html,
+        on_done=_on_delivered,
     )
-    q.save_settings(user_id, {"weekly_summary_last_sent": today})
 
 
 # ── Settings UI ───────────────────────────────────────────────────────────────

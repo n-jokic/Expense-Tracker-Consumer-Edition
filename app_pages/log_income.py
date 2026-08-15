@@ -10,9 +10,9 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import add_income, soft_delete_income, restore_income
+from db import add_income, update_income, soft_delete_income, restore_income
 from utils import (
-    INCOME_TYPES, SUPPORTED_CURRENCIES, MAX_AMOUNT,
+    INCOME_SOURCES, INCOME_TYPES, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt, fmt_dual, to_eur, get_currency_symbol,
     help_expander, to_excel,
 )
@@ -176,6 +176,55 @@ if saved:
     q.bump_db_version()
     st.success(f"✅ {inc_type} — {fmt_dual(actual_val, cur, ae)}")
 
+# ── Edit income entry ─────────────────────────────────────────────────────────
+@st.dialog("Edit income entry")
+def edit_income_dialog(uid: int, row):
+    """Edit one income entry in place — only this row changes."""
+    st.caption("Editing an income entry updates only this entry — no other history changes.")
+
+    e_date   = st.date_input("Date", value=row["date"].date() if pd.notna(row["date"]) else today,
+                             key="inc_edit_date")
+    e_source = st.selectbox("Source", INCOME_SOURCES,
+                            index=INCOME_SOURCES.index(str(row["source"]))
+                            if str(row["source"]) in INCOME_SOURCES else 0,
+                            key="inc_edit_source")
+    e_type   = st.selectbox("Income type", INCOME_TYPES,
+                            index=INCOME_TYPES.index(str(row["income_type"]))
+                            if str(row["income_type"]) in INCOME_TYPES else 0,
+                            key="inc_edit_type")
+    e_cur    = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                            index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
+                            if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
+                            key="inc_edit_cur")
+    esym     = get_currency_symbol(e_cur)
+    e_actual = st.number_input(f"Actual amount ({esym})", min_value=0.01,
+                               max_value=MAX_AMOUNT, step=10.0, format="%.2f",
+                               value=max(float(row["actual"]), 0.01), key="inc_edit_actual")
+    e_budgeted = st.number_input(f"Budgeted amount ({esym}) — optional", min_value=0.0,
+                                 max_value=MAX_AMOUNT, step=10.0, format="%.2f",
+                                 value=float(row["budgeted"]) if pd.notna(row["budgeted"]) else 0.0,
+                                 key="inc_edit_budgeted")
+    e_notes  = st.text_input("Notes", value=str(row["notes"]) if pd.notna(row["notes"]) else "",
+                             key="inc_edit_notes")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"inc_edit_cancel_{row['id']}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Save", type="primary", key=f"inc_edit_save_{row['id']}", width="stretch"):
+            ae = to_eur(float(e_actual), e_cur, rates)
+            be = to_eur(float(e_budgeted), e_cur, rates)
+            update_income(uid, str(row["id"]), {
+                "date": e_date, "source": e_source, "income_type": e_type,
+                "actual": float(e_actual), "budgeted": float(e_budgeted),
+                "currency": e_cur, "actual_eur": ae, "budgeted_eur": be,
+                "notes": e_notes,
+            })
+            q.bump_db_version()
+            st.toast("Income entry updated.", icon="✏️")
+            st.rerun()
+
 # ── History ───────────────────────────────────────────────────────────────────
 dfi = q.income(user_id)
 if not dfi.empty:
@@ -210,6 +259,15 @@ if not dfi.empty:
             q.bump_db_version()
             st.toast("Income entry moved to trash.", icon="🗑️")
             st.rerun()
+
+    with st.expander("✏️ Edit an income entry"):
+        edit_ids = dfi["id"].tolist()
+        edit_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['income_type']} {fmt(r['actual_eur'], DC, rates)}"
+                       for _, r in dfi.iterrows()]
+        edit_idx = st.selectbox("Select entry", range(len(edit_labels)),
+                                format_func=lambda i: edit_labels[i], key="inc_edit_sel")
+        if st.button(":material/edit: Edit", key="inc_edit_btn", width="stretch"):
+            edit_income_dialog(user_id, dfi.iloc[edit_idx])
 
     df_deleted = q.income(user_id, include_deleted=True)
     df_deleted = df_deleted[df_deleted["is_deleted"] == True]

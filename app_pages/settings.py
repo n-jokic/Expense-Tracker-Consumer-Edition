@@ -3,7 +3,10 @@ Settings page: currency & rates, budgets, notifications, account, data export/ba
 """
 
 import calendar
+import io
+import json
 import os
+import zipfile
 from datetime import date
 
 import pandas as pd
@@ -15,6 +18,7 @@ from db import (
     update_user_display_name, delete_user_account, backup_db,
     create_pairing_device, get_devices, revoke_device,
     get_sync_conflicts, resolve_sync_conflict, apply_record_fields,
+    get_household_by_member, get_earned_milestone_ids,
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
@@ -22,7 +26,7 @@ from rates import refresh_rates_if_due
 from utils import (
     CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     DEFAULT_FUN_CATEGORIES,
-    fmt, to_eur, get_currency_symbol,
+    fmt, to_eur, to_display, get_currency_symbol,
     safe_error, to_excel,
 )
 
@@ -54,11 +58,18 @@ with tab_cur:
         for c in [c for c in SUPPORTED_CURRENCIES if c != "EUR"]:
             new_rates[c] = st.number_input(
                 f"1 EUR = ? {c} ({get_currency_symbol(c)})",
-                value=float(rates.get(c, 1.0)), step=0.01, format="%.4f")
+                value=float(rates.get(c, 1.0)), step=0.01, format="%.4f",
+                min_value=0.0001)
         if st.form_submit_button("💾 Save", type="primary"):
-            q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
-            st.success("✅ Saved — rates updated for every page.")
-            st.rerun()
+            bad = [c for c, v in new_rates.items()
+                   if not (v > 0 and v == v)]  # zero, negative, or NaN
+            if bad:
+                st.error("❌ Exchange rates must be positive numbers greater "
+                         "than zero. Fix the highlighted rates and save again.")
+            else:
+                q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
+                st.success("✅ Saved — rates updated for every page.")
+                st.rerun()
 
     st.divider()
     last = settings.get("rates_updated_at")
@@ -88,12 +99,16 @@ with tab_bud:
     st.subheader("💰 Overall monthly budget")
     cur_eur = float(settings.get("monthly_budget", 0.0))
     with st.form("overall_bud_form"):
-        ob_amt = st.number_input("Total monthly budget (€)", min_value=0.0,
-                                 max_value=MAX_SAVINGS_TARGET,
-                                 step=50.0, format="%.2f", value=cur_eur)
+        ob_amt = st.number_input(
+            f"Total monthly budget ({get_currency_symbol(DC)})",
+            min_value=0.0, max_value=MAX_SAVINGS_TARGET,
+            step=50.0, format="%.2f",
+            value=to_display(cur_eur, DC, rates))
+        ob_eur = to_eur(ob_amt, DC, rates)
+        st.caption(f"≈ {fmt(ob_eur, 'EUR', {'EUR': 1.0})} — stored as the EUR base value.")
         if st.form_submit_button("💾 Save budget", type="primary"):
-            q.save_settings(user_id, {"monthly_budget": ob_amt})
-            st.success(f"✅ Budget set to {fmt(ob_amt, DC, rates)}")
+            q.save_settings(user_id, {"monthly_budget": round(ob_eur, 4)})
+            st.success(f"✅ Budget set to {fmt(ob_eur, DC, rates)}")
             st.rerun()
 
     st.divider()
@@ -133,11 +148,9 @@ with tab_bud:
             di = st.number_input("Row index (from table)", min_value=0,
                                  max_value=max(0, len(dfb)-1), step=1)
             if st.button("Delete", type="secondary", key="del_bud"):
-                bid = int(dfb.iloc[di]["id"])
-                delete_budget(user_id, bid)
-                q.bump_db_version()
-                st.toast("Budget row deleted.", icon="🗑️")
-                st.rerun()
+                row = dfb.iloc[di]
+                budget_delete_dialog(user_id, int(row["id"]), row["category"],
+                                     row["subcategory"])
 
     # ── Fun money ────────────────────────────────────────────────────────────
     st.divider()
@@ -206,37 +219,117 @@ with tab_acct:
         confirm = st.text_input("Type DELETE to confirm")
         if st.button("Delete account permanently", type="secondary"):
             if confirm == "DELETE":
+                from forecasting import clear_categorizers
+                clear_categorizers()  # drop the cached ML model for this user
                 delete_user_account(user_id)
                 logout()
                 st.rerun()
             else:
                 safe_error("Please type DELETE exactly to confirm.")
 
+# ── Confirmation dialogs ──────────────────────────────────────────────────────
+
+@st.dialog("Delete budget row?")
+def budget_delete_dialog(uid: int, bid: int, category: str, subcategory: str):
+    label = category + (f" — {subcategory}" if subcategory else "")
+    st.write(f"Delete the **{label}** budget row? This cannot be undone.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Delete row", type="primary", width="stretch"):
+            delete_budget(uid, bid)
+            q.bump_db_version()
+            st.toast("Budget row deleted.", icon="🗑️")
+            st.rerun()
+
+
+@st.dialog("Revoke device?")
+def revoke_device_dialog(uid: int, device_id: str, name: str):
+    st.write(f"Revoke access for **{name}**? The phone will need to pair again.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Revoke", type="primary", width="stretch"):
+            revoke_device(uid, device_id)
+            st.toast("Device revoked.", icon="🔒")
+            st.rerun()
+
+
 # ── Data tab ──────────────────────────────────────────────────────────────────
 with tab_data:
     st.subheader("📦 Export your data")
-    st.caption("Download your data as Excel files. Back these up to Google Drive or OneDrive regularly.")
+    st.caption("Download your data as Excel files. Back these up to Google Drive "
+               "or OneDrive regularly.")
 
-    data_map = {
-        "expenses":  q.expenses(user_id, include_deleted=True),
-        "income":    q.income(user_id, include_deleted=True),
-        "savings":   q.savings(user_id, include_deleted=True),
-        "budgets":   q.budgets(user_id),
-        "recurring": q.recurring(user_id),
+    def _jsonify(df: pd.DataFrame) -> pd.DataFrame:
+        """Convert dict/list cells to JSON strings so Excel can store them."""
+        out = df.copy()
+        for col in out.columns:
+            if out[col].dtype == object:
+                out[col] = out[col].map(
+                    lambda v: json.dumps(v, default=str)
+                    if isinstance(v, (dict, list)) else v)
+        return out
+
+    exports = {
+        "expenses":       q.expenses(user_id, include_deleted=True),
+        "income":         q.income(user_id, include_deleted=True),
+        "savings":        q.savings(user_id, include_deleted=True),
+        "budgets":        q.budgets(user_id),
+        "recurring":      q.recurring(user_id),
+        "big_purchases":  q.big_purchases(user_id),
+        "loans":          q.loans(user_id),
+        "holdings":       q.holdings(user_id),
+        "holding_prices": q.holding_prices(user_id),
+        "audit_log":      q.audit(user_id, limit=10000),
     }
-    cols = st.columns(len(data_map))
+    _s = dict(st.session_state.settings)
+    exports["settings"] = pd.DataFrame(
+        [{k: (json.dumps(v, default=str) if isinstance(v, (list, dict)) else v)
+          for k, v in _s.items()}])
+    hh = get_household_by_member(user_id)
+    if hh:
+        exports["household"] = pd.DataFrame([hh])
+    devs = get_devices(user_id)
+    if devs:
+        exports["devices"] = pd.DataFrame(devs)
+    mids = sorted(get_earned_milestone_ids(user_id))
+    if mids:
+        exports["milestones"] = pd.DataFrame({"milestone_id": mids})
+    conf = get_sync_conflicts(user_id, resolved=False)
+    if conf:
+        exports["sync_conflicts"] = pd.DataFrame(conf)
+
+    def _export_zip() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for key, dfx in exports.items():
+                if dfx is None or dfx.empty:
+                    continue
+                zf.writestr(f"{key}.xlsx", to_excel(_jsonify(dfx)))
+        return buf.getvalue()
+
+    st.download_button(
+        ":material/download: Everything (zip)", data=_export_zip(),
+        file_name="expense_tracker_export.zip", mime="application/zip",
+        key="dl_all", width="stretch",
+    )
+    st.caption("")
+
+    data_map = {k: v for k, v in exports.items() if v is not None and not v.empty}
+    cols = st.columns(3)
     for i, (key, df_d) in enumerate(data_map.items()):
-        with cols[i]:
-            if not df_d.empty:
-                st.download_button(
-                    f"⬇️ {key}", data=to_excel(df_d),
-                    file_name=f"{key}_export.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_{key}", width="stretch",
-                )
-            else:
-                st.button(f"{key} (empty)", disabled=True,
-                          width="stretch", key=f"dis_{key}")
+        with cols[i % 3]:
+            st.download_button(
+                f"⬇️ {key}", data=to_excel(_jsonify(df_d)),
+                file_name=f"{key}_export.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_{key}", width="stretch",
+            )
 
     st.divider()
     st.subheader("💾 Database backup")
@@ -247,27 +340,19 @@ with tab_data:
             st.caption(f"Last automatic backup: **{f.read().strip()}**")
     except OSError:
         pass
-    if st.button("💾 Back up database now"):
+    if st.button(":material/download: Back up database now"):
         path = backup_db(force=True)
         if path:
             st.success(f"✅ Backup saved to `{path}`")
         else:
             st.info("Backups are only available with the local SQLite database.")
 
-    st.divider()
-    st.subheader("📤 Audit log export")
-    df_audit_exp = q.audit(user_id, limit=10000)
-    if not df_audit_exp.empty:
-        st.download_button("⬇️ audit_log.xlsx", data=to_excel(df_audit_exp),
-                           file_name="audit_log.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
 
 # ── Sync tab (phone pairing + conflicts) ─────────────────────────────────────
 with tab_sync:
     st.subheader("🔗 Sync & phone pairing")
-    st.caption("Pair a phone app with this server using a one-time code. "
-               "The sync API runs on port 8502 (`python api.py`).")
+    st.caption("🧪 **Experimental.** Pair a phone app with this server using a "
+               "one-time code. The sync API runs on port 8502 (`python api.py`).")
 
     st.markdown("**Paired devices**")
     devices = get_devices(user_id)
@@ -278,15 +363,14 @@ with tab_sync:
                 last = dev["last_sync_at"].strftime("%d %b %Y %H:%M") if dev["last_sync_at"] else "never"
                 st.write(f"📱 **{dev['name']}** · last sync: {last}")
             with d2:
-                if st.button("Revoke", key=f"revoke_{dev['id']}", width="stretch"):
-                    revoke_device(user_id, dev["id"])
-                    st.toast("Device revoked.", icon="🔒")
-                    st.rerun()
+                if st.button(":material/block: Revoke", key=f"revoke_{dev['id']}",
+                             width="stretch"):
+                    revoke_device_dialog(user_id, dev["id"], dev["name"])
     else:
         st.caption("No devices paired yet.")
 
     st.markdown("**Pair a new device**")
-    if st.button("➕ Generate pairing code", width="stretch"):
+    if st.button(":material/add: Generate pairing code", width="stretch"):
         dev_id, code = create_pairing_device(user_id)
         st.session_state.pair_code = code
     pair_code = st.session_state.get("pair_code")

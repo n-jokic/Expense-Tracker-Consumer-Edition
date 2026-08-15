@@ -13,17 +13,34 @@ from db import (
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
     get_big_purchases, get_loans, get_loan_payments,
     get_holdings, get_holding_prices,
+    get_data_revision as _db_get_revision,
+    bump_data_revision as _db_bump_revision,
 )
 
 
 def db_version() -> int:
-    return int(st.session_state.get("db_version", 0))
+    """The shared data revision from the DB.
+
+    Every browser session, household member, and background job reads the
+    SAME value, so a write in one session invalidates cached readers
+    everywhere immediately — no waiting for per-session counters or TTLs.
+    Falls back to a session-local counter before login.
+    """
+    uid = st.session_state.get("user_id")
+    if uid is None:
+        return int(st.session_state.get("db_version", 0))
+    return _db_get_revision(int(uid))
 
 
 def bump_db_version() -> int:
-    """Invalidate all cached reads. Call after any DB mutation."""
-    st.session_state.db_version = db_version() + 1
-    return st.session_state.db_version
+    """Invalidate all cached reads after any DB mutation (shared revision)."""
+    uid = st.session_state.get("user_id")
+    if uid is None:
+        st.session_state.db_version = int(st.session_state.get("db_version", 0)) + 1
+        return st.session_state.db_version
+    rev = _db_bump_revision(int(uid))
+    st.session_state.db_version = rev
+    return rev
 
 
 # ── Cached readers ────────────────────────────────────────────────────────────

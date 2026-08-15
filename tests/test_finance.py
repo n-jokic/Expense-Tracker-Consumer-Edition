@@ -82,6 +82,47 @@ def test_schedule_applies_payments_made_off_due_day():
     assert s["months_paid"] == 2
 
 
+def test_first_due_never_precedes_loan_start():
+    """Regression: start Jan 31 with payment day 1 must not accrue a phantom
+    January month — the first due is Feb 1, so as of Feb 1 exactly one month
+    has passed."""
+    s = loan_schedule(1200, 0, 12, date(2025, 1, 31), 1, [],
+                      asof=date(2025, 2, 1))
+    assert s["months_paid"] == 1
+    assert s["remaining_balance"] == 1200.0
+    # and before Feb 1 nothing has accrued
+    s0 = loan_schedule(1200, 0, 12, date(2025, 1, 31), 1, [],
+                       asof=date(2025, 1, 31))
+    assert s0["months_paid"] == 0
+
+
+def test_first_due_in_start_month_when_day_not_passed():
+    """start Jan 15, payment day 20 -> first due Jan 20, accrued by Jan 25."""
+    s = loan_schedule(1200, 0, 12, date(2025, 1, 15), 20, [],
+                      asof=date(2025, 1, 25))
+    assert s["months_paid"] == 1
+
+
+def test_zero_interest_remaining_months_uses_ceil():
+    """Regression: €149 left with €100 payments needs 2 more payments
+    (one full + one €49 partial); round() reported 1 and understated cost."""
+    # principal 200 over 2 months at 0% -> €100/month; pay €51 in month 1
+    s = loan_schedule(200, 0, 2, date(2025, 1, 10), 10,
+                      [(date(2025, 1, 10), 51.0)], asof=date(2025, 2, 20))
+    assert s["remaining_balance"] == pytest.approx(149.0)
+    assert s["remaining_months"] == 2
+    assert s["payoff_date"] == date(2025, 4, 10)
+
+
+def test_february_clamp_uses_first_due_anchor():
+    """31st payment day with a Dec 31 start: first due is Dec 31, February
+    clamps to Feb 28 the following year."""
+    s = loan_schedule(1200, 0, 12, date(2024, 12, 31), 31,
+                      [(date(2025, 2, 28), 100.0)], asof=date(2025, 2, 28))
+    assert s["months_paid"] == 3
+    assert s["remaining_balance"] == 1100.0
+
+
 def test_portfolio_metrics():
     m = portfolio_metrics([
         {"quantity": 2, "last_price_eur": 50.0, "cost_eur": 80.0},

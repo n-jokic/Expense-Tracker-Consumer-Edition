@@ -10,7 +10,7 @@ import plotly.express as px
 import streamlit as st
 
 import queries as q
-from db import add_savings, soft_delete_savings, restore_savings
+from db import add_savings, update_savings, soft_delete_savings, restore_savings
 from insights import savings_projection
 from utils import (
     SAVINGS_GOALS, SUPPORTED_CURRENCIES, MAX_AMOUNT, MAX_SAVINGS_TARGET, CHART_COLORS,
@@ -91,6 +91,52 @@ if saved:
         st.success(f"✅ {fmt(abs(de), DC, rates)} {action} **{goal_name}** — balance: {fmt(nb, DC, rates)}")
 
 dfs = q.savings(user_id)
+
+# ── Edit savings entry ────────────────────────────────────────────────────────
+@st.dialog("Edit savings entry")
+def edit_savings_dialog(uid: int, row):
+    """Edit one savings entry; balances recompute from this entry forward."""
+    st.caption("Balances are a chain computed from all entries — editing an entry updates the "
+               "balance from that entry forward; other rows are untouched.")
+    c1, c2 = st.columns(2)
+    with c1:
+        e_date = st.date_input("Date", value=row["date"].date() if pd.notna(row["date"]) else today,
+                               key="sav_edit_date")
+        e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                              index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
+                              if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
+                              key="sav_edit_cur")
+    with c2:
+        e_dep = st.number_input(f"Amount deposited ({get_currency_symbol(e_cur)}) — negative = withdrawal",
+                                min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
+                                step=10.0, format="%.2f",
+                                value=float(row["deposited"]), key="sav_edit_dep")
+        e_tgt = st.number_input("Target (EUR)", min_value=0.0,
+                                max_value=MAX_SAVINGS_TARGET, step=100.0, format="%.2f",
+                                value=float(row["target_eur"]), key="sav_edit_tgt")
+    e_ir = st.number_input("Annual interest rate (%)", min_value=0.0,
+                           max_value=100.0, step=0.01, format="%.2f",
+                           value=float(row["interest_rate"]), key="sav_edit_ir")
+    e_notes = st.text_input("Notes", value=str(row["notes"]) if pd.notna(row["notes"]) else "",
+                            key="sav_edit_notes")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"sav_edit_cancel_{row['id']}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Save", type="primary", key=f"sav_edit_save_{row['id']}", width="stretch"):
+            de = to_eur(float(e_dep), e_cur, rates)
+            update_savings(uid, str(row["id"]), {
+                "date": e_date, "deposited": float(e_dep),
+                "currency": e_cur, "deposited_eur": de,
+                "target_eur": float(e_tgt), "interest_rate": float(e_ir),
+                "notes": e_notes,
+            })
+            q.bump_db_version()
+            st.toast("Savings entry updated.", icon="✏️")
+            st.rerun()
+
 if not dfs.empty:
     # ── Yearly KPIs ──────────────────────────────────────────────────────────
     ydf = dfs[dfs["date"].dt.year == today.year]
@@ -221,6 +267,15 @@ if not dfs.empty:
             q.bump_db_version()
             st.toast("Savings entry moved to trash.", icon="🗑️")
             st.rerun()
+
+    with st.expander("✏️ Edit a savings entry"):
+        edit_ids = dfs["id"].tolist()
+        edit_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"
+                       for _, r in dfs.iterrows()]
+        edit_idx = st.selectbox("Select entry", range(len(edit_labels)),
+                                format_func=lambda i: edit_labels[i], key="sav_edit_sel")
+        if st.button(":material/edit: Edit", key="sav_edit_btn", width="stretch"):
+            edit_savings_dialog(user_id, dfs.iloc[edit_idx])
 
     df_deleted = q.savings(user_id, include_deleted=True)
     df_deleted = df_deleted[df_deleted["is_deleted"] == True]

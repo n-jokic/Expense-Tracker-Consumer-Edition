@@ -87,6 +87,8 @@ with st.expander("📷 Scan a receipt (OCR)"):
                     safe_error("Please add a description and an amount before saving.")
                 else:
                     ae = to_eur(float(r_amt), DC, rates)
+                    suggested_cat = result.get("category")
+                    conf = float(result.get("confidence") or 0.0)
                     add_expense(user_id, {
                         "date": r_date,
                         "category": r_cat,
@@ -94,6 +96,12 @@ with st.expander("📷 Scan a receipt (OCR)"):
                         "description": r_desc.strip(),
                         "amount": float(r_amt), "currency": DC, "amount_eur": ae,
                         "recurring": False, "notes": (r_notes or "") + " (scanned receipt)",
+                        # ML telemetry: what was suggested and whether it stuck
+                        "suggest_source": result.get("source"),
+                        "suggest_confidence": conf or None,
+                        "suggest_model_version": result.get("model_version"),
+                        "suggest_merchant": (result.get("merchant") or "").strip().lower(),
+                        "suggest_accepted": (r_cat == suggested_cat) if suggested_cat else None,
                     })
                     q.bump_db_version()
                     st.success(f"✅ **{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}")
@@ -155,19 +163,64 @@ st.subheader("Expense history")
 df_exp = q.expenses(user_id)
 
 if not df_exp.empty:
+    def _reset_hist_page():
+        """Jump back to the first page whenever filters or page size change."""
+        st.session_state["exp_hist_page"] = 0
+
     sc1, sc2, sc3 = st.columns([3, 2, 2])
-    with sc1: srch = st.text_input("🔍 Search", placeholder="Search description...", key="exp_srch")
-    with sc2: catf = st.multiselect("Category filter", CAT_LIST, key="exp_catf")
-    with sc3: curf = st.multiselect("Currency filter", list(SUPPORTED_CURRENCIES.keys()), key="exp_curf")
+    with sc1: srch = st.text_input("🔍 Search", placeholder="Search description...", key="exp_srch",
+                                   on_change=_reset_hist_page)
+    with sc2: catf = st.multiselect("Category filter", CAT_LIST, key="exp_catf",
+                                    on_change=_reset_hist_page)
+    with sc3: curf = st.multiselect("Currency filter", list(SUPPORTED_CURRENCIES.keys()), key="exp_curf",
+                                    on_change=_reset_hist_page)
+
+    psz1, psz2 = st.columns([1, 3])
+    with psz1:
+        page_size = st.selectbox("Rows per page", [25, 50, 100], index=1,
+                                 key="exp_hist_size", on_change=_reset_hist_page)
 
     v = df_exp.sort_values("date", ascending=False).copy()
     if srch: v = v[v["description"].str.contains(srch, case=False, na=False)]
     if catf: v = v[v["category"].isin(catf)]
     if curf: v = v[v["currency"].isin(curf)]
 
+    # ── Pagination: page state, clamping, nav controls ───────────────────────
+    total = len(v)
+    page = st.session_state.get("exp_hist_page", 0)
+    max_page = (total - 1) // page_size if total else 0
+    if page > max_page:                      # clamp if the list shrank (e.g. after a delete)
+        page = max_page
+    st.session_state["exp_hist_page"] = page
+
+    start = page * page_size
+    end = min(start + page_size, total)
+
+    nv1, nv2, nv3 = st.columns([1, 2, 1], vertical_alignment="center")
+    with nv1:
+        prev_clicked = st.button(":material/chevron_left: Newer",
+                                 key="exp_hist_prev", disabled=(page <= 0),
+                                 width="stretch")
+    with nv2:
+        if total:
+            st.caption(f"Showing {start + 1}–{end} of {total} — "
+                       "edit cells below, tick 🗑️ to trash.")
+        else:
+            st.caption("Showing 0 of 0 — no matching rows.")
+    with nv3:
+        next_clicked = st.button("Older :material/chevron_right:",
+                                 key="exp_hist_next", disabled=(page >= max_page),
+                                 width="stretch")
+
+    if prev_clicked:
+        st.session_state["exp_hist_page"] = max(0, page - 1)
+        st.rerun()
+    if next_clicked:
+        st.session_state["exp_hist_page"] = min(max_page, page + 1)
+        st.rerun()
+
     # ── Inline editor (edit or trash directly in the table) ──────────────────
-    st.caption(f"{len(v)} matching rows — edit cells below, tick 🗑️ to trash.")
-    edit_df = v.head(50).copy()
+    edit_df = v.iloc[start:end].copy()
     edit_df["trash"] = False
 
     def _same(a, b):
@@ -182,7 +235,7 @@ if not df_exp.empty:
 
     edited = st.data_editor(
         edit_df[["id","date","category","subcategory","description","amount","currency","notes","trash"]],
-        key="exp_editor",
+        key=f"exp_editor_{page}",
         num_rows="fixed",
         hide_index=True,
         column_config={

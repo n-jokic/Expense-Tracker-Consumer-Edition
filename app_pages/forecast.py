@@ -103,9 +103,10 @@ overall_bud  = float(settings.get("monthly_budget", 0.0))
 if overall_bud > 0:
     total_budget = overall_bud
 elif not dfb.empty:
+    from utils import effective_category_budgets
     bud_m = dfb[(dfb["year"] == period_start.year) &
-                (dfb["month"] == period_start.month)]["budgeted_eur"].sum()
-    total_budget = float(bud_m)
+                (dfb["month"] == period_start.month)]
+    total_budget = float(sum(effective_category_budgets(bud_m).values()))
 
 over_under = projected - total_budget
 on_track   = total_budget == 0 or projected <= total_budget

@@ -241,6 +241,65 @@ def _to_eur_amount(amount: float, currency: str, rates: dict) -> float:
     return round(float(amount), 4)
 
 
+def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
+    """Validate and persist one edited bank-import row.
+
+    The EUR value is recalculated from the row's EDITED amount/currency —
+    never from the pre-editor amount_eur column. Returns "imported" or
+    "skipped"; raises on database errors so the caller can count failures.
+    """
+    d = (row["date"].date() if hasattr(row["date"], "date")
+         else pd.Timestamp(row["date"]).date())
+    row_amount = float(row["amount"])
+    cur = row.get("currency")
+    if pd.isna(cur) or not str(cur).strip():
+        row_currency = "EUR"
+    else:
+        row_currency = str(cur).strip().upper()
+    ae = _to_eur_amount(row_amount, row_currency, rates)
+    if not (ae > 0) or ae > MAX_AMOUNT:  # also rejects NaN amounts
+        return "skipped"
+    key = (d, str(row["description"]).strip().lower(), round(ae, 2))
+    if key in existing_keys:
+        return "skipped"
+
+    # ML telemetry: record what was suggested and whether the user kept it.
+    source = row.get("_suggest_source")
+    conf = row.get("_suggest_conf")
+    suggested = row.get("_suggest_cat")
+    if source is None or pd.isna(source) or not str(source).strip():
+        source = "manual"
+    source = str(source)
+    if conf is None or pd.isna(conf) or conf == "":
+        conf = None
+    from forecasting import CATEGORIZER_MODEL_VERSION
+    desc = str(row["description"])
+    merchant = desc.strip().lower().split()[0] if desc.strip() else ""
+    accepted = None
+    if suggested is not None and not pd.isna(suggested):
+        accepted = bool(str(suggested) == str(row["category"]))
+
+    add_expense(user_id, {
+        "date": d,
+        "category": row["category"],
+        "subcategory": row["subcategory"] or "",
+        "description": desc,
+        "amount": row_amount,
+        "currency": row_currency,
+        "amount_eur": ae,
+        "recurring": False,
+        "notes": "Imported from bank statement",
+        "suggest_source": source,
+        "suggest_confidence": float(conf) if conf is not None else None,
+        "suggest_model_version": (CATEGORIZER_MODEL_VERSION
+                                  if source == "classifier" else None),
+        "suggest_merchant": merchant,
+        "suggest_accepted": accepted,
+    })
+    existing_keys.add(key)  # also dedupe rows WITHIN this upload
+    return "imported"
+
+
 def render_bank_import_page(user_id: int, rates: dict):
     st.title("🏦 Import Bank Statement")
     st.caption("Import expenses directly from your bank's CSV export — we'll auto-categorise them for you.")
@@ -312,21 +371,30 @@ def render_bank_import_page(user_id: int, rates: dict):
         st.warning("No importable rows found.")
         return
 
-    # Auto-categorise: learned classifier first, keyword map as fallback
-    from forecasting import suggest_category
+    # Auto-categorise: learned classifier first, keyword map as fallback.
+    # The suggestion source/confidence travel with each row so the save path
+    # can record whether the user accepted or corrected it (ML telemetry).
+    from forecasting import suggest_category, CATEGORIZER_MODEL_VERSION
     user_exp = q.expenses(user_id)
-    cats, subs = [], []
+    cats, subs, sources, confs = [], [], [], []
     for d in expenses_only["description"]:
         cat, conf = suggest_category(user_exp, d, user_id=user_id)
         if cat:
             cats.append(cat)
             subs.append("")
+            sources.append("classifier")
+            confs.append(round(float(conf), 4))
         else:
             c, s = categorize_expense(d)
             cats.append(c)
             subs.append(s)
+            sources.append("keywords")
+            confs.append(None)
     expenses_only["category"] = cats
     expenses_only["subcategory"] = subs
+    expenses_only["_suggest_source"] = sources
+    expenses_only["_suggest_conf"] = confs
+    expenses_only["_suggest_cat"] = cats
 
     # Convert to EUR using the user's rate table
     expenses_only["amount_eur"] = expenses_only.apply(
@@ -337,7 +405,8 @@ def render_bank_import_page(user_id: int, rates: dict):
     st.caption("Correct categories and untick any row you don't want to import.")
 
     review = expenses_only[["date","description","amount","currency","amount_eur",
-                            "category","subcategory"]].copy()
+                            "category","subcategory",
+                            "_suggest_source","_suggest_conf","_suggest_cat"]].copy()
     review["include"] = True
 
     edited = st.data_editor(
@@ -354,6 +423,9 @@ def render_bank_import_page(user_id: int, rates: dict):
             "currency": st.column_config.TextColumn("Currency"),
             "amount_eur": None,
             "include": st.column_config.CheckboxColumn("Import", default=True),
+            "_suggest_source": None,
+            "_suggest_conf": None,
+            "_suggest_cat": None,
         },
     )
 
@@ -375,27 +447,10 @@ def render_bank_import_page(user_id: int, rates: dict):
         failed   = 0
         for _, row in edited[edited["include"]].iterrows():
             try:
-                ae = float(row["amount_eur"])
-                if ae <= 0 or ae > MAX_AMOUNT:
+                if _save_edited_row(user_id, row, rates, existing_keys) == "imported":
+                    imported += 1
+                else:
                     skipped += 1
-                    continue
-                d = row["date"].date() if hasattr(row["date"], "date") else pd.Timestamp(row["date"]).date()
-                key = (d, str(row["description"]).strip().lower(), round(ae, 2))
-                if key in existing_keys:
-                    skipped += 1
-                    continue
-                add_expense(user_id, {
-                    "date": d,
-                    "category": row["category"],
-                    "subcategory": row["subcategory"] or "",
-                    "description": str(row["description"]),
-                    "amount": float(row["amount"]),
-                    "currency": str(row["currency"]).upper(),
-                    "amount_eur": ae,
-                    "recurring": False,
-                    "notes": "Imported from bank statement",
-                })
-                imported += 1
             except Exception as e:
                 import logging
                 logging.getLogger("bank_import").warning("import row failed: %s", e)

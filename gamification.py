@@ -31,6 +31,29 @@ MILESTONES = [
     {"id": "fun_keeper",      "icon": "🎈", "title": "Fun Master",      "desc": "Stayed within your fun money for a full month", "reward": 10.0},
     {"id": "budget_keeper_3", "icon": "🏅", "title": "Budget Champion", "desc": "Stayed under budget 3 months in a row", "reward": 25.0},
     {"id": "debt_free",       "icon": "🕊️", "title": "Debt Free",       "desc": "Paid off all your loans", "reward": 50.0},
+
+    # ── Fun achievements ─────────────────────────────────────────────────────
+    {"id": "coffee_connoisseur", "icon": "☕",  "title": "Caffeine Addict", "desc": "10+ coffee & snack runs in one month"},
+    {"id": "gym_rat",            "icon": "🏋️", "title": "Gym Rat",         "desc": "8+ gym visits in one month"},
+    {"id": "transit_pro",        "icon": "🚌", "title": "City Slicker",    "desc": "15+ public-transit rides in one month"},
+    {"id": "grocery_guru",       "icon": "🥕", "title": "Grocery Guru",    "desc": "8+ grocery trips in one month"},
+    {"id": "lunch_legend",       "icon": "🥪", "title": "Lunch Legend",    "desc": "10+ work lunches in one month"},
+    {"id": "early_bird",         "icon": "🌅", "title": "Early Bird",      "desc": "Logged 5 expenses before 9:00"},
+    {"id": "night_owl",          "icon": "🦉", "title": "Night Owl",       "desc": "Logged 5 expenses after 23:00"},
+    {"id": "weekend_spender",    "icon": "🛍️", "title": "Weekend Warrior","desc": "10+ weekend expenses in one month"},
+    {"id": "micro_spender",      "icon": "🪙", "title": "Micro Spender",   "desc": "20+ expenses under €5 in one month"},
+    {"id": "big_ticket",         "icon": "💎", "title": "Big Spender",     "desc": "Logged a single expense over €500"},
+    {"id": "penny_pincher",      "icon": "📉", "title": "Penny Pincher",   "desc": "A full month at least 30% below your average", "reward": 5.0},
+    {"id": "category_explorer",  "icon": "🌈", "title": "Category Explorer", "desc": "Spent in every top-level category", "reward": 5.0},
+    {"id": "charity_champion",   "icon": "❤️", "title": "Kind Heart",      "desc": "Made a charity donation"},
+    {"id": "gift_giver",         "icon": "🎁", "title": "Santa's Helper",  "desc": "3+ gifts in one month"},
+    {"id": "travel_bug",         "icon": "✈️", "title": "Jet Setter",      "desc": "Booked flights or a hotel"},
+    {"id": "currency_hopper",    "icon": "🌍", "title": "Globe Trotter",   "desc": "Spent in 3+ different currencies"},
+    {"id": "home_steady",        "icon": "🏠", "title": "Home Steady",     "desc": "Housing costs in 12 different months"},
+    {"id": "hustler",            "icon": "🎭", "title": "Hustler",         "desc": "Income from 3+ sources in one month"},
+    {"id": "squirrel_mode",      "icon": "🐿️", "title": "Squirrel Mode",  "desc": "3 months in a row of net-positive savings", "reward": 10.0},
+    {"id": "sub_detective",      "icon": "🔁", "title": "Sub Detective",   "desc": "Spotted 3+ recurring subscriptions", "reward": 5.0},
+    {"id": "achievement_hunter", "icon": "🧭", "title": "Achievement Hunter", "desc": "Earned 10 different badges", "reward": 15.0},
 ]
 
 MILESTONE_INDEX = {m["id"]: m for m in MILESTONES}
@@ -71,7 +94,8 @@ def get_budget_adherence_streak(expenses_df: pd.DataFrame, budgets_df: pd.DataFr
         ]
         if m_bud.empty:
             break
-        total_budget = float(m_bud["budgeted_eur"].sum())
+        from utils import effective_category_budgets
+        total_budget = float(sum(effective_category_budgets(m_bud).values()))
         total_spent  = float(m_exp["amount_eur"].sum()) if not m_exp.empty else 0.0
         if total_budget > 0 and total_spent <= total_budget:
             streak += 1
@@ -100,6 +124,76 @@ def detect_raise(income_df: pd.DataFrame) -> bool:
             return True
         prev_max = max(prev_max, a)
     return False
+
+
+# ── Fun-achievement helpers ───────────────────────────────────────────────────
+
+def _month_frame(df: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df[(df["date"].dt.year == year) & (df["date"].dt.month == month)]
+
+
+def _sub_in_month(df: pd.DataFrame, year: int, month: int, sub: str) -> int:
+    if df.empty or "subcategory" not in df.columns:
+        return 0
+    m = _month_frame(df, year, month)
+    return int((m["subcategory"].fillna("") == sub).sum())
+
+
+def _weekend_in_month(df: pd.DataFrame, year: int, month: int) -> int:
+    m = _month_frame(df, year, month)
+    if m.empty:
+        return 0
+    return int(m["date"].dt.dayofweek.isin([5, 6]).sum())
+
+
+def _under_in_month(df: pd.DataFrame, year: int, month: int, limit: float) -> int:
+    m = _month_frame(df, year, month)
+    if m.empty:
+        return 0
+    return int((m["amount_eur"] < limit).sum())
+
+
+def _prev_month(today: date) -> tuple[int, int]:
+    if today.month > 1:
+        return today.year, today.month - 1
+    return today.year - 1, 12
+
+
+def _penny_pincher(df: pd.DataFrame, today: date) -> bool:
+    """Previous full month with ≥5 expenses totalling ≤70% of the recent
+    (6-month) average monthly spend."""
+    if df.empty:
+        return False
+    py, pm = _prev_month(today)
+    m = _month_frame(df, py, pm)
+    if len(m) < 5:
+        return False
+    first = date(today.year, today.month, 1) - pd.DateOffset(months=6)
+    hist = df[df["date"] >= first]
+    if len(hist) < 6:
+        return False
+    totals = hist.groupby(hist["date"].dt.to_period("M"))["amount_eur"].sum()
+    avg = float(totals.mean())
+    if avg <= 0:
+        return False
+    return float(m["amount_eur"].sum()) <= 0.7 * avg
+
+
+def _saver_streak(df: pd.DataFrame, n: int = 3) -> bool:
+    """n consecutive recorded months (ending with the latest) where net
+    deposits were positive."""
+    if df.empty:
+        return False
+    net = df.groupby(df["date"].dt.to_period("M"))["deposited_eur"].sum().sort_index()
+    streak = 0
+    for p in reversed(net.index):
+        if float(net[p]) > 0:
+            streak += 1
+        else:
+            break
+    return streak >= n
 
 
 def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
@@ -209,6 +303,75 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             if not any_exp.empty:
                 earned.append(MILESTONE_INDEX["no_luxury_month"])
 
+    # ── Fun achievements ─────────────────────────────────────────────────────
+    if not expenses_df.empty:
+        ty, tm = today.year, today.month
+        for mid, sub, need in (
+            ("coffee_connoisseur", "Coffee & Snacks", 10),
+            ("gym_rat", "Gym & Fitness", 8),
+            ("transit_pro", "Public Transit", 15),
+            ("grocery_guru", "Groceries", 8),
+            ("lunch_legend", "Work Lunch", 10),
+        ):
+            if _sub_in_month(expenses_df, ty, tm, sub) >= need:
+                earned.append(MILESTONE_INDEX[mid])
+
+        if _weekend_in_month(expenses_df, ty, tm) >= 10:
+            earned.append(MILESTONE_INDEX["weekend_spender"])
+        if _under_in_month(expenses_df, ty, tm, 5.0) >= 20:
+            earned.append(MILESTONE_INDEX["micro_spender"])
+        if (expenses_df["amount_eur"] > 500).any():
+            earned.append(MILESTONE_INDEX["big_ticket"])
+
+        if "created_at" in expenses_df.columns:
+            hours = pd.to_datetime(expenses_df["created_at"],
+                                   errors="coerce").dt.hour.dropna()
+            if int((hours < 9).sum()) >= 5:
+                earned.append(MILESTONE_INDEX["early_bird"])
+            if int((hours >= 23).sum()) >= 5:
+                earned.append(MILESTONE_INDEX["night_owl"])
+
+        if "subcategory" in expenses_df.columns:
+            subs = expenses_df["subcategory"].fillna("")
+            if (subs == "Charity & Donations").any():
+                earned.append(MILESTONE_INDEX["charity_champion"])
+            if _sub_in_month(expenses_df, ty, tm, "Gifts") >= 3:
+                earned.append(MILESTONE_INDEX["gift_giver"])
+            if subs.isin(["Flights & Trains", "Hotels & Lodging"]).any():
+                earned.append(MILESTONE_INDEX["travel_bug"])
+
+        if "currency" in expenses_df.columns and \
+                expenses_df["currency"].nunique() >= 3:
+            earned.append(MILESTONE_INDEX["currency_hopper"])
+
+        from utils import CATEGORIES
+        if set(expenses_df["category"].dropna()) >= set(CATEGORIES.keys()):
+            earned.append(MILESTONE_INDEX["category_explorer"])
+
+        housing = expenses_df[expenses_df["category"] == "Housing"]
+        if not housing.empty and housing["date"].dt.to_period("M").nunique() >= 12:
+            earned.append(MILESTONE_INDEX["home_steady"])
+
+        if _penny_pincher(expenses_df, today):
+            earned.append(MILESTONE_INDEX["penny_pincher"])
+
+        if len(expenses_df) >= 12:
+            try:
+                from forecasting import detect_subscriptions
+                if len(detect_subscriptions(expenses_df)) >= 3:
+                    earned.append(MILESTONE_INDEX["sub_detective"])
+            except Exception:
+                pass
+
+    if not income_df.empty:
+        m_inc = _month_frame(income_df, today.year, today.month)
+        if not m_inc.empty and "source" in m_inc.columns and \
+                m_inc["source"].fillna("Other").nunique() >= 3:
+            earned.append(MILESTONE_INDEX["hustler"])
+
+    if not savings_df.empty and _saver_streak(savings_df):
+        earned.append(MILESTONE_INDEX["squirrel_mode"])
+
     # Deduplicate
     seen = set()
     unique_earned = []
@@ -216,6 +379,10 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         if m["id"] not in seen:
             seen.add(m["id"])
             unique_earned.append(m)
+
+    # Meta badge: earning 10 different badges unlocks the hunter badge itself.
+    if len(unique_earned) >= 10 and "achievement_hunter" not in seen:
+        unique_earned.append(MILESTONE_INDEX["achievement_hunter"])
     return unique_earned
 
 
@@ -254,6 +421,10 @@ def _next_milestone_hint(expenses_df: pd.DataFrame, earned_ids: set) -> str | No
 
     if "first_expense" not in earned_ids:
         return "Log your first expense to earn your first badge! 🎯"
+    if "coffee_connoisseur" not in earned_ids:
+        return "10+ coffee & snack runs in a month earn the Caffeine Addict badge ☕"
+    if "category_explorer" not in earned_ids:
+        return "Spend in every category to earn the Category Explorer badge 🌈"
     if "week_streak" not in earned_ids and streak > 0:
         return f"Log for {7 - streak} more day(s) to earn the Week Warrior badge 🔥"
     if "month_streak" not in earned_ids and streak >= 7:

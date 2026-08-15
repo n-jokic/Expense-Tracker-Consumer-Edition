@@ -145,17 +145,25 @@ with r2:
     prices = q.holding_prices(user_id)
     if not prices.empty:
         vhist = []
+        estimated = False
         for _, p in prices.iterrows():
             hrow = view[view["symbol"] == p["symbol"]]
             if hrow.empty:
                 continue
-            cur = str(hrow.iloc[0]["currency"])
-            qty = float(hrow.iloc[0]["quantity"])
-            price_eur = float(p["price"])
-            if cur != "EUR" and price_eur > 0:
-                price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
+            pv = p.get("value_eur")
+            if pv is not None and not pd.isna(pv) and float(pv) > 0:
+                value = float(pv)  # exact snapshot value (qty/rate at the time)
+            else:
+                # Legacy snapshot rows: estimate from today's quantity/rates.
+                cur = str(hrow.iloc[0]["currency"])
+                qty = float(hrow.iloc[0]["quantity"])
+                price_eur = float(p["price"])
+                if cur != "EUR" and price_eur > 0:
+                    price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
+                value = qty * price_eur
+                estimated = True
             vhist.append({"date": p["date"], "symbol": p["symbol"],
-                          "value_eur": qty * price_eur})
+                          "value_eur": value})
         if vhist:
             vdf = pd.DataFrame(vhist)
             vsum = vdf.groupby("date")["value_eur"].sum().reset_index()
@@ -165,6 +173,9 @@ with r2:
             figv.update_layout(plot_bgcolor="rgba(0,0,0,0)",
                                paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
             st.plotly_chart(figv, width="stretch")
+            if estimated:
+                st.caption("≈ Includes days estimated from today's quantity; "
+                           "new snapshots record exact values.")
         else:
             st.info("Snapshots start accumulating after the first refresh.")
     else:
@@ -187,6 +198,25 @@ for _, r in view.iterrows():
     })
 st.dataframe(pd.DataFrame(tbl), hide_index=True)
 
+
+@st.dialog("Remove holding?")
+def remove_holding_dialog(user_id, holding_id, symbol, quantity):
+    """Confirm removing a holding (and its saved price history) from the portfolio."""
+    st.write(f"Remove **{symbol}** from your holdings?")
+    st.caption(f"Quantity: {quantity:,.4f} · This also removes its saved price history.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"hold_cancel_{holding_id}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Delete holding", key=f"hold_confirm_{holding_id}",
+                     type="primary", width="stretch"):
+            delete_holding(user_id, holding_id)
+            q.bump_db_version()
+            st.toast(f"Holding **{symbol}** removed.", icon=":material/delete:")
+            st.rerun()
+
+
 # Manage holdings
 with st.expander("✏️ Manage holdings"):
     for _, r in view.iterrows():
@@ -205,8 +235,7 @@ with st.expander("✏️ Manage holdings"):
                 q.bump_db_version()
                 st.rerun()
         st.caption("")
-        if st.button("🗑️ Remove holding", key=f"hold_d_{r['id']}", type="secondary"):
-            delete_holding(user_id, r["id"])
-            q.bump_db_version()
-            st.rerun()
+        if st.button(":material/delete: Remove holding", key=f"hold_d_{r['id']}",
+                     type="secondary", width="stretch"):
+            remove_holding_dialog(user_id, r["id"], r["symbol"], float(r["quantity"]))
         st.divider()

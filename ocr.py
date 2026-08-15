@@ -100,21 +100,27 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     amount = guess_total_amount(text)
     merchant = guess_merchant(text)
     category, subcategory, confidence = None, "", 0.0
+    source = None
+    model_version = None
 
     if merchant:
         # 1) learned classifier on the user's own data
         try:
-            from forecasting import suggest_category
+            from forecasting import suggest_category, CATEGORIZER_MODEL_VERSION
             cat, conf = suggest_category(expenses_df, merchant, user_id=user_id)
             if cat is not None:
                 category, confidence = cat, round(conf, 2)
+                source = "classifier"
+                model_version = CATEGORIZER_MODEL_VERSION
         except Exception:
             pass
         # 2) keyword-map fallback
         if category is None:
             from bank_import import categorize_expense
             category, subcategory = categorize_expense(merchant)
+            source = "keywords"
 
     return {"ok": True, "text": text, "amount": amount, "merchant": merchant,
             "category": category, "subcategory": subcategory,
-            "confidence": confidence, "reason": None}
+            "confidence": confidence, "reason": None,
+            "source": source, "model_version": model_version}

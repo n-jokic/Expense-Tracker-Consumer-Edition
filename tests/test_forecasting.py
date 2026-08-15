@@ -37,6 +37,35 @@ def test_forecast_with_enough_history():
     assert out["history_months"] == 12
 
 
+def test_forecast_history_months_are_elapsed_not_row_count():
+    """Six purchases spread over three years are NOT six months of history."""
+    rows = [
+        {"date": pd.Timestamp(2022, 1, 5), "category": "Other", "description": "a", "amount_eur": 100.0},
+        {"date": pd.Timestamp(2022, 7, 5), "category": "Other", "description": "b", "amount_eur": 100.0},
+        {"date": pd.Timestamp(2023, 1, 5), "category": "Other", "description": "c", "amount_eur": 100.0},
+        {"date": pd.Timestamp(2023, 9, 5), "category": "Other", "description": "d", "amount_eur": 100.0},
+        {"date": pd.Timestamp(2024, 3, 5), "category": "Other", "description": "e", "amount_eur": 100.0},
+        {"date": pd.Timestamp(2024, 12, 5), "category": "Other", "description": "f", "amount_eur": 100.0},
+    ]
+    out = forecast_next_month(pd.DataFrame(rows))
+    assert out["fallback"] is True
+    assert out["total"] is None
+    assert out["history_months"] == 36
+
+
+def test_forecast_falls_back_when_a_month_is_missing():
+    """A gap in an otherwise long history must not be interpolated into
+    artificial continuous spending."""
+    rows = []
+    for m in (1, 2, 4, 5, 6, 7):  # March missing
+        rows.append({"date": pd.Timestamp(2025, m, 5), "category": "X",
+                     "description": "x", "amount_eur": 100.0 + m})
+    out = forecast_next_month(pd.DataFrame(rows))
+    assert out["fallback"] is True
+    assert out["total"] is None
+    assert out["history_months"] == 7
+
+
 def test_anomalies_flags_outlier():
     rows = [{"date": pd.Timestamp(2025, 1, d), "category": "Food & Dining",
              "description": f"t{d}", "amount_eur": 10.0 + (d % 3)}

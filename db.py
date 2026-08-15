@@ -6,24 +6,26 @@ All data operations are scoped to user_id.
 import os
 import uuid
 import json
-import random
+import secrets
 import string
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 
 import pandas as pd
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, JSON,
-    DateTime, Date, ForeignKey, Text, event
+    DateTime, Date, ForeignKey, Text, event, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 # ── Engine & session setup ────────────────────────────────────────────────────
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-DB_PATH  = os.path.join(BASE_DIR, "expense_tracker.db")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
+# Tests override DB_PATH/BACKUP_DIR before importing this module (see
+# tests/conftest.py) so the live database is never touched by the suite.
+DB_PATH  = os.environ.get("DB_PATH") or os.path.join(BASE_DIR, "expense_tracker.db")
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or os.path.join(BASE_DIR, "backups")
 
 # Override with e.g. postgresql+psycopg2://user:pass@host/db when hosting.
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -99,6 +101,7 @@ class User(Base):
     is_admin            = Column(Boolean, default=False)
     created_at          = Column(DateTime, default=_utcnow)
     onboarding_complete = Column(Boolean, default=False)
+    data_revision       = Column(Integer, default=0)  # shared cache revision
     household           = relationship("Household", back_populates="members")
 
 
@@ -117,6 +120,14 @@ class Expense(Base):
     rec_template_id = Column(String, nullable=True)  # links to recurring.id when logged from a template
     loan_id      = Column(String, nullable=True)     # links to loans.id when logged as a loan payment
     notes        = Column(String, default="")
+    # ML suggestion telemetry (measurement-first): which pipeline suggested
+    # the category, its confidence/model version, the normalized merchant,
+    # and whether the user accepted or corrected it.
+    suggest_source        = Column(String, nullable=True)   # classifier | keywords
+    suggest_confidence    = Column(Float, nullable=True)
+    suggest_model_version = Column(Integer, nullable=True)
+    suggest_merchant      = Column(String, nullable=True)
+    suggest_accepted      = Column(Boolean, nullable=True)
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
@@ -165,6 +176,12 @@ class Savings(Base):
 
 class Budget(Base):
     __tablename__ = "budgets"
+    __table_args__ = (
+        # One budget row per (user, year, month, category, subcategory);
+        # subcategory "" = entire category. Overlaps are never summed.
+        UniqueConstraint("user_id", "year", "month", "category", "subcategory",
+                         name="uq_budget_scope"),
+    )
     id           = Column(Integer, primary_key=True, autoincrement=True)
     user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
     year         = Column(Integer)
@@ -185,6 +202,7 @@ class Recurring(Base):
     currency    = Column(String, default="EUR")
     amount_eur  = Column(Float, default=0.0)
     due_day     = Column(Integer, nullable=True)   # day of month (1-31); None = no due day
+    start_month = Column(String, nullable=True)    # "YYYY-MM" first active month; None = always
     notes       = Column(String, default="")
     active      = Column(Boolean, default=True)
 
@@ -254,7 +272,10 @@ class HoldingPrice(Base):
     id         = Column(Integer, primary_key=True, autoincrement=True)
     holding_id = Column(String, ForeignKey("holdings.id"), nullable=False)
     date       = Column(Date, default=date.today)
-    price      = Column(Float, default=0.0)
+    price      = Column(Float, default=0.0)       # price in the holding's currency
+    quantity   = Column(Float, default=0.0)       # quantity AT SNAPSHOT TIME
+    rate       = Column(Float, default=0.0)       # 1 EUR = X in holding currency at snapshot time
+    value_eur  = Column(Float, default=0.0)       # quantity * price / rate
 
 
 class Device(Base):
@@ -264,6 +285,7 @@ class Device(Base):
     name         = Column(String, default="Phone")
     pairing_code = Column(String, nullable=True)   # shown to the user; cleared after pairing
     token_hash   = Column(String, nullable=True)   # sha256 of the device token
+    token_expires_at = Column(DateTime, nullable=True)  # token validity window
     created_at   = Column(DateTime, default=_utcnow)
     last_sync_at = Column(DateTime, nullable=True)
 
@@ -375,11 +397,17 @@ def _migrate(engine):
     })
     _add_missing_columns(engine, "recurring", {
         "due_day": "INTEGER",
+        "start_month": "VARCHAR",
     })
     _add_missing_columns(engine, "expenses", {
         "rec_template_id": "VARCHAR",
         "loan_id": "VARCHAR",
         "updated_at": "TIMESTAMP",
+        "suggest_source": "VARCHAR",
+        "suggest_confidence": "FLOAT",
+        "suggest_model_version": "INTEGER",
+        "suggest_merchant": "VARCHAR",
+        "suggest_accepted": "BOOLEAN",
     })
     _add_missing_columns(engine, "income", {
         "updated_at": "TIMESTAMP",
@@ -387,6 +415,92 @@ def _migrate(engine):
     _add_missing_columns(engine, "savings", {
         "updated_at": "TIMESTAMP",
     })
+    _add_missing_columns(engine, "users", {
+        "data_revision": "INTEGER DEFAULT 0",
+    })
+    _add_missing_columns(engine, "holding_prices", {
+        "quantity": "FLOAT",
+        "rate": "FLOAT",
+        "value_eur": "FLOAT",
+    })
+    _add_missing_columns(engine, "devices", {
+        "token_expires_at": "TIMESTAMP",
+    })
+    _enforce_budget_scopes(engine)
+    _enforce_pairing_code_uniqueness(engine)
+
+
+def _enforce_pairing_code_uniqueness(engine):
+    """Pairing codes must be unique while active (NULL once the device has
+    paired, so a partial index keeps unpaired devices collision-free)."""
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    if "devices" not in insp.get_table_names():
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_devices_pairing_code"
+            " ON devices (pairing_code) WHERE pairing_code IS NOT NULL"))
+
+
+# ── Shared cache revision ────────────────────────────────────────────────────
+
+def get_data_revision(user_id: int) -> int:
+    """The user's shared data revision — every session reads the same value,
+    so cached readers invalidate for ALL browser sessions, household members,
+    and background jobs the moment any write bumps it."""
+    with get_session() as s:
+        u = s.query(User).filter(User.id == user_id).first()
+        return int(getattr(u, "data_revision", 0) or 0) if u else 0
+
+
+def bump_data_revision(user_id: int, include_household: bool = True) -> int:
+    """Atomically increment the user's data revision; returns the new value.
+
+    With include_household (default) every household member's revision is
+    bumped too, so shared household caches invalidate for all members the
+    moment any one of them writes.
+    """
+    from sqlalchemy import text
+    ids = [int(user_id)]
+    if include_household:
+        with get_session() as s:
+            u = s.query(User).filter(User.id == user_id).first()
+            if u and u.household_id:
+                ids = [m.id for m in s.query(User)
+                       .filter(User.household_id == u.household_id).all()]
+    engine = get_engine()
+    with engine.begin() as conn:
+        params = {f"id{i}": v for i, v in enumerate(ids)}
+        placeholders = ", ".join(f":id{i}" for i in range(len(ids)))
+        conn.execute(text(
+            "UPDATE users SET data_revision = COALESCE(data_revision, 0) + 1"
+            f" WHERE id IN ({placeholders})"), params)
+    return get_data_revision(user_id)
+
+
+def _enforce_budget_scopes(engine):
+    """Budget scopes are unique: (user, year, month, category, subcategory).
+
+    Existing installs may hold overlapping rows (category-level plus
+    subcategory-level for the same month) that were summed together in
+    alerts. Dedupe them (keep the newest row per scope) and enforce the
+    unique index.
+    """
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    if "budgets" not in insp.get_table_names():
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE budgets SET subcategory = '' WHERE subcategory IS NULL"))
+        conn.execute(text(
+            "DELETE FROM budgets WHERE id NOT IN ("
+            "  SELECT MAX(id) FROM budgets"
+            "  GROUP BY user_id, year, month, category, subcategory)"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_scope"
+            " ON budgets (user_id, year, month, category, subcategory)"))
 
 
 # ── Audit helper ──────────────────────────────────────────────────────────────
@@ -428,6 +542,8 @@ def _parse_dates(df, cols):
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
              "amount","currency","amount_eur","recurring","rec_template_id","loan_id","notes",
+             "suggest_source","suggest_confidence","suggest_model_version",
+             "suggest_merchant","suggest_accepted",
              "is_deleted","deleted_at","created_at","updated_at"]
 
 def get_expenses(user_id, include_deleted=False):
@@ -451,7 +567,12 @@ def add_expense(user_id, row):
             amount_eur=float(row.get("amount_eur",0)), recurring=bool(row.get("recurring",False)),
             rec_template_id=row.get("rec_template_id"),
             loan_id=row.get("loan_id"),
-            notes=row.get("notes","")
+            notes=row.get("notes",""),
+            suggest_source=row.get("suggest_source"),
+            suggest_confidence=row.get("suggest_confidence"),
+            suggest_model_version=row.get("suggest_model_version"),
+            suggest_merchant=row.get("suggest_merchant"),
+            suggest_accepted=row.get("suggest_accepted"),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "expenses", exp_id, row)
@@ -543,6 +664,21 @@ def add_income(user_id, row):
         s.add(obj)
         log_audit(s, user_id, "CREATE", "income", inc_id, row)
     return inc_id
+
+
+def update_income(user_id, income_id, updates):
+    """Edit an income entry. The row stores its own original values — edits
+    rewrite this row only, never any other history."""
+    with get_session() as s:
+        obj = s.query(Income).filter(Income.id == income_id,
+                                     Income.user_id == user_id).first()
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "income", income_id, updates)
+    return True
 
 
 def soft_delete_income(user_id, income_id):
@@ -643,6 +779,24 @@ def add_savings(user_id, row):
     return sav_id
 
 
+def update_savings(user_id, savings_id, updates):
+    """Edit a savings entry (date, deposited, target, interest, notes, ...).
+
+    Note: balances are a derived chain recomputed from ALL entries on read,
+    so editing an entry intentionally updates the chain from that entry
+    forward — no other rows are rewritten."""
+    with get_session() as s:
+        obj = s.query(Savings).filter(Savings.id == savings_id,
+                                      Savings.user_id == user_id).first()
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "savings", savings_id, updates)
+    return True
+
+
 def soft_delete_savings(user_id, savings_id):
     with get_session() as s:
         obj = s.query(Savings).filter(Savings.id == savings_id, Savings.user_id == user_id).first()
@@ -676,12 +830,29 @@ def get_budgets(user_id):
 
 
 def add_budget(user_id, row):
+    """Upsert a budget row: one row per (user, year, month, category,
+    subcategory) scope — saving the same scope again updates it instead of
+    creating a duplicate that would be double-counted."""
+    year = int(row.get("year", date.today().year))
+    month = int(row.get("month", date.today().month))
+    category = row.get("category", "") or ""
+    subcategory = row.get("subcategory", "") or ""
+    value = float(row.get("budgeted_eur", 0))
     with get_session() as s:
+        obj = (s.query(Budget)
+               .filter(Budget.user_id == user_id, Budget.year == year,
+                       Budget.month == month, Budget.category == category,
+                       Budget.subcategory == subcategory)
+               .first())
+        if obj:
+            obj.budgeted_eur = value
+            log_audit(s, user_id, "UPDATE", "budgets", obj.id, row)
+            s.flush()
+            return obj.id
         obj = Budget(
-            user_id=user_id, year=int(row.get("year", date.today().year)),
-            month=int(row.get("month", date.today().month)),
-            category=row.get("category",""), subcategory=row.get("subcategory",""),
-            budgeted_eur=float(row.get("budgeted_eur",0))
+            user_id=user_id, year=year, month=month,
+            category=category, subcategory=subcategory,
+            budgeted_eur=value
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "budgets", "new", row)
@@ -702,7 +873,7 @@ def delete_budget(user_id, budget_id):
 # ── Recurring ─────────────────────────────────────────────────────────────────
 
 _REC_COLS = ["id","user_id","category","subcategory","description",
-             "amount","currency","amount_eur","due_day","notes","active"]
+             "amount","currency","amount_eur","due_day","start_month","notes","active"]
 
 def get_recurring(user_id):
     with get_session() as s:
@@ -720,6 +891,7 @@ def add_recurring(user_id, row):
             amount=float(row.get("amount",0)), currency=row.get("currency","EUR"),
             amount_eur=float(row.get("amount_eur",0)),
             due_day=row.get("due_day"),
+            start_month=row.get("start_month"),
             notes=row.get("notes",""), active=bool(row.get("active",True))
         )
         s.add(obj)
@@ -921,30 +1093,54 @@ def delete_holding(user_id, h_id):
 
 
 def get_holding_prices(user_id):
-    """Price snapshots joined with holdings, ordered by date."""
+    """Price snapshots joined with holdings, ordered by date.
+
+    Rows created before the quantity/rate/value_eur columns existed have
+    None/0 for those fields; callers fall back to today's quantity with an
+    explicit "estimated" label.
+    """
     with get_session() as s:
         rows = (s.query(HoldingPrice, Holding.symbol, Holding.user_id)
                 .join(Holding, HoldingPrice.holding_id == Holding.id)
                 .filter(Holding.user_id == user_id)
                 .order_by(HoldingPrice.date.asc(), Holding.symbol.asc()).all())
-    data = [{"holding_id": hp.holding_id,
-             "symbol": sym, "date": hp.date, "price": hp.price}
+    data = [{"holding_id": hp.holding_id, "symbol": sym, "date": hp.date,
+             "price": hp.price, "quantity": hp.quantity, "rate": hp.rate,
+             "value_eur": hp.value_eur}
             for hp, sym, _uid in rows]
-    df = pd.DataFrame(data, columns=["holding_id","symbol","date","price"])
+    df = pd.DataFrame(data, columns=["holding_id","symbol","date","price",
+                                     "quantity","rate","value_eur"])
     return _parse_dates(df, ["date"])
 
 
-def add_holding_price(holding_id, price, when=None):
-    """Append a price snapshot (one per holding per day)."""
+def add_holding_price(holding_id, price, when=None, quantity=None, rate=None):
+    """Append or update a daily price snapshot (one per holding per day).
+
+    quantity/rate are recorded so the snapshot's EUR value is exact even if
+    the user later changes the holding's quantity or the currency rates.
+    value_eur = quantity * price / rate (price is in the holding's currency).
+    """
     when = when or date.today()
+    qty = float(quantity) if quantity is not None else None
+    rt = float(rate) if rate is not None else None
+    value = round(qty * float(price) / rt, 4) if (qty is not None and rt) else None
     with get_session() as s:
         existing = (s.query(HoldingPrice)
                     .filter(HoldingPrice.holding_id == holding_id,
                             HoldingPrice.date == when).first())
         if existing:
             existing.price = float(price)
+            if qty is not None:
+                existing.quantity = qty
+            if rt is not None:
+                existing.rate = rt
+            if value is not None:
+                existing.value_eur = value
         else:
-            s.add(HoldingPrice(holding_id=holding_id, date=when, price=float(price)))
+            s.add(HoldingPrice(holding_id=holding_id, date=when,
+                               price=float(price),
+                               quantity=qty or 0.0, rate=rt or 0.0,
+                               value_eur=value or 0.0))
     return True
 
 
@@ -1002,7 +1198,9 @@ def get_audit_log(user_id, limit=200):
 # ── Households ────────────────────────────────────────────────────────────────
 
 def _random_invite_code(length=8):
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
+    """Cryptographically secure random code (secrets, not the PRNG)."""
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def create_household(user_id, name):
@@ -1032,6 +1230,18 @@ def join_household(user_id, invite_code):
             log_audit(s, user_id, "UPDATE", "users", user_id, {"joined_household": hh.id})
             return True
     return False
+
+
+def get_household_by_member(user_id):
+    """The household a user belongs to (id, name, invite code) or None."""
+    with get_session() as s:
+        u = s.query(User).filter(User.id == user_id).first()
+        if not u or not u.household_id:
+            return None
+        hh = s.query(Household).filter(Household.id == u.household_id).first()
+        if not hh:
+            return None
+        return {"id": hh.id, "name": hh.name, "invite_code": hh.invite_code}
 
 
 def get_household_members(household_id):
@@ -1166,7 +1376,15 @@ def delete_user_account(user_id):
 # ── Backups (SQLite only) ─────────────────────────────────────────────────────
 
 def backup_db(force: bool = False):
-    """Copy the SQLite database into data/backups once per day (WAL-safe).
+    """Copy the SQLite database into BACKUP_DIR (WAL-safe).
+
+    Without force: one backup per day (a ".last_backup" marker is checked).
+    With force=True: ALWAYS take a fresh, timestamped snapshot — a second
+    manual backup on the same day must capture changes made after the
+    morning backup, not silently return the morning file.
+
+    Writes are atomic: the copy lands in a temp file first, then
+    os.replace() moves it into place.
 
     Returns the backup path, or None when not applicable / already done today.
     """
@@ -1184,18 +1402,21 @@ def backup_db(force: bool = False):
     if not force and last == today.isoformat():
         return None
 
-    dest = os.path.join(BACKUP_DIR, f"expense_tracker_{today.isoformat()}.db")
-    if not os.path.exists(dest):
-        src = sqlite3.connect(DB_PATH)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dest = os.path.join(BACKUP_DIR,
+                        f"expense_tracker_{stamp}_{uuid.uuid4().hex[:6]}.db")
+    tmp = f"{dest}.tmp"
+    src = sqlite3.connect(DB_PATH)
+    try:
+        dst = sqlite3.connect(tmp)
         try:
-            dst = sqlite3.connect(dest)
-            try:
-                with dst:
-                    src.backup(dst)
-            finally:
-                dst.close()
+            with dst:
+                src.backup(dst)
         finally:
-            src.close()
+            dst.close()
+    finally:
+        src.close()
+    os.replace(tmp, dest)
 
     with open(marker, "w", encoding="utf-8") as f:
         f.write(today.isoformat())
@@ -1210,7 +1431,7 @@ def backup_db(force: bool = False):
         if not (fn.startswith("expense_tracker_") and fn.endswith(".db")):
             continue
         try:
-            d = date.fromisoformat(fn[len("expense_tracker_"):-3])
+            d = date.fromisoformat(fn[len("expense_tracker_"):][:10])
         except ValueError:
             continue
         if (today - d).days > retention:
@@ -1223,10 +1444,23 @@ def backup_db(force: bool = False):
 
 # ── Devices (phone pairing / sync) ───────────────────────────────────────────
 
+TOKEN_LIFETIME_DAYS = 90  # device tokens expire; sync refreshes the window
+
+
+def _naive_utc(dt):
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
 def create_pairing_device(user_id):
     """Create a pending device row with a pairing code. Returns (device_id, code)."""
-    code = _random_invite_code(6)
     with get_session() as s:
+        code = _random_invite_code(6)
+        for _ in range(5):  # codes must be unique while active
+            if not s.query(Device).filter(Device.pairing_code == code).first():
+                break
+            code = _random_invite_code(6)
         dev = Device(user_id=user_id, pairing_code=code)
         s.add(dev)
         s.flush()
@@ -1237,23 +1471,21 @@ def create_pairing_device(user_id):
 def complete_pairing(code, device_name="Phone", token=None):
     """Validate a pairing code and bind a token. Returns token or None."""
     import hashlib
-    from datetime import timedelta
     code = (code or "").strip().upper()
     with get_session() as s:
         dev = s.query(Device).filter(Device.pairing_code == code).first()
         if not dev:
             return None
         # codes expire after 10 minutes (created_at reads back as naive UTC)
-        created = dev.created_at
-        if created.tzinfo is not None:
-            created = created.replace(tzinfo=None)
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-        if (now_naive - created) > timedelta(minutes=10):
+        if (now_naive - _naive_utc(dev.created_at)) > timedelta(minutes=10):
             return None
         token = token or uuid.uuid4().hex
         dev.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         dev.name = device_name or dev.name
         dev.pairing_code = None
+        dev.token_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) \
+            + timedelta(days=TOKEN_LIFETIME_DAYS)
         return token
 
 
@@ -1262,18 +1494,25 @@ def get_devices(user_id):
         rows = s.query(Device).filter(Device.user_id == user_id,
                                       Device.token_hash.isnot(None)).all()
         return [{"id": d.id, "name": d.name, "created_at": d.created_at,
-                 "last_sync_at": d.last_sync_at} for d in rows]
+                 "last_sync_at": d.last_sync_at,
+                 "token_expires_at": d.token_expires_at} for d in rows]
 
 
 def device_by_token(token):
-    """Resolve a device (and its user) from a raw token. Returns dict or None."""
+    """Resolve a device (and its user) from a raw token. Returns dict or None.
+
+    Expired tokens are rejected (sync refreshes the window on each use)."""
     import hashlib
     h = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
     with get_session() as s:
         dev = s.query(Device).filter(Device.token_hash == h).first()
         if not dev:
             return None
-        return {"id": dev.id, "user_id": dev.user_id, "name": dev.name}
+        exp = _naive_utc(dev.token_expires_at)
+        if exp is not None and _naive_utc(datetime.now(timezone.utc)) > exp:
+            return None  # token expired — re-pair the device
+        return {"id": dev.id, "user_id": dev.user_id, "name": dev.name,
+                "last_sync_at": _naive_utc(dev.last_sync_at)}
 
 
 def touch_device_sync(device_id):
@@ -1281,6 +1520,8 @@ def touch_device_sync(device_id):
         dev = s.query(Device).filter(Device.id == device_id).first()
         if dev:
             dev.last_sync_at = _utcnow()
+            # Sliding window: an actively syncing device stays valid.
+            dev.token_expires_at = _utcnow() + timedelta(days=TOKEN_LIFETIME_DAYS)
 
 
 def revoke_device(user_id, device_id):

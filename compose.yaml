@@ -2,15 +2,29 @@ services:
   app:
     build: .
     ports:
-      - "8501:8501"
+      # Streamlit stays on loopback; only Caddy is exposed publicly
+      - "127.0.0.1:8501:8501"
     volumes:
       - app-data:/app/data
     environment:
-      # Set to "false" when exposing this publicly
-      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
+      # Registration is off by default; set ALLOW_REGISTRATION=true for trusted deployments
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-false}
       # For PostgreSQL hosting: uncomment and set, then add psycopg2-binary
       # - DATABASE_URL=postgresql+psycopg2://user:password@host:5432/expenses
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
 volumes:
   app-data:
+  caddy_data:

@@ -5,6 +5,7 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+.audit_tmp
 *.db
 *.sqlite*
 .streamlit/secrets.toml

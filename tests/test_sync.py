@@ -122,12 +122,13 @@ def test_snapshot_returns_newer_records(test_user):
     updated = get_expenses(test_user).iloc[0]["updated_at"]
 
     since = (updated - timedelta(minutes=1))
-    snap = snapshot(test_user, since)
+    snap, truncated = snapshot(test_user, since)
     assert any(r["id"] == rid for r in snap["expenses"])
+    assert truncated is False
 
     # a much newer `since` excludes it
     since2 = (updated + timedelta(minutes=1))
-    snap2 = snapshot(test_user, since2)
+    snap2, _ = snapshot(test_user, since2)
     assert not any(r["id"] == rid for r in snap2["expenses"])
 
 

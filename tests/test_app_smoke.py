@@ -132,9 +132,11 @@ def test_onboarding_flow_submits_without_name_errors(smoke_user):
     assert not at.exception
     assert at.session_state["onboarding_step"] == 1
 
-    # submit step 1 (currency + budget save)
-    at.number_input[0].set_value(118.0)
-    at.number_input[1].set_value(500.0)
+    # submit step 1 (currency + budget save). With EUR selected only the
+    # budget input is rendered; otherwise [0] is the rate, [1] the budget.
+    inputs = at.number_input
+    budget_idx = 0 if len(inputs) == 1 else 1
+    inputs[budget_idx].set_value(500.0)
     for b in at.button:
         if "Continue" in (b.label or ""):
             b.click()

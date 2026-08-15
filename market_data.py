@@ -119,6 +119,10 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
         return 0, False
 
     get = _fetch_cached if cached else fetch_price
+    from db import get_settings as _db_get_settings
+    from utils import get_rates
+    settings = _db_get_settings(user_id) or {}
+    rates = get_rates(settings)
     updated = 0
     for _, h in holdings.iterrows():
         symbol = str(h["symbol"])
@@ -129,7 +133,12 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
             "last_price": price,
             "last_price_date": datetime.now(timezone.utc),
         })
-        add_holding_price(str(h["id"]), price)
+        # Record quantity + rate so the snapshot's EUR value stays exact even
+        # if the user later edits the quantity or the rates change.
+        cur = str(h.get("currency") or "EUR").upper()
+        qty = float(h.get("quantity") or 0.0)
+        rate = float(rates.get(cur, 1.0) or 1.0)
+        add_holding_price(str(h["id"]), price, quantity=qty, rate=rate)
         updated += 1
     return updated, updated > 0
 

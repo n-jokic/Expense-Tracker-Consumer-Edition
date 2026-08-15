@@ -18,11 +18,28 @@ def annuity_payment(principal: float, annual_rate_pct: float, term_months: int) 
     return principal * r * (1 + r) ** term_months / ((1 + r) ** term_months - 1)
 
 
+def _first_due(start: date, payment_day: int) -> date:
+    """First due date: the first occurrence of payment_day on or after the
+    loan start, clamped to the month's length (31st in February -> 28/29).
+
+    If payment_day already passed in the start month (e.g. loan starts Jan 31
+    with payment day 1), the first due falls in the next month — the loan
+    never accrues a phantom month before it exists.
+    """
+    if payment_day >= start.day:
+        anchor = start
+    else:
+        anchor = date(start.year + start.month // 12, start.month % 12 + 1, 1)
+    last = calendar.monthrange(anchor.year, anchor.month)[1]
+    return date(anchor.year, anchor.month, min(payment_day, last))
+
+
 def _next_due(start: date, payment_day: int, k: int) -> date:
-    """The k-th payment due date: payment_day in the month start + k months,
-    clamped to the month's length (31st in February -> 28/29)."""
-    total = start.month - 1 + k
-    year  = start.year + total // 12
+    """The (k+1)-th payment due date: k months after the first due date,
+    clamped to each month's length."""
+    first = _first_due(start, payment_day)
+    total = first.month - 1 + k
+    year  = first.year + total // 12
     month = total % 12 + 1
     last  = calendar.monthrange(year, month)[1]
     return date(year, month, min(payment_day, last))
@@ -77,7 +94,9 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     remaining_months = 0
     if bal > 0.005:
         if r == 0:
-            remaining_months = int(round(bal / monthly)) if monthly > 0 else 0
+            # ceil, not round: a €149 balance with €100 payments still needs
+            # 2 payments (one full + one partial), never 1.
+            remaining_months = int(math.ceil(bal / monthly - 1e-9)) if monthly > 0 else 0
         else:
             if monthly > bal * r:
                 remaining_months = int(math.ceil(

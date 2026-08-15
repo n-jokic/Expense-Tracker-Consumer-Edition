@@ -2,7 +2,10 @@
 # Place next to the app, set your domain, run:  caddy run
 # The app itself:  docker compose up -d   (or DATABASE_URL=... streamlit run app.py)
 
+# Reverse proxies over the compose network: "app" is the Streamlit container's
+# DNS name, so 8501 stays unpublished on the host (loopback-only) and reachable
+# only through Caddy.
 expenses.example.com {
-    reverse_proxy localhost:8501
+    reverse_proxy app:8501
     encode gzip
 }

@@ -4,11 +4,13 @@ utils.py — Shared constants, currency engine, formatting helpers, CSS, and net
 
 import io
 import os
+import math
 import socket
 import calendar
 from datetime import date as _date, timedelta as _td
 
 import streamlit as st
+import pandas as pd
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -64,6 +66,8 @@ SAVINGS_TARGET_PCT    = 15
 SAVINGS_GOAL_PCT      = 20
 BACKUP_RETENTION_DAYS = 30
 APP_PORT              = 8501
+# LAN access is served over HTTPS (self-signed cert) unless explicitly disabled.
+TLS_ENABLED           = os.environ.get("EXPENSE_TRACKER_TLS") == "1"
 MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
 
@@ -87,24 +91,39 @@ def get_currency_symbol(currency: str) -> str:
     return SUPPORTED_CURRENCIES.get(currency, currency)
 
 
+def _valid_rate(v) -> float | None:
+    """An exchange rate is usable only if it is finite and strictly positive.
+    Zero, negative, NaN, and infinity are rejected — a zero rate must never
+    be silently interpreted as a 1:1 conversion."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f) or f <= 0:
+        return None
+    return f
+
+
 def get_rates(settings: dict) -> dict:
-    """Return the per-currency rate table (1 EUR = X) for a settings dict."""
+    """Return the per-currency rate table (1 EUR = X) for a settings dict.
+
+    Stored values that are zero, negative, or non-finite are ignored so a
+    corrupt manual entry can never poison conversions.
+    """
     rates = dict(DEFAULT_RATES)
     stored = settings.get("currency_rates")
     if isinstance(stored, dict):
         for k, v in stored.items():
-            try:
-                rates[k] = float(v)
-            except (TypeError, ValueError):
-                continue
+            f = _valid_rate(v)
+            if f is not None:
+                rates[k] = f
     else:
         # Legacy installs: a single exchange_rate column (EUR -> RSD).
         legacy = settings.get("exchange_rate")
         if legacy:
-            try:
-                rates["RSD"] = float(legacy)
-            except (TypeError, ValueError):
-                pass
+            f = _valid_rate(legacy)
+            if f is not None:
+                rates["RSD"] = f
     rates["EUR"] = 1.0
     return rates
 
@@ -113,7 +132,10 @@ def to_eur(amount: float, currency: str, rates: dict) -> float:
     """Convert a local-currency amount into its EUR base value."""
     if currency == "EUR":
         return round(float(amount), 4)
-    r = rates.get(currency, 1.0) or 1.0
+    r = _valid_rate(rates.get(currency, 1.0))
+    if r is None:
+        raise ValueError(f"Invalid exchange rate for {currency}: "
+                         f"{rates.get(currency)!r} — must be > 0 and finite")
     return round(float(amount) / r, 4)
 
 
@@ -121,7 +143,11 @@ def to_display(eur: float, currency: str, rates: dict) -> float:
     """Convert a EUR-based aggregate into the display currency."""
     if currency == "EUR":
         return float(eur)
-    return float(eur) * (rates.get(currency, 1.0) or 1.0)
+    r = _valid_rate(rates.get(currency, 1.0))
+    if r is None:
+        raise ValueError(f"Invalid exchange rate for {currency}: "
+                         f"{rates.get(currency)!r} — must be > 0 and finite")
+    return float(eur) * r
 
 
 def to_display_row(eur: float, orig_amount: float, orig_currency: str,
@@ -131,6 +157,37 @@ def to_display_row(eur: float, orig_amount: float, orig_currency: str,
     if orig_currency == currency:
         return float(orig_amount)
     return to_display(eur, currency, rates)
+
+
+def effective_category_budgets(m_bud) -> dict:
+    """Effective budget per category for a single month, applying budget-scope
+    semantics: when subcategory-specific rows exist for a category they are
+    authoritative and the entire-category row (subcategory == "") is ignored;
+    otherwise the entire-category row applies. Overlapping rows are never
+    summed together."""
+    if m_bud is None or m_bud.empty:
+        return {}
+    df = m_bud.copy()
+    df["_sub"] = df["subcategory"].fillna("").astype(str).str.strip()
+    eff = {}
+    for cat, g in df.groupby("category"):
+        subs = g[g["_sub"] != ""]
+        if not subs.empty:
+            eff[cat] = float(subs["budgeted_eur"].sum())
+        else:
+            eff[cat] = float(g["budgeted_eur"].sum())
+    return eff
+
+
+def filter_started_templates(df, year: int, month: int):
+    """Recurring templates whose start_month ("YYYY-MM") is on or before the
+    given month. None/blank start_month = always active (legacy templates),
+    and frames without the column pass through unchanged."""
+    if df is None or df.empty or "start_month" not in df.columns:
+        return df
+    cur = f"{year:04d}-{month:02d}"
+    started = df["start_month"].fillna("").astype(str).str.strip()
+    return df[(started == "") | (started <= cur)]  # YYYY-MM compares lexically
 
 
 def _fmt_number(v: float, currency: str) -> str:
@@ -253,9 +310,28 @@ def classify_quadrant(work_hours: float, usage_hours: float,
     return "Reconsider"
 
 
+# Cells starting with these characters are treated as formulas when the
+# spreadsheet opens (or when a CSV is re-imported): a user-supplied value
+# like "=HYPERLINK(...)" would execute. Prefixing with a quote makes
+# openpyxl/pandas write them as literal text cells (data_type 's').
+_XL_UNSAFE_PREFIXES = ("=", "+", "-", "@")
+
+
+def _xl_safe(v):
+    if isinstance(v, str) and v.startswith(_XL_UNSAFE_PREFIXES):
+        return "'" + v
+    return v
+
+
 def to_excel(df) -> bytes:
     buf = io.BytesIO()
-    df.to_excel(buf, index=False, engine="openpyxl")
+    safe = df.copy()
+    from pandas.api import types as pd_types
+    for col in safe.columns:
+        # pandas 3 uses "str" dtype for string columns, not object.
+        if pd_types.is_string_dtype(safe[col]) or safe[col].dtype == object:
+            safe[col] = safe[col].astype(object).map(_xl_safe)
+    safe.to_excel(buf, index=False, engine="openpyxl")
     return buf.getvalue()
 
 
@@ -332,7 +408,9 @@ def inject_mobile_css():
             padding: 12px;
             border-radius: 10px;
         }
-        div[data-testid="column"] { min-width: 100% !important; }
+        /* Stack only KPI-card columns on phones (a global min-width on
+           every column broke tables and forms on every page). */
+        div[data-testid="column"]:has(.kpi) { min-width: 100% !important; }
         .stDataFrame { font-size: 13px; }
         h1 { font-size: 1.6rem !important; }
         h2 { font-size: 1.3rem !important; }
@@ -392,10 +470,11 @@ def get_lan_urls(port: int):
         pass
 
     urls = []
+    scheme = "https" if TLS_ENABLED else "http"
     for ip in sorted(ips):
         if ip.startswith(("127.", "169.254.")):
             continue
-        urls.append(f"http://{ip}:{port}")
+        urls.append(f"{scheme}://{ip}:{port}")
     return urls, hostname
 
 

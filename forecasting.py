@@ -32,16 +32,32 @@ def _monthly_totals(expenses_df: pd.DataFrame) -> pd.DataFrame:
     return t.sort_values("ds")
 
 
+def _elapsed_months(t: pd.DataFrame) -> int:
+    """Calendar months spanned by the history (max - min period + 1),
+    NOT the number of rows — six purchases spread over three years are not
+    six months of history."""
+    if t is None or t.empty:
+        return 0
+    return int((t["ym"].max() - t["ym"].min()).n) + 1
+
+
 def _ets_forecast(expenses_df: pd.DataFrame):
-    """Returns (point, lower, upper) or (None, None, None) with <6 months."""
+    """Returns (point, lower, upper) or (None, None, None) when history is
+    too short or sparse. Sparse histories fall back instead of interpolating
+    spending that never happened (a two-year-old purchase must not become
+    continuous monthly spending)."""
     t = _monthly_totals(expenses_df)
-    if len(t) < MIN_HISTORY_MONTHS:
+    if _elapsed_months(t) < MIN_HISTORY_MONTHS:
         return None, None, None
     try:
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
-        series = t.set_index("ds")["amount_eur"].asfreq("MS").interpolate()
+        idx = pd.period_range(t["ym"].min(), t["ym"].max(), freq="M")
+        series = t.set_index("ym")["amount_eur"].reindex(idx).astype(float)
+        if series.isna().any():
+            return None, None, None  # a month is missing: no fabricated data
+        ts = pd.Series(series.values, index=idx.to_timestamp())
         model = ExponentialSmoothing(
-            series, trend="add", initialization_method="estimated").fit()
+            ts, trend="add", initialization_method="estimated").fit()
         fc = max(float(model.forecast(1).iloc[0]), 0.0)
         sd = float(model.resid.std()) if len(model.resid) else 0.0
         return fc, max(fc - 2 * sd, 0.0), fc + 2 * sd
@@ -60,7 +76,7 @@ def forecast_next_month(expenses_df: pd.DataFrame) -> dict:
     out = {
         "total": total, "lower": lower, "upper": upper,
         "by_category": {}, "fallback": total is None,
-        "history_months": len(_monthly_totals(expenses_df)),
+        "history_months": _elapsed_months(_monthly_totals(expenses_df)),
     }
     if total is None or expenses_df is None or expenses_df.empty:
         return out
@@ -111,6 +127,7 @@ class _CategorizerModel:
         self.clf = None
         self.categories = []
         self.trained_rows = 0
+        self.trained_fingerprint = None
 
     def train(self, expenses_df: pd.DataFrame) -> bool:
         if expenses_df is None or len(expenses_df) < 10:
@@ -140,23 +157,52 @@ class _CategorizerModel:
         return self.categories[idx], float(probs[idx])
 
 
-@st.cache_resource
-def get_categorizer(user_id=None) -> _CategorizerModel:
-    """One classifier per user (cache_resource keys on the argument), so
-    accounts never leak training data into each other's suggestions."""
+# Bump when the training pipeline changes so old cached models are discarded.
+CATEGORIZER_MODEL_VERSION = 2
+
+
+def _dataset_fingerprint(expenses_df: pd.DataFrame) -> str:
+    """Fingerprint of the labelled dataset: row count + a hash of every
+    (description, category) pair. ANY correction (category edit), addition,
+    or deletion changes the fingerprint and invalidates the cached model."""
+    import hashlib
+    if expenses_df is None or expenses_df.empty:
+        return "empty"
+    df = expenses_df[["description", "category"]].dropna()
+    joined = sorted(
+        f"{str(d).strip().lower()}|{str(c)}"
+        for d, c in zip(df["description"], df["category"])
+    )
+    digest = hashlib.md5("\n".join(joined).encode("utf-8")).hexdigest()
+    return f"{len(df)}|{digest}"
+
+
+@st.cache_resource(max_entries=8)
+def get_categorizer(user_id=None, model_version: int = CATEGORIZER_MODEL_VERSION,
+                    fingerprint: str = "") -> _CategorizerModel:
+    """One classifier per (user, model version, dataset fingerprint).
+
+    cache_resource keys on all arguments, so when the user corrects or
+    deletes categorised expenses the fingerprint changes and a FRESH model is
+    trained on the new labels — no stale suggestions after edits. Accounts
+    never leak training data into each other's suggestions."""
     return _CategorizerModel()
+
+
+def clear_categorizers():
+    """Drop every cached categorizer (e.g. on account deletion)."""
+    get_categorizer.clear()
 
 
 def suggest_category(expenses_df: pd.DataFrame, text: str,
                      min_confidence: float = 0.5, user_id=None):
     """Train-on-demand categorizer. Returns (category, confidence) or
     (None, conf) when untrained or below confidence."""
-    model = get_categorizer(user_id)
-    if model.clf is None:
-        model.train(expenses_df)
-    elif expenses_df is not None and len(expenses_df) >= int(model.trained_rows * 1.5) + 20:
-        # enough new labelled data — retrain
-        model.train(expenses_df)
+    fp = _dataset_fingerprint(expenses_df)
+    model = get_categorizer(user_id, CATEGORIZER_MODEL_VERSION, fp)
+    if model.clf is None or model.trained_fingerprint != fp:
+        if model.train(expenses_df):
+            model.trained_fingerprint = fp
     if model.clf is None:
         return None, 0.0
     cat, conf = model.predict(text)

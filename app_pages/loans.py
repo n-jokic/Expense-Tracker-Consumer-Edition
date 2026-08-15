@@ -67,6 +67,82 @@ with st.form("loan_form", clear_on_submit=False):
         else:
             st.error("Please give the loan a name.")
 
+
+@st.dialog("Delete loan?")
+def delete_loan_dialog(user_id, loan_id, name, remaining):
+    """Confirm deleting a loan; payments already logged stay as expenses."""
+    st.write(f"Delete loan **{name}**?")
+    st.caption(f"Remaining balance: **{remaining}** · "
+               "The loan is removed, but payments already logged remain as expenses.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"loan_cancel_{loan_id}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Delete loan", key=f"loan_confirm_{loan_id}",
+                     type="primary", width="stretch"):
+            delete_loan(user_id, loan_id)
+            q.bump_db_version()
+            st.toast("Loan deleted (payments remain as expenses).", icon="🗑️")
+            st.rerun()
+
+
+@st.dialog("Edit loan")
+def edit_loan_dialog(uid: int, row):
+    """Edit loan terms; logged payments stay untouched."""
+    st.caption("Editing loan terms does not change logged payments — the payoff math simply recomputes.")
+    c1, c2 = st.columns(2)
+    with c1:
+        e_name = st.text_input("Loan name", value=str(row["name"]), key="loan_edit_name")
+        e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                              index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
+                              if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
+                              key="loan_edit_cur")
+        e_principal = st.number_input(f"Principal ({get_currency_symbol(e_cur)})",
+                                      min_value=0.01, max_value=MAX_SAVINGS_TARGET,
+                                      step=100.0, format="%.2f",
+                                      value=max(float(row["principal"]), 0.01),
+                                      key="loan_edit_principal")
+        e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
+                                 max_value=100.0, step=0.01, format="%.2f",
+                                 value=float(row["annual_rate"]), key="loan_edit_rate")
+    with c2:
+        e_start = st.date_input("Start date",
+                                value=row["start_date"].date() if pd.notna(row["start_date"]) else today,
+                                key="loan_edit_start")
+        e_term = st.number_input("Duration (months)", min_value=1, max_value=600,
+                                 value=int(row["term_months"]), step=1, key="loan_edit_term")
+        e_day = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
+                                value=int(row["payment_day"]), step=1, key="loan_edit_day")
+        e_status = st.selectbox("Status", ["active", "paid_off"],
+                                index=0 if str(row["status"]) == "active" else 1,
+                                key="loan_edit_status")
+    e_notes = st.text_input("Notes (optional)",
+                            value=str(row["notes"]) if pd.notna(row["notes"]) else "",
+                            key="loan_edit_notes")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"loan_edit_cancel_{row['id']}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Save", type="primary", key=f"loan_edit_save_{row['id']}", width="stretch"):
+            if not e_name.strip():
+                st.error("Please give the loan a name.")
+            else:
+                pe = to_eur(float(e_principal), e_cur, rates)
+                update_loan(uid, str(row["id"]), {
+                    "name": e_name.strip(), "principal": float(e_principal),
+                    "currency": e_cur, "principal_eur": pe,
+                    "annual_rate": float(e_rate), "start_date": e_start,
+                    "term_months": int(e_term), "payment_day": int(e_day),
+                    "status": e_status, "notes": e_notes,
+                })
+                q.bump_db_version()
+                st.toast(f"Loan **{e_name.strip()}** updated.", icon="✏️")
+                st.rerun()
+
+
 # ── Loan list ─────────────────────────────────────────────────────────────────
 df_loans = q.loans(user_id)
 if df_loans.empty:
@@ -168,7 +244,7 @@ else:
                     else:
                         st.caption("No payments logged yet.")
             with c2:
-                bc1, bc2 = st.columns(2)
+                bc1, bc2, bc3 = st.columns(3)
                 with bc1:
                     new_status = "paid_off" if row["status"] == "active" else "active"
                     lbl = "✅ Mark paid off" if row["status"] == "active" else "↩️ Reopen"
@@ -177,11 +253,12 @@ else:
                         q.bump_db_version()
                         st.rerun()
                 with bc2:
-                    if st.button("🗑️ Delete", key=f"loan_del_{loan_id}", width="stretch"):
-                        delete_loan(user_id, loan_id)
-                        q.bump_db_version()
-                        st.toast("Loan deleted (payments remain as expenses).", icon="🗑️")
-                        st.rerun()
+                    if st.button(":material/delete: Delete", key=f"loan_del_{loan_id}", width="stretch"):
+                        delete_loan_dialog(user_id, loan_id, str(row["name"]),
+                                           fmt(sched["remaining_balance"], DC, rates))
+                with bc3:
+                    if st.button(":material/edit: Edit", key=f"loan_edit_{loan_id}", width="stretch"):
+                        edit_loan_dialog(user_id, row)
 
     st.divider()
     if total_debt > 0:

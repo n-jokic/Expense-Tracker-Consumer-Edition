@@ -65,24 +65,32 @@ def render_onboarding():
         with st.form("onboard_step1"):
             dc = st.selectbox("Display currency", list(SUPPORTED_CURRENCIES.keys()),
                               index=dc_idx, help="The currency you'll see amounts in.")
-            rate_val = st.number_input(
-                f"Exchange rate (1 EUR = ? {get_currency_symbol(dc)})",
-                value=float(rates.get(dc if dc != "EUR" else "RSD", 117.0)),
-                step=1.0, format="%.2f",
-                help="If you use EUR only, leave this as-is.")
+            rate_val = None
+            if dc != "EUR":
+                rate_val = st.number_input(
+                    f"Exchange rate (1 EUR = ? {get_currency_symbol(dc)})",
+                    value=float(rates.get(dc, 117.0)),
+                    step=1.0, format="%.2f", min_value=0.0001,
+                    help="Used to convert your amounts for display.")
             budget   = st.number_input("Monthly budget (EUR)",
                                        min_value=0.0, step=100.0, format="%.2f",
                                        help="Your total spending limit per month. You can set category limits later.")
             if st.form_submit_button("Save & Continue →", type="primary", width="stretch"):
-                new_rates = dict(rates)
-                new_rates[dc if dc != "EUR" else "RSD"] = float(rate_val)
-                q.save_settings(user_id, {
-                    "default_currency": dc,
-                    "currency_rates": new_rates,
-                    "monthly_budget": budget,
-                })
-                st.session_state.onboarding_step = 2
-                st.rerun()
+                if dc != "EUR" and not (rate_val > 0 and rate_val == rate_val):
+                    st.error("❌ The exchange rate must be a positive number "
+                             "greater than zero.")
+                else:
+                    updates = {
+                        "default_currency": dc,
+                        "monthly_budget": budget,
+                    }
+                    if dc != "EUR":
+                        new_rates = dict(rates)
+                        new_rates[dc] = float(rate_val)
+                        updates["currency_rates"] = new_rates
+                    q.save_settings(user_id, updates)
+                    st.session_state.onboarding_step = 2
+                    st.rerun()
 
     elif step == 2:
         st.title("Step 2 of 2 — Log your first expense")

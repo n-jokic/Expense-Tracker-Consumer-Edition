@@ -127,6 +127,87 @@ if hourly_rate > 0 and not pending.empty:
         "🔴 Reconsider (little use, expensive)."
     )
 
+
+@st.dialog("Confirm purchase")
+def confirm_purchase_dialog(user_id, purchase_id, name, category, amount, currency,
+                            amount_eur, notes):
+    """Confirm a wishlist item was bought: marks it bought and logs the expense."""
+    st.write(f"Mark **{name}** as bought and log it as an expense?")
+    st.caption(
+        f"This will mark the item as **bought** and log a new expense of "
+        f"**{amount:,.2f} {currency}** (≈ {fmt(amount_eur, DC, rates)}) on today's date."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"bp_cancel_{purchase_id}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Confirm & log expense", key=f"bp_confirm_{purchase_id}",
+                     type="primary", width="stretch"):
+            update_big_purchase(user_id, purchase_id, {"status": "bought"})
+            add_expense(user_id, {
+                "date": today, "category": category, "subcategory": "",
+                "description": f"{name} (big purchase)",
+                "amount": float(amount), "currency": str(currency),
+                "amount_eur": float(amount_eur),
+                "recurring": False, "notes": str(notes) or "Big purchase",
+            })
+            q.bump_db_version()
+            st.toast(f"✅ Logged **{name}** as an expense!", icon="🛍️")
+            st.rerun()
+
+
+@st.dialog("Edit wishlist item")
+def edit_purchase_dialog(uid: int, row):
+    """Edit wishlist item details; the status flow is unchanged."""
+    st.caption("Editing the wishlist item does not change the expense already logged "
+               "when it was bought (if any).")
+    c1, c2 = st.columns(2)
+    with c1:
+        e_name = st.text_input("Item name", value=str(row["name"]), key="bp_edit_name")
+        e_cat  = st.selectbox("Category", CAT_LIST,
+                              index=CAT_LIST.index(str(row["category"]))
+                              if str(row["category"]) in CAT_LIST else 0,
+                              key="bp_edit_cat")
+        e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                              index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
+                              if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
+                              key="bp_edit_cur")
+    with c2:
+        e_price = st.number_input(f"Price ({get_currency_symbol(e_cur)})",
+                                  min_value=0.01, max_value=MAX_SAVINGS_TARGET,
+                                  step=10.0, format="%.2f",
+                                  value=max(float(row["price"]), 0.01), key="bp_edit_price")
+        e_use = st.number_input("Expected use (hours / month)", min_value=0.0,
+                                step=1.0, format="%.1f",
+                                value=float(row["usage_hours"]), key="bp_edit_use")
+        e_imp = st.slider("Importance", 1, 5, int(row["importance"]),
+                          help="1 = nice to have · 5 = life-changing", key="bp_edit_imp")
+    e_notes = st.text_input("Notes (optional)",
+                            value=str(row["notes"]) if pd.notna(row["notes"]) else "",
+                            key="bp_edit_notes")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", key=f"bp_edit_cancel_{row['id']}", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Save", type="primary", key=f"bp_edit_save_{row['id']}", width="stretch"):
+            if not e_name.strip():
+                st.error("Please give the item a name.")
+            else:
+                pe = to_eur(float(e_price), e_cur, rates)
+                update_big_purchase(uid, str(row["id"]), {
+                    "name": e_name.strip(), "category": e_cat,
+                    "price": float(e_price), "currency": e_cur, "price_eur": pe,
+                    "usage_hours": float(e_use), "importance": int(e_imp),
+                    "notes": e_notes,
+                })
+                q.bump_db_version()
+                st.toast(f"**{e_name.strip()}** updated.", icon="✏️")
+                st.rerun()
+
+
 # ── Item list ─────────────────────────────────────────────────────────────────
 st.divider()
 st.subheader("📝 Wishlist items")
@@ -163,18 +244,15 @@ for _, row in dfb.iterrows():
     with l4:
         if row["status"] != "bought":
             if st.button("✅ Bought → log expense", key=f"bp_buy_{row['id']}", width="stretch"):
-                update_big_purchase(user_id, row["id"], {"status": "bought"})
-                add_expense(user_id, {
-                    "date": today, "category": row["category"], "subcategory": "",
-                    "description": f"{row['name']} (big purchase)",
-                    "amount": float(row["price"]), "currency": str(row["currency"]),
-                    "amount_eur": float(row["price_eur"]),
-                    "recurring": False, "notes": str(row.get("notes","")) or "Big purchase",
-                })
-                q.bump_db_version()
-                st.toast(f"✅ Logged **{row['name']}** as an expense!", icon="🛍️")
-                st.rerun()
-        if st.button("🗑️", key=f"bp_del_{row['id']}", width="stretch",
+                confirm_purchase_dialog(
+                    user_id, str(row["id"]), str(row["name"]), str(row["category"]),
+                    float(row["price"]), str(row["currency"]), float(row["price_eur"]),
+                    str(row.get("notes", "")),
+                )
+        if st.button(":material/edit: Edit", key=f"bp_edit_{row['id']}", width="stretch",
+                     help="Edit this item"):
+            edit_purchase_dialog(user_id, row)
+        if st.button(":material/delete: Delete", key=f"bp_del_{row['id']}", width="stretch",
                      help="Delete this item"):
             delete_big_purchase(user_id, row["id"])
             q.bump_db_version()
