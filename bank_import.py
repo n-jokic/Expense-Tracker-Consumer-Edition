@@ -7,38 +7,39 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from utils import CAT_LIST, ALL_SUBCATS, MAX_AMOUNT
+from utils import CAT_LIST, ALL_SUBCATS, MAX_AMOUNT, SUPPORTED_CURRENCIES
 from db import add_expense
 
 # ── Keyword-based auto-categorisation ────────────────────────────────────────
 
 KEYWORD_MAP = {
-    # Food & Dining
-    "lidl":           ("Food & Dining", "Groceries"),
-    "kaufland":       ("Food & Dining", "Groceries"),
-    "carrefour":      ("Food & Dining", "Groceries"),
-    "mega image":     ("Food & Dining", "Groceries"),
-    "penny":          ("Food & Dining", "Groceries"),
-    "aldi":           ("Food & Dining", "Groceries"),
-    "rewe":           ("Food & Dining", "Groceries"),
-    "edeka":          ("Food & Dining", "Groceries"),
-    "tesco":          ("Food & Dining", "Groceries"),
-    "supermarket":    ("Food & Dining", "Groceries"),
-    "grocery":        ("Food & Dining", "Groceries"),
-    "mcdonald":       ("Food & Dining", "Restaurants & Takeaway"),
-    "kfc":            ("Food & Dining", "Restaurants & Takeaway"),
-    "burger king":    ("Food & Dining", "Restaurants & Takeaway"),
-    "subway":         ("Food & Dining", "Restaurants & Takeaway"),
-    "pizza":          ("Food & Dining", "Restaurants & Takeaway"),
-    "restaurant":     ("Food & Dining", "Restaurants & Takeaway"),
-    "wolt":           ("Food & Dining", "Food Delivery"),
-    "glovo":          ("Food & Dining", "Food Delivery"),
-    "bolt food":      ("Food & Dining", "Food Delivery"),
-    "deliveroo":      ("Food & Dining", "Food Delivery"),
-    "starbucks":      ("Food & Dining", "Coffee & Snacks"),
-    "costa":          ("Food & Dining", "Coffee & Snacks"),
-    "cafe":           ("Food & Dining", "Coffee & Snacks"),
-    "coffee":         ("Food & Dining", "Coffee & Snacks"),
+    # Groceries
+    "lidl":           ("Groceries", "Groceries"),
+    "kaufland":       ("Groceries", "Groceries"),
+    "carrefour":      ("Groceries", "Groceries"),
+    "mega image":     ("Groceries", "Groceries"),
+    "penny":          ("Groceries", "Groceries"),
+    "aldi":           ("Groceries", "Groceries"),
+    "rewe":           ("Groceries", "Groceries"),
+    "edeka":          ("Groceries", "Groceries"),
+    "tesco":          ("Groceries", "Groceries"),
+    "supermarket":    ("Groceries", "Groceries"),
+    "grocery":        ("Groceries", "Groceries"),
+    # Dining Out
+    "mcdonald":       ("Dining Out", "Restaurants & Takeaway"),
+    "kfc":            ("Dining Out", "Restaurants & Takeaway"),
+    "burger king":    ("Dining Out", "Restaurants & Takeaway"),
+    "subway":         ("Dining Out", "Restaurants & Takeaway"),
+    "pizza":          ("Dining Out", "Restaurants & Takeaway"),
+    "restaurant":     ("Dining Out", "Restaurants & Takeaway"),
+    "wolt":           ("Dining Out", "Food Delivery"),
+    "glovo":          ("Dining Out", "Food Delivery"),
+    "bolt food":      ("Dining Out", "Food Delivery"),
+    "deliveroo":      ("Dining Out", "Food Delivery"),
+    "starbucks":      ("Dining Out", "Coffee & Snacks"),
+    "costa":          ("Dining Out", "Coffee & Snacks"),
+    "cafe":           ("Dining Out", "Coffee & Snacks"),
+    "coffee":         ("Dining Out", "Coffee & Snacks"),
     # Transport
     "uber":           ("Transport", "Taxi / Uber"),
     "bolt":           ("Transport", "Taxi / Uber"),
@@ -54,20 +55,20 @@ KEYWORD_MAP = {
     "stb":            ("Transport", "Public Transit"),
     "transit":        ("Transport", "Public Transit"),
     "parking":        ("Transport", "Parking"),
-    # Housing
-    "rent":           ("Housing", "Rent / Mortgage"),
-    "chiria":         ("Housing", "Rent / Mortgage"),
-    "mortgage":       ("Housing", "Rent / Mortgage"),
-    "electrica":      ("Housing", "Electricity"),
-    "enel":           ("Housing", "Electricity"),
-    "electricity":    ("Housing", "Electricity"),
-    "gas":            ("Housing", "Gas & Heating"),
-    "water":          ("Housing", "Water"),
-    "internet":       ("Housing", "Internet & Phone"),
-    "digi":           ("Housing", "Internet & Phone"),
-    "orange":         ("Housing", "Internet & Phone"),
-    "vodafone":       ("Housing", "Internet & Phone"),
-    "telekom":        ("Housing", "Internet & Phone"),
+    # Housing & Utilities
+    "rent":           ("Housing & Utilities", "Rent / Mortgage"),
+    "chiria":         ("Housing & Utilities", "Rent / Mortgage"),
+    "mortgage":       ("Housing & Utilities", "Rent / Mortgage"),
+    "electrica":      ("Housing & Utilities", "Electricity"),
+    "enel":           ("Housing & Utilities", "Electricity"),
+    "electricity":    ("Housing & Utilities", "Electricity"),
+    "gas":            ("Housing & Utilities", "Gas & Heating"),
+    "water":          ("Housing & Utilities", "Water"),
+    "internet":       ("Housing & Utilities", "Internet & Phone"),
+    "digi":           ("Housing & Utilities", "Internet & Phone"),
+    "orange":         ("Housing & Utilities", "Internet & Phone"),
+    "vodafone":       ("Housing & Utilities", "Internet & Phone"),
+    "telekom":        ("Housing & Utilities", "Internet & Phone"),
     # Health
     "gym":            ("Health", "Gym & Fitness"),
     "fitness":        ("Health", "Gym & Fitness"),
@@ -94,20 +95,21 @@ KEYWORD_MAP = {
     "steam":          ("Entertainment", "Hobbies"),
     "playstation":    ("Entertainment", "Hobbies"),
     "xbox":           ("Entertainment", "Hobbies"),
-    # Personal
-    "zara":           ("Personal", "Clothing & Accessories"),
-    "h&m":            ("Personal", "Clothing & Accessories"),
-    "mango":          ("Personal", "Clothing & Accessories"),
-    "clothing":       ("Personal", "Clothing & Accessories"),
-    "haircut":        ("Personal", "Haircut & Grooming"),
-    "salon":          ("Personal", "Haircut & Grooming"),
-    # Other
-    "adobe":          ("Other", "Subscriptions & Software"),
-    "microsoft":      ("Other", "Subscriptions & Software"),
-    "google":         ("Other", "Subscriptions & Software"),
-    "dropbox":        ("Other", "Subscriptions & Software"),
-    "tax":            ("Other", "Taxes & Fees"),
-    "anaf":           ("Other", "Taxes & Fees"),
+    # Shopping
+    "zara":           ("Shopping", "Clothing & Accessories"),
+    "h&m":            ("Shopping", "Clothing & Accessories"),
+    "mango":          ("Shopping", "Clothing & Accessories"),
+    "clothing":       ("Shopping", "Clothing & Accessories"),
+    "haircut":        ("Shopping", "Haircut & Grooming"),
+    "salon":          ("Shopping", "Haircut & Grooming"),
+    # Subscriptions & Software
+    "adobe":          ("Subscriptions & Software", "Subscriptions & Software"),
+    "microsoft":      ("Subscriptions & Software", "Subscriptions & Software"),
+    "google":         ("Subscriptions & Software", "Subscriptions & Software"),
+    "dropbox":        ("Subscriptions & Software", "Subscriptions & Software"),
+    # Fees & Taxes
+    "tax":            ("Fees & Taxes", "Taxes & Fees"),
+    "anaf":           ("Fees & Taxes", "Taxes & Fees"),
     # Loans & Debt
     "loan payment":   ("Loans & Debt", "Loan Repayment"),
     "installment":    ("Loans & Debt", "Loan Repayment"),
@@ -174,6 +176,18 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
     return num.fillna(alt)
 
 
+def _clean_currency(series: pd.Series) -> pd.Series:
+    """Normalise a currency column: strip/upper-case, leaving missing cells
+    EMPTY (""). The render step fills them with the user's "Statement
+    currency" selection, and _to_eur_amount treats blank as EUR as a final
+    safety net — so a present-but-empty column can never leak NaN or a
+    hardcoded currency past the user's choice."""
+    return (series.fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper())
+
+
 def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
     """Return DataFrame with columns: date, description, amount, currency."""
     try:
@@ -182,7 +196,9 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             out["date"]        = pd.to_datetime(_pick(df, ["Started Date"], 0), errors="coerce")
             out["description"] = _pick(df, ["Description"], 2).astype(str)
             out["amount"]      = _to_numeric_locale(_pick(df, ["Amount"], 5))
-            out["currency"]    = df.get("Currency", "EUR")
+            out["currency"]    = (_clean_currency(df["Currency"])
+                                  if "Currency" in df.columns
+                                  else pd.Series([""] * len(df)))
 
         elif bank_format == "n26":
             out = pd.DataFrame()
@@ -200,7 +216,9 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             out["description"] = _pick(df, ["Description"], 2).astype(str)
             out["amount"]      = _to_numeric_locale(
                 _pick(df, ["Source amount (after fees)", "Amount"], 3))
-            out["currency"]    = df.get("Source currency", "EUR")
+            out["currency"]    = (_clean_currency(df["Source currency"])
+                                  if "Source currency" in df.columns
+                                  else pd.Series([""] * len(df)))
 
         else:  # generic
             out = pd.DataFrame()
@@ -216,7 +234,7 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             out["date"]        = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.Series(dtype=object)
             out["description"] = df[desc_col].astype(str) if desc_col else pd.Series(dtype=object)
             out["amount"]      = _to_numeric_locale(df[amt_col]) if amt_col else pd.Series(dtype=object)
-            out["currency"]    = df[cur_col] if cur_col else "EUR"
+            out["currency"]    = _clean_currency(df[cur_col]) if cur_col else pd.Series([""] * len(df))
 
         return out.dropna(subset=["date", "amount"])
     except Exception as e:
@@ -226,16 +244,26 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 
-def _to_eur_amount(amount: float, currency: str, rates: dict) -> float:
-    """Convert a bank row amount to its EUR base value."""
-    cur = str(currency or "EUR").strip().upper()
+def _to_eur_amount(amount: float, currency, rates: dict) -> float:
+    """Convert a bank row amount to its EUR base value.
+
+    NaN/blank currency is treated as EUR (the statement-level selectbox sets
+    the bulk currency for empty cells). A non-empty currency with no rate
+    returns NaN so the row is skipped at save instead of silently passing
+    through at 1:1.
+    """
+    if pd.isna(currency):
+        cur = "EUR"
+    else:
+        cur = str(currency).strip().upper()
+    if not cur:
+        cur = "EUR"
     if cur == "EUR":
         return round(float(amount), 4)
     r = rates.get(cur)
     if r:
         return round(float(amount) / r, 4)
-    # Unknown currency: assume 1:1 and flag it to the user via the review table.
-    return round(float(amount), 4)
+    return float("nan")
 
 
 def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
@@ -276,6 +304,29 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
     if suggested is not None and not pd.isna(suggested):
         accepted = bool(str(suggested) == str(row["category"]))
 
+    # Subcategory suggestion telemetry.
+    sub_suggested = row.get("_suggest_sub")
+    if sub_suggested is None or pd.isna(sub_suggested):
+        sub_suggested = None
+    else:
+        sub_suggested = str(sub_suggested).strip() or None
+    sub_source = row.get("_suggest_sub_source")
+    if sub_source is None or pd.isna(sub_source) or not str(sub_source).strip():
+        sub_source = None
+    else:
+        sub_source = str(sub_source)
+    sub_conf = row.get("_suggest_sub_conf")
+    if sub_conf is None or pd.isna(sub_conf) or sub_conf == "":
+        sub_conf = None
+    final_sub = row.get("subcategory")
+    if final_sub is None or pd.isna(final_sub):
+        final_sub = ""
+    else:
+        final_sub = str(final_sub)
+    sub_accepted = None
+    if sub_suggested is not None:
+        sub_accepted = bool(sub_suggested == final_sub)
+
     add_expense(user_id, {
         "date": d,
         "category": row["category"],
@@ -292,6 +343,10 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
                                   if source == "classifier" else None),
         "suggest_merchant": merchant,
         "suggest_accepted": accepted,
+        "suggest_subcategory": sub_suggested,
+        "suggest_subcategory_confidence": float(sub_conf) if sub_conf is not None else None,
+        "suggest_subcategory_source": sub_source,
+        "suggest_subcategory_accepted": sub_accepted,
     })
     existing_keys.add(key)  # also dedupe rows WITHIN this upload
     return "imported"
@@ -371,39 +426,104 @@ def render_bank_import_page(user_id: int, rates: dict):
     # Auto-categorise: learned classifier first, keyword map as fallback.
     # The suggestion source/confidence travel with each row so the save path
     # can record whether the user accepted or corrected it (ML telemetry).
-    from forecasting import suggest_category
+    from forecasting import (
+        suggest_category_and_subcategory,
+        CATEGORY_CONFIDENCE, SUBCATEGORY_CONFIDENCE,
+    )
     user_exp = q.expenses(user_id)
     cats, subs, sources, confs = [], [], [], []
+    sub_sources, sub_confs = [], []
     for d in expenses_only["description"]:
-        cat, conf = suggest_category(user_exp, d, user_id=user_id)
-        if cat:
-            cats.append(cat)
-            subs.append("")
+        cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+            user_exp, d, user_id=user_id)
+        cats.append(cat)
+        subs.append(sub)
+        if cat_conf >= CATEGORY_CONFIDENCE:
             sources.append("classifier")
-            confs.append(round(float(conf), 4))
+            confs.append(round(float(cat_conf), 4))
+            if sub:
+                if sub_conf >= SUBCATEGORY_CONFIDENCE:
+                    sub_sources.append("classifier")
+                    sub_confs.append(round(float(sub_conf), 4))
+                else:  # keyword refinement
+                    sub_sources.append("keywords")
+                    sub_confs.append(None)
+            else:
+                sub_sources.append("")
+                sub_confs.append(None)
         else:
-            c, s = categorize_expense(d)
-            cats.append(c)
-            subs.append(s)
             sources.append("keywords")
             confs.append(None)
+            sub_sources.append("keywords")
+            sub_confs.append(None)
     expenses_only["category"] = cats
     expenses_only["subcategory"] = subs
     expenses_only["_suggest_source"] = sources
     expenses_only["_suggest_conf"] = confs
     expenses_only["_suggest_cat"] = cats
+    expenses_only["_suggest_sub"] = subs
+    expenses_only["_suggest_sub_source"] = sub_sources
+    expenses_only["_suggest_sub_conf"] = sub_confs
+
+    # ── Statement currency ────────────────────────────────────────────────────
+    # PDF rows are hardcoded EUR by the parser; CSV rows may carry per-row
+    # currencies (Revolut/Wise) that can be empty. Offer one bulk statement
+    # currency, defaulting to the inferred single parsed currency (or the
+    # user's default), and use it to fill any missing per-row values.
+    settings = st.session_state.get("settings") or {}
+    default_cur = settings.get("default_currency", "EUR")
+    if default_cur not in SUPPORTED_CURRENCIES:
+        default_cur = "EUR"
+    cur_options = list(SUPPORTED_CURRENCIES.keys())
+
+    if bank_fmt == "pdf":
+        inferred = "EUR"
+    else:
+        codes = [str(c).strip().upper()
+                 for c in expenses_only["currency"].dropna()
+                 if str(c).strip()]
+        inferred = codes[0] if len(set(codes)) == 1 else default_cur
+        if inferred not in SUPPORTED_CURRENCIES:
+            inferred = default_cur
+
+    stmt_cur = st.selectbox(
+        "Statement currency",
+        options=cur_options,
+        index=cur_options.index(inferred),
+        key=f"stmt_cur_{uploaded.name}_{uploaded.size}",
+    )
+    st.caption("Statement currency: amounts are converted to EUR at import "
+               "using your rate table.")
+
+    if bank_fmt == "pdf":
+        expenses_only["currency"] = stmt_cur
+    else:
+        expenses_only["currency"] = (expenses_only["currency"]
+                                     .fillna(stmt_cur).replace("", stmt_cur))
 
     # Convert to EUR using the user's rate table
     expenses_only["amount_eur"] = expenses_only.apply(
         lambda r: _to_eur_amount(r["amount"], r.get("currency", "EUR"), rates), axis=1
     )
 
+    # Warn about any currency with no rate: those rows show NaN in the editor
+    # and are skipped at save unless the user edits them to a supported code.
+    unknown_codes = sorted({str(c).strip().upper()
+                            for c in expenses_only["currency"].dropna()
+                            if str(c).strip().upper()
+                            and str(c).strip().upper() not in rates})
+    if unknown_codes:
+        st.warning("No exchange rate for " + ", ".join(unknown_codes) +
+                   " — these rows will be skipped unless you set the currency "
+                   "to a supported one.")
+
     st.subheader(f"✏️ Review & edit ({len(expenses_only)} rows)")
     st.caption("Correct categories and untick any row you don't want to import.")
 
     review = expenses_only[["date","description","amount","currency","amount_eur",
                             "category","subcategory",
-                            "_suggest_source","_suggest_conf","_suggest_cat"]].copy()
+                            "_suggest_source","_suggest_conf","_suggest_cat",
+                            "_suggest_sub","_suggest_sub_source","_suggest_sub_conf"]].copy()
     review["include"] = True
 
     edited = st.data_editor(
@@ -417,12 +537,15 @@ def render_bank_import_page(user_id: int, rates: dict):
             "category": st.column_config.SelectboxColumn("Category", options=CAT_LIST),
             "subcategory": st.column_config.SelectboxColumn("Subcategory", options=ALL_SUBCATS),
             "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
-            "currency": st.column_config.TextColumn("Currency"),
+            "currency": st.column_config.SelectboxColumn("Currency", options=list(SUPPORTED_CURRENCIES.keys())),
             "amount_eur": None,
             "include": st.column_config.CheckboxColumn("Import", default=True),
             "_suggest_source": None,
             "_suggest_conf": None,
             "_suggest_cat": None,
+            "_suggest_sub": None,
+            "_suggest_sub_source": None,
+            "_suggest_sub_conf": None,
         },
     )
 

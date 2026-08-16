@@ -19,29 +19,46 @@ def _df(rows):
 def test_fun_spent_sums_selected_categories_in_month():
     df = _df([
         {"date": "2025-06-05", "category": "Entertainment", "amount_eur": 20.0},
-        {"date": "2025-06-10", "category": "Food & Dining", "amount_eur": 30.0},
+        {"date": "2025-06-10", "category": "Dining Out", "amount_eur": 30.0},
         {"date": "2025-05-01", "category": "Entertainment", "amount_eur": 999.0},
     ])
     assert fun_spent(df, ["Entertainment"], 2025, 6) == 20.0
-    assert fun_spent(df, ["Entertainment", "Food & Dining"], 2025, 6) == 50.0
+    assert fun_spent(df, ["Entertainment", "Dining Out"], 2025, 6) == 50.0
+
+
+def test_fun_spent_accepts_bare_subcategory_names():
+    """Backward compatibility: a pool entry may be a subcategory name."""
+    df = _df([
+        {"date": "2025-06-05", "category": "Dining Out", "subcategory": "Coffee & Snacks", "amount_eur": 5.0},
+        {"date": "2025-06-06", "category": "Entertainment", "subcategory": "Cinema & Theater", "amount_eur": 15.0},
+    ])
+    assert fun_spent(df, ["Coffee & Snacks"], 2025, 6) == 5.0
 
 
 def test_travel_spent_matches_pairs():
     df = _df([
-        {"date": "2025-07-01", "category": "Entertainment", "subcategory": "Vacation / Travel", "amount_eur": 500.0},
-        {"date": "2025-07-02", "category": "Transport", "subcategory": "Flights & Trains", "amount_eur": 120.0},
-        {"date": "2025-07-03", "category": "Entertainment", "subcategory": "Cinema & Theater", "amount_eur": 12.0},
+        {"date": "2025-07-01", "category": "Travel", "subcategory": "Flights & Trains", "amount_eur": 500.0},
+        {"date": "2025-07-02", "category": "Travel", "subcategory": "Tours & Activities", "amount_eur": 120.0},
+        {"date": "2025-07-03", "category": "Travel", "subcategory": "Hotels & Lodging", "amount_eur": 12.0},
     ])
     spent = travel_spent(df, DEFAULT_TRAVEL_CATEGORIES, 2025)
-    assert spent == pytest.approx(620.0)
+    assert spent == pytest.approx(632.0)
+
+
+def test_travel_spent_whole_category_bare_name():
+    df = _df([
+        {"date": "2025-07-01", "category": "Travel", "subcategory": "Flights & Trains", "amount_eur": 100.0},
+        {"date": "2025-07-02", "category": "Travel", "subcategory": "Hotels & Lodging", "amount_eur": 200.0},
+    ])
+    assert travel_spent(df, ["Travel"], 2025) == pytest.approx(300.0)
 
 
 def test_travel_spent_whole_category_when_subcategory_empty():
     df = _df([
-        {"date": "2025-07-01", "category": "Personal", "subcategory": "Gifts", "amount_eur": 10.0},
-        {"date": "2025-07-02", "category": "Personal", "subcategory": "Clothing", "amount_eur": 20.0},
+        {"date": "2025-07-01", "category": "Shopping", "subcategory": "Gifts", "amount_eur": 10.0},
+        {"date": "2025-07-02", "category": "Shopping", "subcategory": "Clothing & Accessories", "amount_eur": 20.0},
     ])
-    assert travel_spent(df, ["Personal › "], 2025) == pytest.approx(30.0)
+    assert travel_spent(df, ["Shopping › "], 2025) == pytest.approx(30.0)
 
 
 # ── Milestones & rewards (DB-backed) ─────────────────────────────────────────

@@ -121,6 +121,48 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
 
 # ── 3. Learned categorizer (TF-IDF + LogisticRegression) ─────────────────────
 
+class _SubcategorizerModel:
+    """Per-category subcategory classifier: TF-IDF(1,2) + LogisticRegression.
+
+    Trained only on rows of ONE category that have a non-empty subcategory;
+    requires at least 8 rows and 2 distinct subcategories.
+    """
+
+    def __init__(self):
+        self.vec = None
+        self.clf = None
+        self.subcategories = []
+        self.trained_rows = 0
+
+    def train(self, df: pd.DataFrame) -> bool:
+        if df is None or len(df) < 8 or "subcategory" not in df.columns:
+            return False
+        d = df[df["subcategory"].fillna("").astype(str).str.strip() != ""].copy()
+        d = d[["description", "subcategory"]].dropna()
+        if d["subcategory"].nunique() < 2 or len(d) < 8:
+            return False
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.linear_model import LogisticRegression
+        except Exception:
+            return False
+        self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+        X = self.vec.fit_transform(d["description"].astype(str))
+        self.clf = LogisticRegression(max_iter=500)
+        self.clf.fit(X, d["subcategory"])
+        self.subcategories = list(self.clf.classes_)
+        self.trained_rows = len(d)
+        return True
+
+    def predict(self, text: str):
+        if self.clf is None:
+            return None, 0.0
+        X = self.vec.transform([str(text)])
+        probs = self.clf.predict_proba(X)[0]
+        idx = probs.argmax()
+        return self.subcategories[idx], float(probs[idx])
+
+
 class _CategorizerModel:
     def __init__(self):
         self.vec = None
@@ -128,11 +170,15 @@ class _CategorizerModel:
         self.categories = []
         self.trained_rows = 0
         self.trained_fingerprint = None
+        self.sub_models: dict = {}
 
     def train(self, expenses_df: pd.DataFrame) -> bool:
         if expenses_df is None or len(expenses_df) < 10:
             return False
-        df = expenses_df[["description","category"]].dropna()
+        if "subcategory" not in expenses_df.columns:
+            expenses_df = expenses_df.assign(subcategory="")
+        df = expenses_df[["description","category","subcategory"]].dropna(
+            subset=["description","category"])
         if df["category"].nunique() < 2 or len(df) < 10:
             return False
         try:
@@ -146,6 +192,12 @@ class _CategorizerModel:
         self.clf.fit(X, df["category"])
         self.categories = list(self.clf.classes_)
         self.trained_rows = len(df)
+        # Train one subcategory classifier per category on its non-empty rows.
+        self.sub_models = {}
+        for cat, grp in df.groupby("category"):
+            sm = _SubcategorizerModel()
+            if sm.train(grp):
+                self.sub_models[cat] = sm
         return True
 
     def predict(self, text: str):
@@ -158,20 +210,30 @@ class _CategorizerModel:
 
 
 # Bump when the training pipeline changes so old cached models are discarded.
-CATEGORIZER_MODEL_VERSION = 2
+CATEGORIZER_MODEL_VERSION = 3
+
+# Confidence thresholds for the combined suggestion pipeline.
+CATEGORY_CONFIDENCE    = 0.5
+SUBCATEGORY_CONFIDENCE = 0.4
 
 
 def _dataset_fingerprint(expenses_df: pd.DataFrame) -> str:
     """Fingerprint of the labelled dataset: row count + a hash of every
-    (description, category) pair. ANY correction (category edit), addition,
-    or deletion changes the fingerprint and invalidates the cached model."""
+    (description, category, subcategory) triple. ANY correction (category or
+    subcategory edit), addition, or deletion changes the fingerprint and
+    invalidates the cached model."""
     import hashlib
     if expenses_df is None or expenses_df.empty:
         return "empty"
-    df = expenses_df[["description", "category"]].dropna()
+    if "subcategory" not in expenses_df.columns:
+        expenses_df = expenses_df.assign(subcategory="")
+    df = expenses_df[["description", "category", "subcategory"]].dropna(
+        subset=["description", "category"]).copy()
+    df["description"] = df["description"].astype(str).str.strip().str.lower()
+    df["subcategory"] = df["subcategory"].fillna("").astype(str).str.strip().str.lower()
     joined = sorted(
-        f"{str(d).strip().lower()}|{str(c)}"
-        for d, c in zip(df["description"], df["category"])
+        f"{d}|{c}|{s}"
+        for d, c, s in zip(df["description"], df["category"], df["subcategory"])
     )
     digest = hashlib.md5("\n".join(joined).encode("utf-8")).hexdigest()
     return f"{len(df)}|{digest}"
@@ -209,6 +271,57 @@ def suggest_category(expenses_df: pd.DataFrame, text: str,
     if conf >= min_confidence:
         return cat, conf
     return None, conf
+
+
+def suggest_category_and_subcategory(expenses_df: pd.DataFrame, text: str,
+                                     min_confidence: float = CATEGORY_CONFIDENCE,
+                                     min_sub_confidence: float = SUBCATEGORY_CONFIDENCE,
+                                     user_id=None):
+    """Combined category + subcategory suggestion.
+
+    Returns (category, subcategory, cat_conf, sub_conf).
+
+    The global classifier decides the category when its confidence is at
+    least `min_confidence`; otherwise the keyword map decides BOTH. When the
+    classifier wins and a per-category submodel exists, its subcategory is
+    kept only when confident (>= min_sub_confidence), else "" — and the
+    keyword map's subcategory is substituted only when the keyword map's
+    category equals the classifier's category.
+
+    cat_conf is the classifier probability when the classifier decided the
+    category, otherwise 0.0 (keyword fallback). sub_conf is the submodel
+    probability when the submodel decided the subcategory, otherwise 0.0.
+    """
+    from bank_import import categorize_expense
+
+    fp = _dataset_fingerprint(expenses_df)
+    model = get_categorizer(user_id, CATEGORIZER_MODEL_VERSION, fp)
+    if model.clf is None or model.trained_fingerprint != fp:
+        if model.train(expenses_df):
+            model.trained_fingerprint = fp
+
+    kw_cat, kw_sub = categorize_expense(text)
+
+    if model.clf is None:
+        return kw_cat, kw_sub, 0.0, 0.0
+
+    cat, cat_conf = model.predict(text)
+    if cat_conf < min_confidence:
+        # Classifier is not confident — keyword map decides both.
+        return kw_cat, kw_sub, 0.0, 0.0
+
+    sub, sub_conf = "", 0.0
+    sm = model.sub_models.get(cat)
+    if sm is not None:
+        s, sc = sm.predict(text)
+        if sc >= min_sub_confidence:
+            sub, sub_conf = s, sc
+    if not sub and kw_cat == cat and kw_sub:
+        # Refinement: no confident subcategory, but the keyword map agrees on
+        # the category — borrow its subcategory.
+        sub = kw_sub
+        sub_conf = 0.0
+    return cat, sub, cat_conf, sub_conf
 
 
 # ── 4. Subscription / recurring detection ────────────────────────────────────

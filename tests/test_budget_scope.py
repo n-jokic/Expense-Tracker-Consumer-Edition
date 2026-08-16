@@ -59,11 +59,11 @@ def test_migration_dedupes_existing_overlaps(test_user):
             " user_id INTEGER NOT NULL,"
             " year INTEGER, month INTEGER, category VARCHAR,"
             " subcategory VARCHAR DEFAULT '', budgeted_eur FLOAT DEFAULT 0)"))
-        for sub, val in (("", 100.0), ("Groceries", 60.0), ("", 777.0)):
+        for sub, val in (("", 100.0), ("Gym & Fitness", 60.0), ("", 777.0)):
             conn.execute(text(
                 "INSERT INTO budgets (user_id, year, month, category,"
                 " subcategory, budgeted_eur)"
-                " VALUES (:u, 2025, 6, 'Food & Dining', :s, :v)"),
+                " VALUES (:u, 2025, 6, 'Health', :s, :v)"),
                 {"u": test_user, "s": sub, "v": val})
 
     init_db()  # migration dedupes (newest kept) + unique index
@@ -73,7 +73,7 @@ def test_migration_dedupes_existing_overlaps(test_user):
     values = {row["subcategory"]: row["budgeted_eur"]
               for _, row in df.iterrows()}
     assert values[""] == 777.0      # newest duplicate kept
-    assert values["Groceries"] == 60.0
+    assert values["Gym & Fitness"] == 60.0
 
     # The unique index must reject new duplicates now.
     with pytest.raises(Exception):
@@ -81,7 +81,7 @@ def test_migration_dedupes_existing_overlaps(test_user):
             conn.execute(text(
                 "INSERT INTO budgets (user_id, year, month, category,"
                 " subcategory, budgeted_eur)"
-                " VALUES (:u, 2025, 6, 'Food & Dining', '', 1)"),
+                " VALUES (:u, 2025, 6, 'Health', '', 1)"),
                 {"u": test_user})
 
 

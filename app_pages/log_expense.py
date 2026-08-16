@@ -94,10 +94,12 @@ with st.expander("📷 Scan a receipt (OCR)"):
                     ae = to_eur(float(r_amt), DC, rates)
                     suggested_cat = result.get("category")
                     conf = float(result.get("confidence") or 0.0)
+                    final_sub = r_sub if r_sub != "—" else ""
+                    suggested_sub = result.get("subcategory") or ""
                     add_expense(user_id, {
                         "date": r_date,
                         "category": r_cat,
-                        "subcategory": r_sub if r_sub != "—" else "",
+                        "subcategory": final_sub,
                         "description": r_desc.strip(),
                         "amount": float(r_amt), "currency": DC, "amount_eur": ae,
                         "recurring": False, "notes": (r_notes or "") + " (scanned receipt)",
@@ -107,6 +109,10 @@ with st.expander("📷 Scan a receipt (OCR)"):
                         "suggest_model_version": result.get("model_version"),
                         "suggest_merchant": (result.get("merchant") or "").strip().lower(),
                         "suggest_accepted": (r_cat == suggested_cat) if suggested_cat else None,
+                        "suggest_subcategory": suggested_sub or None,
+                        "suggest_subcategory_confidence": result.get("subcategory_confidence"),
+                        "suggest_subcategory_source": result.get("subcategory_source"),
+                        "suggest_subcategory_accepted": (final_sub == suggested_sub) if suggested_sub else None,
                     })
                     q.bump_db_version()
                     st.success(f"✅ **{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}")

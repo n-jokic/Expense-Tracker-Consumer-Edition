@@ -128,6 +128,11 @@ class Expense(Base):
     suggest_model_version = Column(Integer, nullable=True)
     suggest_merchant      = Column(String, nullable=True)
     suggest_accepted      = Column(Boolean, nullable=True)
+    # Subcategory suggestion telemetry (Phase B ML).
+    suggest_subcategory           = Column(String, nullable=True)
+    suggest_subcategory_confidence = Column(Float, nullable=True)
+    suggest_subcategory_source     = Column(String, nullable=True)  # classifier | keywords
+    suggest_subcategory_accepted   = Column(Boolean, nullable=True)
     is_deleted   = Column(Boolean, default=False)
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
@@ -408,6 +413,10 @@ def _migrate(engine):
         "suggest_model_version": "INTEGER",
         "suggest_merchant": "VARCHAR",
         "suggest_accepted": "BOOLEAN",
+        "suggest_subcategory": "VARCHAR",
+        "suggest_subcategory_confidence": "FLOAT",
+        "suggest_subcategory_source": "VARCHAR",
+        "suggest_subcategory_accepted": "BOOLEAN",
     })
     _add_missing_columns(engine, "income", {
         "updated_at": "TIMESTAMP",
@@ -426,8 +435,102 @@ def _migrate(engine):
     _add_missing_columns(engine, "devices", {
         "token_expires_at": "TIMESTAMP",
     })
+    _migrate_taxonomy(engine)
+    _migrate_settings_taxonomy()
     _enforce_budget_scopes(engine)
     _enforce_pairing_code_uniqueness(engine)
+
+
+def _migrate_taxonomy(engine):
+    """Idempotent taxonomy rewrite: only rows whose category/subcategory pair
+    IS an old name are rewritten, so re-runs naturally match nothing."""
+    from sqlalchemy import inspect, text
+    from utils import TAXONOMY_MIGRATION, CATEGORY_RENAMES, remap_category_subcategory
+
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+
+    # Expenses and recurring carry (category, subcategory); rewrite in place.
+    for table in ("expenses", "recurring"):
+        if table not in tables:
+            continue
+        with engine.begin() as conn:
+            for old_cat, old_sub, new_cat, new_sub in TAXONOMY_MIGRATION:
+                if (old_cat, old_sub) == (new_cat, new_sub):
+                    continue  # identity mapping — no-op
+                conn.execute(text(
+                    f"UPDATE {table} SET category=:nc, subcategory=:ns "
+                    f"WHERE category=:oc AND subcategory=:os"),
+                    {"nc": new_cat, "ns": new_sub, "oc": old_cat, "os": old_sub})
+
+    # Budgets: two old scopes can collapse into one new scope (e.g. a
+    # whole-category "Food & Dining" row and a "Food & Dining › Groceries"
+    # row both become "Groceries › Groceries"). Merge by summing so the
+    # unique scope constraint is never violated.
+    if "budgets" in tables:
+        _migrate_budgets_taxonomy(engine)
+
+    # big_purchases stores only a category.
+    if "big_purchases" in tables:
+        with engine.begin() as conn:
+            for old_cat, new_cat in CATEGORY_RENAMES.items():
+                if old_cat != new_cat:
+                    conn.execute(text(
+                        "UPDATE big_purchases SET category=:nc WHERE category=:oc"),
+                        {"nc": new_cat, "oc": old_cat})
+
+
+def _migrate_budgets_taxonomy(engine):
+    """Rewrite budget scopes, merging rows whose remapped scopes collide."""
+    from sqlalchemy import text
+    from utils import remap_category_subcategory
+
+    with engine.begin() as conn:
+        rows = [dict(r) for r in conn.execute(text(
+            "SELECT id, user_id, year, month, category, subcategory, budgeted_eur "
+            "FROM budgets")).mappings()]
+
+    # Fast path: nothing to do when no scope actually changes.
+    if not any(remap_category_subcategory(r["category"], r["subcategory"])
+               != (r["category"], r["subcategory"]) for r in rows):
+        return
+
+    # Group every row by its FINAL scope and merge (keep newest id, sum value).
+    scopes = {}
+    for r in rows:
+        nc, ns = remap_category_subcategory(r["category"], r["subcategory"])
+        key = (r["user_id"], r["year"], r["month"], nc, ns)
+        if key not in scopes:
+            scopes[key] = {"ids": [], "total": 0.0}
+        scopes[key]["ids"].append(r["id"])
+        scopes[key]["total"] += float(r["budgeted_eur"] or 0.0)
+
+    with engine.begin() as conn:
+        for (uid, yr, mo, nc, ns), g in scopes.items():
+            keep = max(g["ids"])  # newest row survives, matching dedupe semantics
+            for rid in g["ids"]:
+                if rid != keep:
+                    conn.execute(text("DELETE FROM budgets WHERE id=:id"),
+                                 {"id": rid})
+            conn.execute(text(
+                "UPDATE budgets SET category=:nc, subcategory=:ns, "
+                "budgeted_eur=:v WHERE id=:id"),
+                {"nc": nc, "ns": ns, "v": g["total"], "id": keep})
+
+
+def _migrate_settings_taxonomy():
+    """Rewrite user_settings fun/travel category pools to the new taxonomy."""
+    from utils import remap_fun_categories, remap_travel_categories
+    with get_session() as s:
+        for obj in s.query(UserSettings).all():
+            if isinstance(obj.fun_categories, list):
+                new_fc = remap_fun_categories(obj.fun_categories)
+                if new_fc != obj.fun_categories:
+                    obj.fun_categories = new_fc
+            if isinstance(obj.travel_categories, list):
+                new_tc = remap_travel_categories(obj.travel_categories)
+                if new_tc != obj.travel_categories:
+                    obj.travel_categories = new_tc
 
 
 def _enforce_pairing_code_uniqueness(engine):
@@ -544,6 +647,8 @@ _EXP_COLS = ["id","user_id","date","category","subcategory","description",
              "amount","currency","amount_eur","recurring","rec_template_id","loan_id","notes",
              "suggest_source","suggest_confidence","suggest_model_version",
              "suggest_merchant","suggest_accepted",
+             "suggest_subcategory","suggest_subcategory_confidence",
+             "suggest_subcategory_source","suggest_subcategory_accepted",
              "is_deleted","deleted_at","created_at","updated_at"]
 
 def get_expenses(user_id, include_deleted=False):
@@ -573,6 +678,10 @@ def add_expense(user_id, row):
             suggest_model_version=row.get("suggest_model_version"),
             suggest_merchant=row.get("suggest_merchant"),
             suggest_accepted=row.get("suggest_accepted"),
+            suggest_subcategory=row.get("suggest_subcategory"),
+            suggest_subcategory_confidence=row.get("suggest_subcategory_confidence"),
+            suggest_subcategory_source=row.get("suggest_subcategory_source"),
+            suggest_subcategory_accepted=row.get("suggest_subcategory_accepted"),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "expenses", exp_id, row)

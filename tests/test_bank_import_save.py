@@ -6,6 +6,7 @@ within a single upload must be deduped.
 """
 
 from datetime import date
+import math
 
 import pandas as pd
 import pytest
@@ -84,11 +85,24 @@ def test_empty_currency_treated_as_eur(test_user):
     assert set(df["amount_eur"]) == {12.5}
 
 
-def test_unknown_currency_assumes_1_to_1(test_user):
-    assert _to_eur_amount(50.0, "XYZ", RATES) == 50.0
+def test_unknown_currency_returns_nan_and_is_skipped(test_user):
+    """An unknown non-empty currency must not convert 1:1 — it yields NaN so
+    the save path rejects the row."""
+    assert math.isnan(_to_eur_amount(50.0, "XYZ", RATES))
     assert _save_edited_row(test_user, _row(currency="XYZ", amount=50.0),
-                            RATES, set()) == "imported"
-    assert get_expenses(test_user).iloc[0]["amount_eur"] == 50.0
+                            RATES, set()) == "skipped"
+    assert get_expenses(test_user).empty
+
+
+def test_to_eur_amount_nan_currency_treated_as_eur():
+    """NaN/blank currency is treated as EUR, never stringified to 'NAN'."""
+    for cur in (None, float("nan"), "", " ", "EUR", "eur"):
+        assert _to_eur_amount(12.5, cur, RATES) == pytest.approx(12.5)
+
+
+def test_to_eur_amount_converts_known_currency():
+    assert _to_eur_amount(1170.0, "RSD", RATES) == pytest.approx(10.0)
+    assert _to_eur_amount(50.0, "EUR", RATES) == pytest.approx(50.0)
 
 
 def test_suggestion_telemetry_recorded(test_user):

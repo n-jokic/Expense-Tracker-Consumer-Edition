@@ -9,7 +9,7 @@ import calendar
 import pandas as pd
 import streamlit as st
 
-from utils import fmt, NEAR_LIMIT_THRESHOLD, DEFAULT_TRAVEL_CATEGORIES
+from utils import fmt, NEAR_LIMIT_THRESHOLD, DEFAULT_TRAVEL_CATEGORIES, DEFAULT_FUN_CATEGORIES
 from gamification import detect_raise
 from forecasting import detect_anomalies, detect_subscriptions
 import queries as q
@@ -344,7 +344,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     fun_money = float(settings.get("fun_money") or 0.0)
     if fun_money > 0 and not expenses_df.empty:
         from utils import fun_spent
-        cats = settings.get("fun_categories") or ["Entertainment"]
+        cats = settings.get("fun_categories") or DEFAULT_FUN_CATEGORIES
         spent = fun_spent(expenses_df, cats, year, month)
         if spent > fun_money:
             cards.append(("warning",

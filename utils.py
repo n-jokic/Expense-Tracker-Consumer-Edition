@@ -9,25 +9,28 @@ import socket
 import calendar
 from datetime import date as _date, timedelta as _td
 
+import pandas as pd
 import streamlit as st
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 CATEGORIES = {
-    "Housing":       ["Rent / Mortgage","Electricity","Gas & Heating","Water",
-                      "Internet & Phone","Home Insurance","Building Maintenance","Furniture & Appliances"],
-    "Food & Dining": ["Groceries","Restaurants & Takeaway","Coffee & Snacks",
-                      "Food Delivery","Work Lunch"],
-    "Transport":     ["Fuel","Public Transit","Taxi / Uber","Car Insurance",
-                      "Car Maintenance","Parking","Tolls","Flights & Trains"],
-    "Health":        ["Gym & Fitness","Pharmacy","Doctor / Specialist","Dental",
-                      "Supplements","Mental Health"],
-    "Entertainment": ["Streaming Services","Cinema & Theater","Concerts & Events",
-                      "Going Out","Hobbies","Books & Courses","Vacation / Travel",
-                      "Hotels & Lodging"],
-    "Personal":      ["Clothing & Accessories","Beauty & Skincare","Haircut & Grooming","Gifts"],
-    "Loans & Debt":  ["Loan Repayment","Interest","Credit Card","Other Debt"],
-    "Other":         ["Subscriptions & Software","Taxes & Fees","Charity & Donations","Miscellaneous"],
+    "Housing & Utilities": ["Rent / Mortgage","Electricity","Gas & Heating","Water",
+                            "Internet & Phone","Home Insurance","Building Maintenance","Furniture & Appliances"],
+    "Groceries":           ["Groceries"],
+    "Dining Out":          ["Restaurants & Takeaway","Coffee & Snacks","Food Delivery","Work Lunch"],
+    "Transport":           ["Fuel","Public Transit","Taxi / Uber","Car Insurance",
+                            "Car Maintenance","Parking","Tolls"],
+    "Travel":              ["Flights & Trains","Hotels & Lodging","Tours & Activities"],
+    "Health":              ["Gym & Fitness","Pharmacy","Doctor / Specialist","Dental",
+                            "Supplements","Mental Health"],
+    "Entertainment":       ["Streaming Services","Cinema & Theater","Concerts & Events",
+                            "Going Out","Hobbies","Books & Courses"],
+    "Shopping":            ["Clothing & Accessories","Beauty & Skincare","Haircut & Grooming","Gifts"],
+    "Subscriptions & Software": ["Subscriptions & Software"],
+    "Fees & Taxes":        ["Taxes & Fees","Bank & ATM Fees"],
+    "Loans & Debt":        ["Loan Repayment","Interest","Credit Card","Other Debt"],
+    "Other":               ["Charity & Donations","Miscellaneous"],
 }
 
 INCOME_SOURCES  = ["Primary Salary","Freelance / Side Income","Investment Returns","Rental Income","Other"]
@@ -36,6 +39,143 @@ SAVINGS_GOALS   = ["Emergency Fund","Vacation / Travel","Investment Account","Do
 CHART_COLORS    = ["#0F3460","#E94560","#00B050","#F4A261","#457B9D","#A8DADC","#E9C46A","#2A9D8F"]
 CAT_LIST        = list(CATEGORIES.keys())
 ALL_SUBCATS     = sorted({s for subs in CATEGORIES.values() for s in subs})
+
+
+# ── Taxonomy migration (old → new category/subcategory) ──────────────────────
+#
+# Rows are (old_cat, old_sub, new_cat, new_sub); an empty subcategory ("")
+# means the whole category. Used by db._migrate (rewrite stored data) and by
+# sync_core.validate_fields (accept legacy names from syncing devices).
+
+TAXONOMY_MIGRATION = [
+    # Housing -> Housing & Utilities (subcategory names unchanged)
+    ("Housing", "Rent / Mortgage",        "Housing & Utilities", "Rent / Mortgage"),
+    ("Housing", "Electricity",            "Housing & Utilities", "Electricity"),
+    ("Housing", "Gas & Heating",          "Housing & Utilities", "Gas & Heating"),
+    ("Housing", "Water",                  "Housing & Utilities", "Water"),
+    ("Housing", "Internet & Phone",       "Housing & Utilities", "Internet & Phone"),
+    ("Housing", "Home Insurance",         "Housing & Utilities", "Home Insurance"),
+    ("Housing", "Building Maintenance",   "Housing & Utilities", "Building Maintenance"),
+    ("Housing", "Furniture & Appliances", "Housing & Utilities", "Furniture & Appliances"),
+    ("Housing", "",                       "Housing & Utilities", ""),
+    # Food & Dining splits into Groceries / Dining Out
+    ("Food & Dining", "Groceries",               "Groceries", "Groceries"),
+    ("Food & Dining", "Restaurants & Takeaway",  "Dining Out", "Restaurants & Takeaway"),
+    ("Food & Dining", "Coffee & Snacks",         "Dining Out", "Coffee & Snacks"),
+    ("Food & Dining", "Food Delivery",           "Dining Out", "Food Delivery"),
+    ("Food & Dining", "Work Lunch",              "Dining Out", "Work Lunch"),
+    ("Food & Dining", "",                        "Groceries", "Groceries"),  # documented default
+    # Transport: the travel subcategory moves to Travel, the rest stay
+    ("Transport", "Fuel",           "Transport", "Fuel"),
+    ("Transport", "Public Transit", "Transport", "Public Transit"),
+    ("Transport", "Taxi / Uber",    "Transport", "Taxi / Uber"),
+    ("Transport", "Car Insurance",  "Transport", "Car Insurance"),
+    ("Transport", "Car Maintenance","Transport", "Car Maintenance"),
+    ("Transport", "Parking",        "Transport", "Parking"),
+    ("Transport", "Tolls",          "Transport", "Tolls"),
+    ("Transport", "Flights & Trains", "Travel", "Flights & Trains"),
+    ("Transport", "",               "Transport", ""),
+    # Health unchanged
+    ("Health", "Gym & Fitness",       "Health", "Gym & Fitness"),
+    ("Health", "Pharmacy",            "Health", "Pharmacy"),
+    ("Health", "Doctor / Specialist", "Health", "Doctor / Specialist"),
+    ("Health", "Dental",              "Health", "Dental"),
+    ("Health", "Supplements",         "Health", "Supplements"),
+    ("Health", "Mental Health",       "Health", "Mental Health"),
+    ("Health", "",                    "Health", ""),
+    # Entertainment: travel subcategories move to Travel, the rest stay
+    ("Entertainment", "Streaming Services",  "Entertainment", "Streaming Services"),
+    ("Entertainment", "Cinema & Theater",    "Entertainment", "Cinema & Theater"),
+    ("Entertainment", "Concerts & Events",   "Entertainment", "Concerts & Events"),
+    ("Entertainment", "Going Out",           "Entertainment", "Going Out"),
+    ("Entertainment", "Hobbies",             "Entertainment", "Hobbies"),
+    ("Entertainment", "Books & Courses",     "Entertainment", "Books & Courses"),
+    ("Entertainment", "Vacation / Travel",   "Travel", "Tours & Activities"),
+    ("Entertainment", "Hotels & Lodging",    "Travel", "Hotels & Lodging"),
+    ("Entertainment", "",                    "Entertainment", ""),
+    # Personal -> Shopping
+    ("Personal", "Clothing & Accessories", "Shopping", "Clothing & Accessories"),
+    ("Personal", "Beauty & Skincare",      "Shopping", "Beauty & Skincare"),
+    ("Personal", "Haircut & Grooming",     "Shopping", "Haircut & Grooming"),
+    ("Personal", "Gifts",                  "Shopping", "Gifts"),
+    ("Personal", "",                       "Shopping", ""),
+    # Loans & Debt unchanged
+    ("Loans & Debt", "Loan Repayment", "Loans & Debt", "Loan Repayment"),
+    ("Loans & Debt", "Interest",       "Loans & Debt", "Interest"),
+    ("Loans & Debt", "Credit Card",    "Loans & Debt", "Credit Card"),
+    ("Loans & Debt", "Other Debt",     "Loans & Debt", "Other Debt"),
+    # Other: software and taxes move to their own categories
+    ("Other", "Subscriptions & Software", "Subscriptions & Software", "Subscriptions & Software"),
+    ("Other", "Taxes & Fees",             "Fees & Taxes", "Taxes & Fees"),
+    ("Other", "Charity & Donations",      "Other", "Charity & Donations"),
+    ("Other", "Miscellaneous",            "Other", "Miscellaneous"),
+    ("Other", "",                         "Other", "Miscellaneous"),
+]
+
+_TAXONOMY_LOOKUP = {(oc, os): (nc, ns) for oc, os, nc, ns in TAXONOMY_MIGRATION}
+
+# Category-only renames for tables that store no subcategory (big_purchases).
+CATEGORY_RENAMES = {
+    "Housing": "Housing & Utilities",
+    "Food & Dining": "Groceries",
+    "Personal": "Shopping",
+}
+
+
+def remap_category_subcategory(category, subcategory=""):
+    """Map an (old) category/subcategory pair to its new taxonomy name.
+
+    Unknown pairs pass through unchanged, so re-running a migration is a
+    natural no-op.
+    """
+    cat = category or ""
+    sub = subcategory or ""
+    return _TAXONOMY_LOOKUP.get((cat, sub), (cat, sub))
+
+
+# Moved travel subcategories (used to collapse old travel pool entries).
+_TRAVEL_SUBCATS = {"Vacation / Travel", "Hotels & Lodging", "Flights & Trains"}
+
+
+def remap_fun_categories(entries):
+    """Migrate a fun_categories list to the new taxonomy.
+
+    "Food & Dining" -> "Dining Out"; "Groceries" is dropped; unknown entries
+    are kept. Duplicates are removed while preserving order.
+    """
+    out = []
+    for e in (entries or []):
+        e = (e or "").strip()
+        if e == "Food & Dining":
+            out.append("Dining Out")
+        elif e == "Groceries":
+            continue
+        elif e:
+            out.append(e)
+    return list(dict.fromkeys(out))
+
+
+def remap_travel_categories(entries):
+    """Migrate a travel_categories list to the new taxonomy.
+
+    Any pair whose subcategory is one of the moved travel subcategories, or
+    the whole "Entertainment" category, collapses to "Travel".
+    """
+    out = []
+    for e in (entries or []):
+        e = (e or "").strip()
+        if not e:
+            continue
+        if " › " in e:
+            _cat, sub = e.split(" › ", 1)
+            if sub.strip() in _TRAVEL_SUBCATS:
+                out.append("Travel")
+                continue
+        elif e == "Entertainment":
+            out.append("Travel")
+            continue
+        out.append(e)
+    return list(dict.fromkeys(out))
 
 SUPPORTED_CURRENCIES = {
     "EUR": "€",  "RSD": "din", "USD": "$",   "GBP": "£",
@@ -70,13 +210,9 @@ TLS_ENABLED           = os.environ.get("EXPENSE_TRACKER_TLS") == "1"
 MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
 
-DEFAULT_FUN_CATEGORIES    = ["Entertainment"]
-# "Category › Subcategory" pairs; empty subcategory = whole category counts.
-DEFAULT_TRAVEL_CATEGORIES = [
-    "Entertainment › Vacation / Travel",
-    "Entertainment › Hotels & Lodging",
-    "Transport › Flights & Trains",
-]
+DEFAULT_FUN_CATEGORIES    = ["Entertainment","Dining Out"]
+# "Category › Subcategory" pairs; a bare category name = whole category counts.
+DEFAULT_TRAVEL_CATEGORIES = ["Travel"]
 
 
 # ── Currency engine ───────────────────────────────────────────────────────────
@@ -256,32 +392,75 @@ def pbar(pct: float, color: str) -> str:
 
 # ── Fun money & travel pools ─────────────────────────────────────────────────
 
+def _pool_members(entries) -> tuple[list, list]:
+    """Split pool entries into (category_names, subcategory_names).
+
+    Pool entries may be a category name (matches all its subcategories) or,
+    for backward compatibility, a bare subcategory name.
+    """
+    cats, subs = [], []
+    for e in (entries or []):
+        e = (e or "").strip()
+        if not e:
+            continue
+        if e in CATEGORIES:
+            cats.append(e)
+        elif e in ALL_SUBCATS:
+            subs.append(e)
+    return cats, subs
+
+
 def fun_spent(expenses_df, categories, year: int, month: int) -> float:
-    """EUR spent this month across the fun-money categories."""
+    """EUR spent this month across the fun-money categories.
+
+    A category name matches ALL of its subcategories; a bare subcategory name
+    is still accepted for backward compatibility.
+    """
     if expenses_df is None or expenses_df.empty or not categories:
         return 0.0
     m = expenses_df[(expenses_df["date"].dt.year == year) &
                     (expenses_df["date"].dt.month == month)]
-    return float(m[m["category"].isin(categories)]["amount_eur"].sum())
+    if m.empty:
+        return 0.0
+    cats, subs = _pool_members(categories)
+    mask = m["category"].isin(cats) if cats else pd.Series(False, index=m.index)
+    if subs and "subcategory" in m.columns:
+        mask = mask | m["subcategory"].fillna("").isin(subs)
+    return float(m[mask]["amount_eur"].sum())
 
 
 def travel_spent(expenses_df, pairs, year: int) -> float:
-    """EUR spent this year on travel pairs like 'Entertainment › Vacation / Travel'.
-    An empty subcategory means the whole category counts."""
+    """EUR spent this year on travel pairs.
+
+    Each entry may be a "Category › Subcategory" pair (empty subcategory =
+    whole category counts), a bare category name (whole category), or a bare
+    subcategory name (backward compatibility).
+    """
     if expenses_df is None or expenses_df.empty or not pairs:
         return 0.0
     y = expenses_df[expenses_df["date"].dt.year == year]
+    if y.empty:
+        return 0.0
     total = 0.0
     for pair in pairs:
+        if not pair:
+            continue
+        # NB: "Category › " (trailing space) means the whole category, so the
+        # " › " separator is checked BEFORE stripping trailing whitespace.
         if " › " in pair:
             cat, sub = pair.split(" › ", 1)
+            cat, sub = cat.strip(), sub.strip()
+            if sub:
+                total += float(y[(y["category"] == cat) &
+                                 (y["subcategory"] == sub)]["amount_eur"].sum())
+            else:
+                total += float(y[y["category"] == cat]["amount_eur"].sum())
         else:
-            cat, sub = pair, ""
-        if sub:
-            total += float(y[(y["category"] == cat) &
-                             (y["subcategory"] == sub)]["amount_eur"].sum())
-        else:
-            total += float(y[y["category"] == cat]["amount_eur"].sum())
+            bare = pair.strip()
+            if bare in CATEGORIES:
+                total += float(y[y["category"] == bare]["amount_eur"].sum())
+            elif bare in ALL_SUBCATS:
+                total += float(y[y["subcategory"].fillna("") == bare]["amount_eur"].sum())
     return total
 
 

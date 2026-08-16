@@ -7,9 +7,10 @@ import pytest
 
 from forecasting import (
     forecast_next_month, detect_anomalies, suggest_category,
+    suggest_category_and_subcategory,
     detect_subscriptions, cluster_month_patterns, suggest_budgets,
 )
-from forecasting import _CategorizerModel
+from forecasting import _CategorizerModel, _SubcategorizerModel
 
 
 def _expenses(months: int, base: float = 1000.0) -> pd.DataFrame:
@@ -17,7 +18,7 @@ def _expenses(months: int, base: float = 1000.0) -> pd.DataFrame:
     for m in range(months):
         year, month = 2024 + (m // 12), (m % 12) + 1
         rows.append({"date": pd.Timestamp(year, month, 5),
-                     "category": "Food & Dining", "description": "groceries",
+                     "category": "Groceries", "description": "groceries",
                      "amount_eur": base + m * 20})
     return pd.DataFrame(rows)
 
@@ -67,10 +68,10 @@ def test_forecast_falls_back_when_a_month_is_missing():
 
 
 def test_anomalies_flags_outlier():
-    rows = [{"date": pd.Timestamp(2025, 1, d), "category": "Food & Dining",
+    rows = [{"date": pd.Timestamp(2025, 1, d), "category": "Groceries",
              "description": f"t{d}", "amount_eur": 10.0 + (d % 3)}
             for d in range(1, 29)]
-    rows.append({"date": pd.Timestamp(2025, 1, 29), "category": "Food & Dining",
+    rows.append({"date": pd.Timestamp(2025, 1, 29), "category": "Groceries",
                  "description": "huge", "amount_eur": 5000.0})
     df = pd.DataFrame(rows)
     flagged = detect_anomalies(df, contamination=0.05)
@@ -84,15 +85,24 @@ def test_anomalies_returns_empty_for_small_data():
 
 
 def test_categorizer_trains_and_predicts():
-    df = pd.DataFrame({
-        "description": ["lidl", "aldi", "kaufland", "maxi", "netflix", "hbo", "spotify"] * 4,
-        "category": ["Food & Dining"] * 16 + ["Entertainment"] * 12,
-    })
+    rows = []
+    for d in ["lidl", "aldi", "kaufland", "maxi"]:
+        for _ in range(4):
+            rows.append({"description": d, "category": "Groceries",
+                         "subcategory": "Groceries"})
+    for d in ["netflix", "hbo", "spotify", "cinema"]:
+        for _ in range(4):
+            rows.append({"description": d, "category": "Entertainment",
+                         "subcategory": "Streaming Services"
+                         if d in ("netflix", "hbo") else "Cinema & Theater"})
+    df = pd.DataFrame(rows)
     model = _CategorizerModel()
     assert model.train(df) is True
     cat, conf = model.predict("lidl supermarket")
-    assert cat == "Food & Dining"
+    assert cat == "Groceries"
     assert conf > 0.5
+    # per-category submodels are trained where data allows (>=2 subcategories)
+    assert "Entertainment" in model.sub_models
 
 
 def test_categorizer_refuses_tiny_data():
@@ -102,6 +112,77 @@ def test_categorizer_refuses_tiny_data():
     assert model.predict("a") == (None, 0.0)
 
 
+# ── Per-category subcategorizer ───────────────────────────────────────────────
+
+def test_subcategorizer_trains_and_predicts():
+    df = pd.DataFrame({
+        "description": ["lidl", "aldi", "kaufland", "tesco", "rewe", "edeka", "penny", "maxi"] * 3,
+        "subcategory": ["Groceries"] * 16 + ["Supermarket"] * 8,
+    })
+    sm = _SubcategorizerModel()
+    assert sm.train(df) is True
+    sub, conf = sm.predict("lidl market")
+    assert sub == "Groceries"
+    assert conf > 0.5
+
+
+def test_subcategorizer_refuses_thin_data():
+    # fewer than 8 rows
+    sm = _SubcategorizerModel()
+    assert sm.train(pd.DataFrame({
+        "description": ["a", "b", "c", "d", "e", "f", "g"],
+        "subcategory": ["X"] * 4 + ["Y"] * 3,
+    })) is False
+    assert sm.predict("a") == (None, 0.0)
+    # only one distinct subcategory
+    assert _SubcategorizerModel().train(pd.DataFrame({
+        "description": [f"d{i}" for i in range(10)],
+        "subcategory": ["Only"] * 10,
+    })) is False
+
+
+# ── Combined category + subcategory suggestion ────────────────────────────────
+
+def test_suggest_category_and_subcategory_classifier_wins():
+    rows = [{"description": f"lidl {i}", "category": "Groceries", "subcategory": "Groceries"}
+            for i in range(12)]
+    rows += [{"description": f"starbucks {i}", "category": "Dining Out",
+              "subcategory": "Coffee & Snacks"} for i in range(12)]
+    rows += [{"description": f"pizzeria {i}", "category": "Dining Out",
+              "subcategory": "Restaurants & Takeaway"} for i in range(12)]
+    df = pd.DataFrame(rows)
+    cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+        df, "starbucks latte", user_id=100)
+    assert cat == "Dining Out"
+    assert sub == "Coffee & Snacks"
+    assert cat_conf >= 0.5
+    assert sub_conf >= 0.4
+
+
+def test_suggest_category_and_subcategory_keyword_fallback_when_untrained():
+    df = pd.DataFrame({"description": ["a"], "category": ["X"], "subcategory": [""]})
+    cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+        df, "lidl shop", user_id=101)
+    assert cat == "Groceries"
+    assert sub == "Groceries"
+    assert cat_conf == 0.0
+    assert sub_conf == 0.0
+
+
+def test_suggest_refinement_borrows_keyword_subcategory():
+    rows = [{"description": f"restaurant visit {i}", "category": "Dining Out",
+             "subcategory": ""} for i in range(12)]
+    rows += [{"description": f"netflix {i}", "category": "Entertainment",
+              "subcategory": "Streaming Services"} for i in range(12)]
+    df = pd.DataFrame(rows)
+    cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+        df, "restaurant", user_id=103)
+    assert cat == "Dining Out"
+    assert sub == "Restaurants & Takeaway"  # borrowed from the keyword map
+    assert cat_conf >= 0.5
+    assert sub_conf == 0.0
+
+
 # ── Subscription detection ────────────────────────────────────────────────────
 
 def _monthly_rows():
@@ -109,7 +190,7 @@ def _monthly_rows():
     for m in range(1, 6):
         rows.append({"date": pd.Timestamp(2025, m, 3), "category": "Entertainment",
                      "description": "NETFLIX", "amount_eur": 12.99})
-        rows.append({"date": pd.Timestamp(2025, m, 15), "category": "Food & Dining",
+        rows.append({"date": pd.Timestamp(2025, m, 15), "category": "Groceries",
                      "description": f"groceries {m}", "amount_eur": 40.0 + m})
     return pd.DataFrame(rows)
 
@@ -148,5 +229,5 @@ def test_cluster_short_history():
 def test_suggest_budgets_returns_categories():
     df = _expenses(8, base=500.0)
     out = suggest_budgets(df)
-    assert "Food & Dining" in out
-    assert out["Food & Dining"] > 0
+    assert "Groceries" in out
+    assert out["Groceries"] > 0

@@ -44,7 +44,7 @@ MILESTONES = [
     {"id": "micro_spender",      "icon": "🪙", "title": "Micro Spender",   "desc": "20+ expenses under €5 in one month"},
     {"id": "big_ticket",         "icon": "💎", "title": "Big Spender",     "desc": "Logged a single expense over €500"},
     {"id": "penny_pincher",      "icon": "📉", "title": "Penny Pincher",   "desc": "A full month at least 30% below your average", "reward": 5.0},
-    {"id": "category_explorer",  "icon": "🌈", "title": "Category Explorer", "desc": "Spent in every top-level category", "reward": 5.0},
+    {"id": "category_explorer",  "icon": "🌈", "title": "Category Explorer", "desc": "Spent in at least 10 distinct categories", "reward": 5.0},
     {"id": "charity_champion",   "icon": "❤️", "title": "Kind Heart",      "desc": "Made a charity donation"},
     {"id": "gift_giver",         "icon": "🎁", "title": "Santa's Helper",  "desc": "3+ gifts in one month"},
     {"id": "travel_bug",         "icon": "✈️", "title": "Jet Setter",      "desc": "Booked flights or a hotel"},
@@ -249,8 +249,8 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
 
     # fun money keeper (previous full month within the allowance)
     if settings and float(settings.get("fun_money") or 0.0) > 0:
-        from utils import fun_spent
-        cats = settings.get("fun_categories") or ["Entertainment"]
+        from utils import fun_spent, DEFAULT_FUN_CATEGORIES
+        cats = settings.get("fun_categories") or DEFAULT_FUN_CATEGORIES
         prev_m = today.month - 1 if today.month > 1 else 12
         prev_y = today.year if today.month > 1 else today.year - 1
         spent = fun_spent(expenses_df, cats, prev_y, prev_m)
@@ -343,11 +343,10 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 expenses_df["currency"].nunique() >= 3:
             earned.append(MILESTONE_INDEX["currency_hopper"])
 
-        from utils import CATEGORIES
-        if set(expenses_df["category"].dropna()) >= set(CATEGORIES.keys()):
+        if expenses_df["category"].dropna().nunique() >= 10:
             earned.append(MILESTONE_INDEX["category_explorer"])
 
-        housing = expenses_df[expenses_df["category"] == "Housing"]
+        housing = expenses_df[expenses_df["category"] == "Housing & Utilities"]
         if not housing.empty and housing["date"].dt.to_period("M").nunique() >= 12:
             earned.append(MILESTONE_INDEX["home_steady"])
 

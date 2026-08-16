@@ -51,9 +51,14 @@ def test_normalize_generic_drops_invalid_rows():
 
 
 def test_categorize_known_keyword():
-    assert categorize_expense("LIDL 1234 BERLIN") == ("Food & Dining", "Groceries")
+    assert categorize_expense("LIDL 1234 BERLIN") == ("Groceries", "Groceries")
     assert categorize_expense("Netflix.com") == ("Entertainment", "Streaming Services")
     assert categorize_expense("SHELL station") == ("Transport", "Fuel")
+    assert categorize_expense("mcdonald's") == ("Dining Out", "Restaurants & Takeaway")
+    assert categorize_expense("Adobe subscription") == ("Subscriptions & Software", "Subscriptions & Software")
+    assert categorize_expense("tax payment") == ("Fees & Taxes", "Taxes & Fees")
+    assert categorize_expense("zara") == ("Shopping", "Clothing & Accessories")
+    assert categorize_expense("rent") == ("Housing & Utilities", "Rent / Mortgage")
 
 
 def test_categorize_unknown_falls_back_to_other():

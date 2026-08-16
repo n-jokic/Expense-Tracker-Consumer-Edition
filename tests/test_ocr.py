@@ -70,5 +70,7 @@ def test_analyze_receipt_keyword_fallback(monkeypatch):
     res = analyze_receipt(b"img", expenses_df=None)
     assert res["ok"] is True
     assert res["amount"] == 120.0
-    assert res["category"] == "Food & Dining"
+    assert res["category"] == "Groceries"
     assert res["subcategory"] == "Groceries"
+    assert res["subcategory_source"] == "keywords"
+    assert res["subcategory_confidence"] is None

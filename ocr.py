@@ -136,30 +136,43 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     """Full pipeline: OCR → amount/merchant → category suggestion.
 
     Returns {"ok", "text", "amount", "merchant", "category", "subcategory",
-    "confidence", "reason"}. Never raises; the UI turns this into an
-    editable prefill that the user accepts/rejects.
+    "confidence", "subcategory_confidence", "subcategory_source", "reason"}.
+    Never raises; the UI turns this into an editable prefill that the user
+    accepts/rejects.
     """
     text, ocr_reason = ocr_image(image_bytes)
     if text is None:
         return {"ok": False, "reason": ocr_reason or "ocr_unavailable",
                 "text": None, "amount": None, "merchant": None,
-                "category": None, "subcategory": "", "confidence": 0.0}
+                "category": None, "subcategory": "", "confidence": 0.0,
+                "subcategory_confidence": None, "subcategory_source": None}
 
     amount = guess_total_amount(text)
     merchant = guess_merchant(text)
     category, subcategory, confidence = None, "", 0.0
+    subcategory_confidence = None
+    subcategory_source = None
     source = None
     model_version = None
 
     if merchant:
-        # 1) learned classifier on the user's own data
+        # 1) learned classifier (+ per-category subcategorizer)
         try:
-            from forecasting import suggest_category, CATEGORIZER_MODEL_VERSION
-            cat, conf = suggest_category(expenses_df, merchant, user_id=user_id)
-            if cat is not None:
-                category, confidence = cat, round(conf, 2)
+            from forecasting import (
+                suggest_category_and_subcategory, CATEGORIZER_MODEL_VERSION,
+                CATEGORY_CONFIDENCE, SUBCATEGORY_CONFIDENCE,
+            )
+            cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+                expenses_df, merchant, user_id=user_id)
+            if cat_conf >= CATEGORY_CONFIDENCE:
+                category, subcategory, confidence = cat, sub, round(cat_conf, 2)
                 source = "classifier"
                 model_version = CATEGORIZER_MODEL_VERSION
+                if sub and sub_conf >= SUBCATEGORY_CONFIDENCE:
+                    subcategory_confidence = round(sub_conf, 2)
+                    subcategory_source = "classifier"
+                elif sub:
+                    subcategory_source = "keywords"
         except Exception:
             pass
         # 2) keyword-map fallback
@@ -167,8 +180,11 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
             from bank_import import categorize_expense
             category, subcategory = categorize_expense(merchant)
             source = "keywords"
+            subcategory_source = "keywords"
 
     return {"ok": True, "text": text, "amount": amount, "merchant": merchant,
             "category": category, "subcategory": subcategory,
             "confidence": confidence, "reason": None,
-            "source": source, "model_version": model_version}
+            "source": source, "model_version": model_version,
+            "subcategory_confidence": subcategory_confidence,
+            "subcategory_source": subcategory_source}

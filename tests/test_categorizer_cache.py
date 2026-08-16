@@ -14,7 +14,7 @@ from forecasting import (
 
 
 def _labels(n_groceries: int = 12, n_streams: int = 12,
-            grocery_cat: str = "Food & Dining") -> pd.DataFrame:
+            grocery_cat: str = "Groceries") -> pd.DataFrame:
     rows = [{"description": f"lidl {i}", "category": grocery_cat}
             for i in range(n_groceries)]
     rows += [{"description": f"netflix {i}", "category": "Entertainment"}
@@ -29,6 +29,17 @@ def test_fingerprint_changes_on_category_edit():
     assert _dataset_fingerprint(df1) != _dataset_fingerprint(df2)
 
 
+def test_fingerprint_changes_on_subcategory_edit():
+    """A subcategory edit must invalidate the cached model just like a
+    category edit — the fingerprint hashes the subcategory too."""
+    rows = [{"description": f"lidl {i}", "category": "Groceries",
+             "subcategory": "Groceries"} for i in range(12)]
+    df1 = pd.DataFrame(rows)
+    df2 = df1.copy()
+    df2["subcategory"] = "Other"
+    assert _dataset_fingerprint(df1) != _dataset_fingerprint(df2)
+
+
 def test_fingerprint_changes_on_row_delete():
     df1 = _labels()
     assert _dataset_fingerprint(df1) != _dataset_fingerprint(df1.iloc[:-1])
@@ -38,7 +49,7 @@ def test_edited_labels_retrain_immediately():
     clear_categorizers()
     df1 = _labels()
     cat1, _ = suggest_category(df1, "lidl supermarket", user_id=42)
-    assert cat1 == "Food & Dining"
+    assert cat1 == "Groceries"
 
     # The user corrects every "lidl" row to "Other" — the next suggestion
     # must reflect the correction, not the stale cached model.

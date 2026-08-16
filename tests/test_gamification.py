@@ -74,18 +74,19 @@ def test_big_ticket_and_diversity_badges():
             "gift_giver", "travel_bug"} <= ids
 
 
-def test_category_explorer_requires_every_category():
+def test_category_explorer_requires_ten_categories():
     today = date.today()
     rows = [_row(today, category=c, amount=1.0) for c in CATEGORIES.keys()]
     ids = _ids(pd.DataFrame(rows))
     assert "category_explorer" in ids
-    # missing one category -> not earned
-    ids2 = _ids(pd.DataFrame(rows[:-1]))
-    assert "category_explorer" not in ids2
+    # 11 distinct categories is still enough
+    assert "category_explorer" in _ids(pd.DataFrame(rows[:-1]))
+    # 9 distinct categories is not enough
+    assert "category_explorer" not in _ids(pd.DataFrame(rows[:-3]))
 
 
 def test_home_steady_needs_12_housing_months():
-    rows = [_row(date(2024, m, 5), "Housing", "Rent / Mortgage", 500.0)
+    rows = [_row(date(2024, m, 5), "Housing & Utilities", "Rent / Mortgage", 500.0)
             for m in range(1, 13)]
     assert "home_steady" in _ids(pd.DataFrame(rows))
     assert "home_steady" not in _ids(pd.DataFrame(rows[:11]))

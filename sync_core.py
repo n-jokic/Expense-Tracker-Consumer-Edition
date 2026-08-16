@@ -24,7 +24,7 @@ from db import (
     get_session, Expense, Income, Savings,
     add_sync_conflict,
 )
-from utils import CATEGORIES, ALL_SUBCATS
+from utils import CATEGORIES, ALL_SUBCATS, remap_category_subcategory
 
 SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings}
 PROTECTED = ("id", "user_id", "created_at", "updated_at")
@@ -148,6 +148,10 @@ def validate_fields(table: str, fields: dict):
         except (TypeError, ValueError):
             errors.append(f"{k} invalid type")
     if table == "expenses" and "category" in clean:
+        # Accept legacy (old-taxonomy) names from syncing devices: remap the
+        # (category, subcategory) pair to the new taxonomy before validating.
+        clean["category"], clean["subcategory"] = remap_category_subcategory(
+            clean["category"], clean.get("subcategory", ""))
         if clean["category"] not in CATEGORIES:
             errors.append("unknown category")
     if table == "expenses" and clean.get("subcategory"):

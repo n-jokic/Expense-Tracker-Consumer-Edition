@@ -85,6 +85,37 @@ def test_validate_coerces_valid_values():
     assert clean["recurring"] is True
 
 
+def test_validate_rewrites_legacy_names():
+    """Legacy category/subcategory names are remapped before validation."""
+    clean, errors = validate_fields("expenses", {
+        "category": "Food & Dining", "subcategory": "Groceries",
+    })
+    assert not errors
+    assert clean["category"] == "Groceries"
+    assert clean["subcategory"] == "Groceries"
+
+
+def test_validate_rewrites_legacy_whole_category():
+    clean, errors = validate_fields("expenses", {"category": "Housing"})
+    assert not errors
+    assert clean["category"] == "Housing & Utilities"
+    assert clean["subcategory"] == ""
+
+
+def test_apply_changes_accepts_legacy_names(two_users):
+    uid_a, _ = two_users
+    result = apply_changes(uid_a, [{
+        "table": "expenses", "id": "legacy1",
+        "fields": {"date": "2025-06-01", "category": "Entertainment",
+                   "subcategory": "Vacation / Travel", "description": "Trip",
+                   "amount": 5.0, "currency": "EUR", "amount_eur": 5.0},
+    }])
+    assert result["applied"][0]["status"] == "created"
+    df = get_expenses(uid_a)
+    assert df.iloc[0]["category"] == "Travel"
+    assert df.iloc[0]["subcategory"] == "Tours & Activities"
+
+
 # ── Cross-account isolation ───────────────────────────────────────────────────
 
 def test_cross_user_ids_do_not_block_or_leak(two_users):
