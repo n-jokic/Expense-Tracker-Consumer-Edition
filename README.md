@@ -221,8 +221,11 @@ require confirmation dialogs. Every change is written to the **audit log**.
 
 - CSV import for **Revolut, N26, Wise, and generic** formats, plus **PDF bank
   statements** (pdfplumber extracts both tables and free text).
-- Locale-aware number parsing (e.g. `1.234,56`), date-first parsing (so dates
-  are never mistaken for amounts), and debit/credit detection.
+- Locale-aware number parsing (e.g. `1.234,56` and Serbian dot-thousands
+  `1.234` = 1234), day-first date parsing with an ambiguity heuristic (so
+  `05/02/2025` is 5 February, never May 2), and debit/credit detection —
+  statements whose bank exports debits as POSITIVE amounts get an "inverted
+  sign convention" checkbox.
 - **Auto-categorisation**: your learned classifier first (see ML section),
   then a keyword map as fallback.
 - A review editor lets you correct categories and untick rows before import;
@@ -431,8 +434,9 @@ The v2 protocol is security-hardened:
   SHA-256-hashed, expire after 90 days, and are refreshed by use.
 
 The syncable tables are expenses, income, savings, and term-deposit accounts
-(`savings_accounts`). The offline PWA client itself is the next milestone —
-the server contract is ready.
+(`savings_accounts`). Every sync-originated create/update is written to the
+**audit log** (marked "via sync"). The offline PWA client itself is the next
+milestone — the server contract is ready.
 
 ### Receipt OCR setup (optional)
 
