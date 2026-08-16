@@ -509,7 +509,8 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
         if last is not None and last >= week_start:
             return
 
-    window = (expenses_df[expenses_df["date"] >= pd.Timestamp(today - timedelta(days=7))]
+    window = (expenses_df[(expenses_df["date"] >= pd.Timestamp(today - timedelta(days=7)))
+                          & (expenses_df["date"] <= pd.Timestamp(today))]  # future-dated rows don't count
               if not expenses_df.empty else pd.DataFrame())
     from utils import get_rates
     rates = get_rates(settings)
