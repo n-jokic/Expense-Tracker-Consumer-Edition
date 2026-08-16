@@ -19,6 +19,7 @@ from utils import (
 )
 from gamification import (
     render_gamification_sidebar, get_earned_milestones, award_new_milestones,
+    award_custom_milestones,
 )
 from notifications import (
     check_and_send_budget_alerts, check_and_send_bill_reminders,
@@ -87,6 +88,17 @@ if new_ms:
              + (f" — +€{ms_bonus:.0f} fun money next month!" if ms_bonus > 0 else ""),
              icon="🏅")
     st.balloons()
+    settings = st.session_state.settings  # refresh after reward save
+
+# Custom (user-created) milestones: evaluated from the same snapshots,
+# awarded once, rewards queued into next month's fun money.
+new_cm, cm_bonus = award_custom_milestones(
+    user_id, _expenses_snap, _income_snap, _savings_snap, settings)
+if new_cm:
+    names = ", ".join(f"🎯 {m['title']}" for m in new_cm)
+    st.toast(f"Custom milestone reached: {names}"
+             + (f" — +€{cm_bonus:.0f} fun money next month!" if cm_bonus > 0 else ""),
+             icon="🎯")
     settings = st.session_state.settings  # refresh after reward save
 
 # ── Shared sidebar ────────────────────────────────────────────────────────────
@@ -186,6 +198,7 @@ pg = st.navigation({
     "Understand": [
         st.Page("app_pages/forecast.py", title="Forecast", icon=":material/query_stats:"),
         st.Page("app_pages/insights_view.py", title="Insights", icon=":material/lightbulb:"),
+        st.Page("app_pages/ask.py", title="Ask your data", icon=":material/forum:"),
     ],
     "Play": [
         st.Page("app_pages/rewards.py", title="Rewards & badges",

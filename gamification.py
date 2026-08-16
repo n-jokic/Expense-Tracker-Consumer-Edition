@@ -276,7 +276,8 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             earned.append(MILESTONE_INDEX["budget_keeper_3"])
 
     # fun money keeper (previous full month within the allowance)
-    if settings and float(settings.get("fun_money") or 0.0) > 0:
+    _fun_raw = float(settings.get("fun_money") or 0.0) if settings else 0.0
+    if _fun_raw == _fun_raw and _fun_raw > 0:
         from utils import fun_spent, DEFAULT_FUN_CATEGORIES
         cats = settings.get("fun_categories") or DEFAULT_FUN_CATEGORIES
         prev_m = today.month - 1 if today.month > 1 else 12
@@ -425,6 +426,36 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
 
 # ── Persistent unlocks + rewards ─────────────────────────────────────────────
 
+def _queue_fun_bonus(user_id: int, bonus: float, settings: dict) -> None:
+    """Add a fun-money bonus to NEXT month's per-month map.
+
+    Bonuses are stored PER MONTH: a bonus queued for next month must never
+    overwrite one still being displayed THIS month (the old single
+    (amount, month) pair silently lost it mid-month). A legacy single-pair
+    bonus is seeded into the map first so it is never lost."""
+    import queries as q
+    if not (bonus > 0 and bonus == bonus):  # ignore zero/NaN
+        return
+    today = date.today()
+    nxt_m = today.month + 1 if today.month < 12 else 1
+    nxt_y = today.year if today.month < 12 else today.year + 1
+    nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
+    bonuses = dict(settings.get("fun_bonuses") or {})
+    legacy_month = settings.get("fun_bonus_month")
+    legacy_amt = float(settings.get("fun_bonus_amount") or 0.0)
+    if legacy_amt != legacy_amt:  # NaN must not enter the map
+        legacy_amt = 0.0
+    if legacy_month and legacy_amt > 0 and legacy_month not in bonuses:
+        bonuses[legacy_month] = round(legacy_amt, 4)
+    bonuses[nxt_key] = round(bonuses.get(nxt_key, 0.0) + bonus, 4)
+    q.save_settings(user_id, {
+        "fun_bonuses": bonuses,
+        # Legacy single-value view (older code paths / readers).
+        "fun_bonus_amount": bonuses[nxt_key],
+        "fun_bonus_month": nxt_key,
+    })
+
+
 def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
     """Persist newly earned milestones once and grant their fun-money rewards.
 
@@ -432,7 +463,6 @@ def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
     fun_bonus_amount for NEXT month (fun_bonus_month).
     """
     from db import record_milestones
-    import queries as q
 
     new_ids = record_milestones(user_id, [m["id"] for m in earned])
     if not new_ids:
@@ -441,28 +471,79 @@ def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
     new_ms = [MILESTONE_INDEX[i] for i in new_ids if i in MILESTONE_INDEX]
     bonus = sum(float(m.get("reward") or 0.0) for m in new_ms)
     if bonus > 0:
-        today = date.today()
-        nxt_m = today.month + 1 if today.month < 12 else 1
-        nxt_y = today.year if today.month < 12 else today.year + 1
-        nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
-        # Bonuses are stored PER MONTH: a bonus queued for next month must
-        # never overwrite one still being displayed THIS month (the old
-        # single (amount, month) pair silently lost it mid-month).
-        bonuses = dict(settings.get("fun_bonuses") or {})
-        # Seed the map from a legacy single-pair bonus (pre-upgrade users):
-        # its month is still displayed until it passes.
-        legacy_month = settings.get("fun_bonus_month")
-        legacy_amt = float(settings.get("fun_bonus_amount") or 0.0)
-        if legacy_month and legacy_amt > 0 and legacy_month not in bonuses:
-            bonuses[legacy_month] = round(legacy_amt, 4)
-        bonuses[nxt_key] = round(bonuses.get(nxt_key, 0.0) + bonus, 4)
-        q.save_settings(user_id, {
-            "fun_bonuses": bonuses,
-            # Legacy single-value view (older code paths / readers).
-            "fun_bonus_amount": bonuses[nxt_key],
-            "fun_bonus_month": nxt_key,
-        })
+        _queue_fun_bonus(user_id, bonus, settings)
     return new_ms, bonus
+
+
+# ── Custom milestones (user-created goals with fun-money rewards) ─────────────
+
+CUSTOM_METRIC_LABELS = {
+    "expenses_count": "Expenses logged (count)",
+    "expenses_eur": "Total expenses (EUR)",
+    "income_eur": "Total income (EUR)",
+    "savings_balance": "Savings balance (EUR)",
+    "streak_days": "Logging streak (days)",
+    "categories_count": "Categories used (count)",
+}
+
+
+def custom_metric_value(metric: str, expenses_df: pd.DataFrame,
+                        income_df: pd.DataFrame,
+                        savings_df: pd.DataFrame) -> float:
+    """The current value of a custom-milestone metric (NaN-safe)."""
+    def _sum(df, col):
+        if df.empty or col not in df.columns:
+            return 0.0
+        vals = df[col].dropna()
+        return float(vals.sum()) if not vals.empty else 0.0
+
+    if metric == "expenses_count":
+        return float(len(expenses_df))
+    if metric == "expenses_eur":
+        return _sum(expenses_df, "amount_eur")
+    if metric == "income_eur":
+        return _sum(income_df, "actual_eur")
+    if metric == "savings_balance":
+        if savings_df.empty or "balance_eur" not in savings_df.columns:
+            return 0.0
+        vals = savings_df["balance_eur"].dropna()
+        return float(vals.max()) if not vals.empty else 0.0
+    if metric == "streak_days":
+        return float(get_logging_streak(expenses_df))
+    if metric == "categories_count":
+        if expenses_df.empty or "category" not in expenses_df.columns:
+            return 0.0
+        return float(expenses_df["category"].nunique())
+    return 0.0
+
+
+def award_custom_milestones(user_id: int, expenses_df: pd.DataFrame,
+                            income_df: pd.DataFrame,
+                            savings_df: pd.DataFrame,
+                            settings: dict):
+    """Evaluate user-created milestones and award reached ones ONCE.
+
+    Returns (newly_achieved_rows, total_reward). The reward is queued into
+    next month's fun money (same per-month map as catalog milestones)."""
+    from db import get_custom_milestones, mark_custom_milestone_achieved
+
+    rows = get_custom_milestones(user_id)
+    newly, total_reward = [], 0.0
+    for _, r in rows.iterrows():
+        if pd.notna(r.get("achieved_at")):
+            continue
+        val = custom_metric_value(str(r["metric"]), expenses_df,
+                                  income_df, savings_df)
+        target = float(r["target"])
+        if target != target:  # corrupt stored target — skip, never award
+            continue
+        if val >= target:
+            mark_custom_milestone_achieved(user_id, str(r["id"]))
+            newly.append(dict(r))
+            total_reward += float(r.get("reward") or 0.0)
+    if total_reward > 0:
+        _queue_fun_bonus(user_id, total_reward, settings)
+    return newly, total_reward
 
 
 def _next_milestone_hint(expenses_df: pd.DataFrame, earned_ids: set) -> str | None:

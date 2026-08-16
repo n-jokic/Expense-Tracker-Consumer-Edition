@@ -4,6 +4,8 @@ Forecast page: project current salary-cycle spending and compare against budget.
 
 from datetime import date
 
+import math
+
 import pandas as pd
 import streamlit as st
 
@@ -112,7 +114,8 @@ else:
     projected = daily_avg * days_in_period
 
 total_budget = 0.0
-overall_bud  = float(settings.get("monthly_budget", 0.0))
+_overall_raw = float(settings.get("monthly_budget") or 0.0)
+overall_bud = _overall_raw if math.isfinite(_overall_raw) else 0.0
 if overall_bud > 0:
     total_budget = overall_bud
 elif not dfb.empty:

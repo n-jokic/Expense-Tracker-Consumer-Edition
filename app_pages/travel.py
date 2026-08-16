@@ -7,6 +7,7 @@ import calendar
 import math
 from datetime import date
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -148,7 +149,8 @@ with c2:
     if not dfs.empty:
         rows = dfs[dfs["goal_name"].isin(["Vacation / Travel", "Vacation"])]
         if not rows.empty:
-            bal = float(rows.sort_values("date").iloc[-1]["balance_eur"])
+            _bal = rows.sort_values("date").iloc[-1]["balance_eur"]
+            bal = float(_bal) if pd.notna(_bal) else 0.0
             st.metric("Saved towards vacation", fmt(bal, DC, rates))
             st.caption("Deposit into the 'Vacation / Travel' savings goal to grow this.")
         else:

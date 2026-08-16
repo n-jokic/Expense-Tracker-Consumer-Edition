@@ -32,6 +32,7 @@ PAGES = [
     "travel.py",
     "forecast.py",
     "insights_view.py",
+    "ask.py",
     "bank_import_view.py",
     "audit_log.py",
     "household.py",
@@ -41,6 +42,8 @@ PAGES = [
 
 @pytest.fixture(scope="module")
 def smoke_user():
+    from db import init_db
+    init_db()  # the fixture must not depend on other test modules having run
     if not username_exists(TEST_USERNAME):
         uid = create_user(TEST_USERNAME, TEST_EMAIL, hash_password("smoke1234"), "Smoke Tester")
     else:
@@ -193,6 +196,37 @@ def test_all_pages_with_rich_data(smoke_user):
         at.switch_page(os.path.join(APP_DIR, "app_pages", page))
         at.run()
         assert not at.exception, f"page {page} with data failed: {at.exception}"
+
+
+def test_ai_settings_provider_switch_saves_without_crash(smoke_user):
+    """Regression: switching the AI provider selectbox and saving in ONE
+    submit leaves the provider-specific fields unrendered (None) — saving
+    used to crash with int(None) on api→local. The handler must fall back to
+    the stored values instead."""
+    at = _authenticated_at(smoke_user)
+    at.run()
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "settings.py"))
+    at.run()
+    assert not at.exception, at.exception
+
+    provider = [s for s in at.selectbox if s.label == "Provider"]
+    assert provider, "AI provider selectbox missing"
+    provider[0].select("local")   # fields for 'local' are not rendered yet
+    at.run()
+    save_btn = [b for b in at.button if b.label == "Save AI settings"]
+    assert save_btn
+    save_btn[0].click()
+    at.run()
+    assert not at.exception, f"provider-switch save crashed: {at.exception}"
+
+    # And back to api in one submit (fields None → stored values kept).
+    provider = [s for s in at.selectbox if s.label == "Provider"]
+    provider[0].select("api")
+    at.run()
+    save_btn = [b for b in at.button if b.label == "Save AI settings"]
+    save_btn[0].click()
+    at.run()
+    assert not at.exception, f"provider-switch back crashed: {at.exception}"
 
 
 def test_onboarding_gate_blocks_new_users(smoke_user):

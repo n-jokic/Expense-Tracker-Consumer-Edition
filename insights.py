@@ -250,7 +250,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                              f"congratulations!"))
 
     # ── Insight 5: Budget burn rate ───────────────────────────────────────────
-    _bud_raw = float(settings.get("monthly_budget", 0.0))
+    _bud_raw = float(settings.get("monthly_budget") or 0.0)
     total_budget = _bud_raw if math.isfinite(_bud_raw) else 0.0
     if total_budget > 0 and not expenses_df.empty:
         from datetime import date as _date

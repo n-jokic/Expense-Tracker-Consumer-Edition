@@ -385,7 +385,8 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
 
         sent.add(key)
         st.session_state[sent_key] = sent
-        amt_str = f"€{float(row['amount_eur']):,.2f}"
+        _amt = row["amount_eur"]
+        amt_str = f"€{float(_amt):,.2f}" if pd.notna(_amt) else "€0.00"
         html = build_bill_reminder_email(
             st.session_state.get("display_name", ""),
             row["description"], amt_str, due_note
@@ -683,13 +684,22 @@ def render_notification_settings(user_id: int, settings: dict):
                                             icon=":material/smart_toy:", width="stretch")
 
     if ai_saved:
+        # NB: the provider-specific fields only exist when their provider is
+        # SELECTED at render time — switching the selectbox and saving in one
+        # submit leaves them None. In that case keep the stored values (a
+        # switch must not crash on int(None) or overwrite settings with
+        # defaults).
         updates = {"ai_provider": ai_provider}
-        if ai_provider == "local":
+        if ai_provider == "local" and ai_model_path is not None and ai_gpu is not None:
             updates.update({"ai_local_model": (ai_model_path or "").strip(),
                             "ai_local_gpu_layers": int(ai_gpu)})
         elif ai_provider == "api":
-            updates.update({"ai_api_base": (ai_base or DEFAULT_API_BASE).strip(),
-                            "ai_api_model": (ai_model or "").strip()})
+            updates.update({
+                "ai_api_base": ((ai_base or settings.get("ai_api_base")
+                                 or DEFAULT_API_BASE) or "").strip(),
+                "ai_api_model": ((ai_model or settings.get("ai_api_model")
+                                  or "") or "").strip(),
+            })
             if ai_key:
                 updates["ai_api_key_enc"] = _encrypt(ai_key)
         q.save_settings(user_id, updates)
@@ -700,11 +710,17 @@ def render_notification_settings(user_id: int, settings: dict):
         from llm import generate_summary
         merged = dict(settings)
         merged["ai_provider"] = ai_provider
-        if ai_provider == "local" and ai_model_path is not None:
+        if ai_provider == "local" and ai_model_path is not None and ai_gpu is not None:
             merged.update({"ai_local_model": ai_model_path.strip(),
                            "ai_local_gpu_layers": int(ai_gpu)})
-        elif ai_provider == "api" and ai_key:
-            merged["ai_api_key_enc"] = _encrypt(ai_key)
+        elif ai_provider == "api":
+            # Freshly typed base/model count for the test even before saving.
+            if ai_base is not None:
+                merged["ai_api_base"] = ai_base.strip()
+            if ai_model is not None:
+                merged["ai_api_model"] = ai_model.strip()
+            if ai_key:
+                merged["ai_api_key_enc"] = _encrypt(ai_key)
         with st.spinner("Generating (this can take a few seconds on CPU)…"):
             out = generate_summary(
                 {"total_eur": 123.45, "prev_week_eur": 98.20,

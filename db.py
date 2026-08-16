@@ -554,6 +554,20 @@ class UserMilestone(Base):
     earned_at    = Column(DateTime, default=_utcnow)
 
 
+class CustomMilestone(Base):
+    """User-created goals with a fun-money reward: a metric + target that is
+    evaluated from the user's own data and awarded ONCE when reached."""
+    __tablename__ = "custom_milestones"
+    id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title       = Column(String, nullable=False)
+    metric      = Column(String, nullable=False)
+    target      = Column(Float, nullable=False)
+    reward      = Column(Float, default=0.0)
+    achieved_at = Column(DateTime, nullable=True)
+    created_at  = Column(DateTime, default=_utcnow)
+
+
 class SyncConflict(Base):
     __tablename__ = "sync_conflicts"
     id           = Column(Integer, primary_key=True, autoincrement=True)
@@ -1996,6 +2010,8 @@ def delete_user_account(user_id):
             synchronize_session=False)
         s.query(UserMilestone).filter(UserMilestone.user_id == user_id).delete(
             synchronize_session=False)
+        s.query(CustomMilestone).filter(CustomMilestone.user_id == user_id).delete(
+            synchronize_session=False)
         s.query(SyncConflict).filter(SyncConflict.user_id == user_id).delete(
             synchronize_session=False)
         s.query(Loan).filter(Loan.user_id == user_id).delete(
@@ -2251,6 +2267,78 @@ def record_milestones(user_id, milestone_ids):
             s.add(UserMilestone(user_id=user_id, milestone_id=mid))
             log_audit(s, user_id, "CREATE", "user_milestones", mid, {})
     return new_ids
+
+
+# ── Custom milestones (user-created goals with fun-money rewards) ─────────────
+
+CUSTOM_MILESTONE_METRICS = (
+    "expenses_count", "expenses_eur", "income_eur",
+    "savings_balance", "streak_days", "categories_count",
+)
+
+_CUSTOM_MS_COLS = ["id", "user_id", "title", "metric", "target", "reward",
+                   "achieved_at", "created_at"]
+
+
+def add_custom_milestone(user_id, row):
+    """Create a custom milestone. Validates metric, finite positive target,
+    and a finite non-negative reward."""
+    import math as _math
+    metric = str(row.get("metric") or "")
+    if metric not in CUSTOM_MILESTONE_METRICS:
+        raise ValueError(f"unknown metric '{metric}'")
+    target = float(row.get("target", 0))
+    reward = float(row.get("reward", 0) or 0)
+    if not _math.isfinite(target) or target <= 0:
+        raise ValueError("target must be a positive number")
+    if not _math.isfinite(reward) or reward < 0:
+        raise ValueError("reward must be zero or a positive number")
+    title = str(row.get("title") or "").strip()
+    if not title:
+        raise ValueError("title is required")
+    ms_id = str(uuid.uuid4())
+    with get_session() as s:
+        s.add(CustomMilestone(id=ms_id, user_id=user_id, title=title[:200],
+                              metric=metric, target=target, reward=reward))
+        log_audit(s, user_id, "CREATE", "custom_milestones", ms_id,
+                  {"title": title, "metric": metric, "target": target,
+                   "reward": reward})
+    return ms_id
+
+
+def get_custom_milestones(user_id):
+    with get_session() as s:
+        rows = (s.query(CustomMilestone)
+                .filter(CustomMilestone.user_id == user_id)
+                .order_by(CustomMilestone.created_at.asc()).all())
+    df = _to_df(rows, _CUSTOM_MS_COLS)
+    return _parse_dates(df, ["achieved_at", "created_at"])
+
+
+def delete_custom_milestone(user_id, ms_id):
+    with get_session() as s:
+        obj = (s.query(CustomMilestone)
+               .filter(CustomMilestone.id == ms_id,
+                       CustomMilestone.user_id == user_id).first())
+        if not obj:
+            return False
+        log_audit(s, user_id, "DELETE", "custom_milestones", ms_id,
+                  {"title": obj.title})
+        s.delete(obj)
+    return True
+
+
+def mark_custom_milestone_achieved(user_id, ms_id):
+    with get_session() as s:
+        obj = (s.query(CustomMilestone)
+               .filter(CustomMilestone.id == ms_id,
+                       CustomMilestone.user_id == user_id).first())
+        if not obj:
+            return False
+        obj.achieved_at = _utcnow()
+        log_audit(s, user_id, "UPDATE", "custom_milestones", ms_id,
+                  {"achieved": True})
+    return True
 
 
 # ── Sync conflicts ───────────────────────────────────────────────────────────

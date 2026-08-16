@@ -17,9 +17,9 @@ the same database, so there is nothing to sync and no conflicts.
 2. [Using it from your phone](#-using-it-from-your-phone)
 3. [Outside your home network](#-using-the-app-outside-your-home-network)
 4. [Feature guide](#feature-guide)
-5. [AI assistant access (OpenClaw / MCP)](#-ai-assistant-access-openclaw--mcp)
-6. [Backing up to GitHub (free)](#-backing-up-to-github-free)
-7. [AI assistant (local Gemma / API key)](#-ai-assistant-local-gemma--api-key)
+5. [Backing up to GitHub (free)](#-backing-up-to-github-free)
+6. [AI assistant (local Gemma / API key)](#-ai-assistant-local-gemma--api-key)
+7. [AI assistant access (OpenClaw / MCP)](#-ai-assistant-access-openclaw--mcp)
 8. [How the ML models work](#-how-the-ml-models-work)
 9. [Currency model](#currency-model)
 10. [Security notes](#security-notes)
@@ -344,6 +344,20 @@ require confirmation dialogs. Every change is written to the **audit log**.
 - With an AI provider configured, an optional **"In short"** narrative
   summarizes the month in plain language on top of the cards.
 
+**Ask your data** (`app_pages/ask.py`)
+
+- A chat with your own finances, powered by the same AI assistant: ask
+  "how much did I spend this month?", "what was my biggest category?", or
+  "what did I spend at the grocery store?" and the model answers from a
+  **sanitized numeric snapshot** of your data (aggregates plus your recent
+  transaction descriptions, stripped and capped). With the local Gemma
+  provider nothing leaves the machine; with an API provider only that
+  sanitized snapshot is sent.
+- The model may do simple arithmetic on the provided numbers but is prompted
+  to never invent figures — and to say so when the data can't answer. Answers
+  are conversational help, not an audit trail: double-check against the pages
+  themselves. Without a provider the page explains how to set one up.
+
 ### Household & Data
 
 **Household** (`app_pages/household.py`)
@@ -378,6 +392,12 @@ phone sync. Budgets and fun money live on their own pages (see above).
   progress hint where computable (e.g. "23/50 expenses", "5/7 streak days").
 - **Streaks**: current and best logging streak, plus the next-badge hint.
 - **Recent unlocks**: the newest badges with their dates.
+- **My milestones**: create your own goals with a fun-money reward — pick a
+  metric (expenses count/total, income, savings balance, logging streak, or
+  categories used), a target, and a reward in €. Each milestone is evaluated
+  from your data on every app start, awarded **once**, and its reward lands in
+  next month's fun money exactly like badge rewards. Progress bars show how
+  close each open milestone is; delete any time.
 
 - **Streaks and badges**: logging streaks (7/30 days), first expense/income,
   first budget, first salary, budget keeper (full month under budget), saving
@@ -536,6 +556,9 @@ Notes:
 
 - Generation uses a strict prompt over **numeric aggregates only** (no raw
   user text), and model output is HTML-escaped before it goes into the email.
+  The **Ask your data** chat gets the same treatment: the prompt embeds a
+  sanitized snapshot (newlines stripped, values capped) so stored data can
+  never steer the model.
 - Every failure — missing model, API error, timeout — silently falls back to
   the built-in template, so email sending is never blocked or broken by the
   LLM.
@@ -808,8 +831,8 @@ github_backup.py        # encrypted backups to GitHub + restore CLI
 make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
-app_pages/*.py          # the 17 UI pages (incl. Budgets, Rewards & badges)
-tests/                  # 356 pytest regression/AppTest suites
+app_pages/*.py          # the 18 UI pages (Budgets, Rewards & badges, Ask your data, …)
+tests/                  # 367 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -819,7 +842,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (356 tests) covers the currency engine, loan amortization edge
+The suite (367 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
 date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
@@ -865,11 +888,13 @@ Cloudflare Tunnel) and disable open registration as above.
   languages); PP-Structure for table-heavy PDFs only where parsing fails.
 - **LLM ideas (the engine is in place)** — anomaly explanations in words,
   OCR/bank-import merchant & category normalization when the trained
-  classifier is unsure, an "ask your data" chat over your own tables, an
-  annual financial-narrative email, and an `narrative` field on the MCP
-  `get_insights` tool.
+  classifier is unsure, an annual financial-narrative email, and an
+  `narrative` field on the MCP `get_insights` tool. (The ask-your-data chat
+  shipped — see the Feature guide.)
 
 Shipped recently: SQLCipher database encryption with automatic migration,
 encrypted GitHub backups with a restore CLI, the OpenClaw/MCP assistant
-integration, the optional local-Gemma/API assistant for weekly emails and
-Insights, and the dedicated Budgets and Rewards & badges pages.
+integration, the optional local-Gemma/API assistant (weekly emails, Insights
+narrative, and the ask-your-data chat), dedicated Budgets and
+Rewards & badges pages, and user-created custom milestones with fun-money
+rewards.

@@ -54,9 +54,13 @@ fun_month = fun_spent(dfe, fun_cats, today.year, today.month)
 
 month_key = f"{today.year:04d}-{today.month:02d}"
 bonuses_map = settings.get("fun_bonuses") or {}
-bonus = float(bonuses_map.get(month_key, 0.0) or 0.0)
-if bonus <= 0 and settings.get("fun_bonus_month") == month_key:
+bonus = 0.0
+if month_key in bonuses_map:
+    bonus = float(bonuses_map[month_key] or 0.0)
+elif settings.get("fun_bonus_month") == month_key:
     bonus = float(settings.get("fun_bonus_amount") or 0.0)
+if not math.isfinite(bonus):
+    bonus = 0.0
 allowance = fun_allowance + bonus
 if allowance > 0:
     pct = min(fun_month / allowance, 1.0)
@@ -85,12 +89,20 @@ with st.form("fun_form"):
 
 if bonuses_map:
     if month_key in bonuses_map:
-        st.success(f"🎁 Milestone bonus active this month: "
-                   f"+{fmt(float(bonuses_map[month_key]), DC, rates)} fun money!")
+        active = float(bonuses_map[month_key] or 0.0)
+        if math.isfinite(active) and active > 0:
+            st.success(f"🎁 Milestone bonus active this month: "
+                       f"+{fmt(active, DC, rates)} fun money!")
     queued = sorted(k for k in bonuses_map if k != month_key)
     if queued:
-        st.caption("🎁 Bonus queued for " + ", ".join(queued)
-                   + f": +{fmt(sum(float(bonuses_map[k]) for k in queued), DC, rates)} fun money.")
+        queued_total = 0.0
+        for k in queued:
+            v = float(bonuses_map[k] or 0.0)
+            if math.isfinite(v):
+                queued_total += v
+        if queued_total > 0:
+            st.caption("🎁 Bonus queued for " + ", ".join(queued)
+                       + f": +{fmt(queued_total, DC, rates)} fun money.")
 else:
     legacy_bonus = float(settings.get("fun_bonus_amount") or 0.0)
     legacy_month = settings.get("fun_bonus_month")
@@ -185,6 +197,73 @@ if recent:
             st.write(f"{m['icon']} **{m['title']}** — {when_str}")
 else:
     st.caption("No badges unlocked yet — log your first expense to start!")
+
+
+# ── My milestones (user-created goals with fun-money rewards) ─────────────────
+st.subheader(":material/flag: My milestones")
+st.caption("Create your own goals with a fun-money reward — e.g. \"Save €500\" "
+           "with a +€20 reward. A milestone is awarded **once**; the reward "
+           "lands in next month's fun money, just like badge rewards.")
+from db import add_custom_milestone, get_custom_milestones, delete_custom_milestone
+from gamification import CUSTOM_METRIC_LABELS, custom_metric_value
+
+with st.form("custom_ms_form"):
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        cm_title = st.text_input("Title", placeholder="Save €500")
+    with m2:
+        cm_metric = st.selectbox("Metric", list(CUSTOM_METRIC_LABELS),
+                                 format_func=CUSTOM_METRIC_LABELS.get)
+    with m3:
+        cm_target = st.number_input("Target", min_value=0.01, value=100.0,
+                                    step=10.0, format="%.2f")
+    with m4:
+        cm_reward = st.number_input("Reward (€ fun money)", min_value=0.0,
+                                    value=20.0, step=5.0, format="%.2f")
+    if st.form_submit_button("Create milestone", type="primary",
+                             icon=":material/add:", width="stretch"):
+        if not cm_title.strip():
+            st.error("Please give the milestone a name.")
+        else:
+            try:
+                add_custom_milestone(user_id, {
+                    "title": cm_title.strip(), "metric": cm_metric,
+                    "target": float(cm_target), "reward": float(cm_reward),
+                })
+                q.bump_db_version()
+                st.toast("Milestone created!", icon=":material/flag:")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+ms_rows = get_custom_milestones(user_id)
+if not ms_rows.empty:
+    for _, r in ms_rows.iterrows():
+        val = custom_metric_value(str(r["metric"]), dfe, dfi, dfs)
+        done = pd.notna(r.get("achieved_at"))
+        target = float(r["target"])
+        pct = (min(val / target, 1.0) if target > 0 else 0.0)
+        label = CUSTOM_METRIC_LABELS.get(str(r["metric"]), str(r["metric"]))
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            if done:
+                when = (pd.Timestamp(r["achieved_at"]).strftime("%d %b %Y")
+                        if pd.notna(r.get("achieved_at")) else "")
+                st.markdown(f"🏁 **{r['title']}** — {label}: "
+                            f"{val:.1f}/{target:.1f} · achieved {when}")
+            else:
+                st.markdown(f"🎯 **{r['title']}** — {label}: "
+                            f"{val:.1f}/{target:.1f} · +{float(r.get('reward') or 0):.0f} fun money")
+            st.progress(1.0 if done else pct)
+        with c2:
+            if st.button("Delete", key=f"cm_del_{r['id']}",
+                         icon=":material/delete:", width="stretch"):
+                delete_custom_milestone(user_id, str(r["id"]))
+                q.bump_db_version()
+                st.toast("Milestone deleted.", icon=":material/delete:")
+                st.rerun()
+else:
+    st.caption("No custom milestones yet — create your first above.")
 
 
 # Link back to where budgets live (keeps navigation obvious).

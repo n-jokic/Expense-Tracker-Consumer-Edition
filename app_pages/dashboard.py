@@ -3,6 +3,7 @@ Dashboard page: KPIs, budget alerts, spending charts, monthly trends.
 """
 
 import calendar
+import math
 from datetime import date
 
 import pandas as pd
@@ -293,6 +294,8 @@ if personal_view and sm > 0 and not dfb.empty and not exp.empty:
 # Fun money (current calendar month, regardless of the selected period) — personal
 settings_dash = st.session_state.settings
 fun_allowance = float(settings_dash.get("fun_money") or 0.0)
+if not math.isfinite(fun_allowance):
+    fun_allowance = 0.0
 if personal_view and fun_allowance > 0:
     from utils import fun_spent, DEFAULT_FUN_CATEGORIES
     fun_cats = settings_dash.get("fun_categories") or DEFAULT_FUN_CATEGORIES
@@ -301,9 +304,11 @@ if personal_view and fun_allowance > 0:
     month_key = f"{date.today().year:04d}-{date.today().month:02d}"
     bonuses_map = settings_dash.get("fun_bonuses") or {}
     if month_key in bonuses_map:
-        bonus = float(bonuses_map[month_key])
+        bonus = float(bonuses_map[month_key] or 0.0)
     elif settings_dash.get("fun_bonus_month") == month_key:
         bonus = float(settings_dash.get("fun_bonus_amount") or 0.0)
+    if not math.isfinite(bonus):
+        bonus = 0.0
     allowance = fun_allowance + bonus
     fpct = min(fun_month / allowance, 1.0) if allowance > 0 else 0.0
     st.subheader("Fun money")

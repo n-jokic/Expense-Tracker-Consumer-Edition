@@ -171,8 +171,10 @@ else:
                     for _, r in pay_df.iterrows() if pd.notna(r["date"])]
         start_date = (row["start_date"].date() if pd.notna(row["start_date"])
                       else date.today())
+        _principal = float(row["principal_eur"]) if pd.notna(row["principal_eur"]) else 0.0
+        _rate = float(row["annual_rate"]) if pd.notna(row["annual_rate"]) else 0.0
         sched = loan_schedule(
-            float(row["principal_eur"]), float(row["annual_rate"]),
+            _principal, _rate,
             int(row["term_months"]), start_date,
             int(row["payment_day"]), payments, today)
 

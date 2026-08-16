@@ -190,3 +190,121 @@ def generate_narrative(stats: dict, settings: dict) -> str | None:
         lines.append(f"Budget remaining: {_sanitize_stat(stats['budget_remaining'])} EUR")
     user = "\n".join(lines) + "\n\nWrite the narrative now."
     return _generate(settings, _NARRATIVE_SYSTEM, user)
+
+
+# ── Chat over your own data ───────────────────────────────────────────────────
+
+_ASK_SYSTEM = (
+    "You answer questions about the user's OWN personal-finance data. Use "
+    "ONLY the numbers in the DATA block — never invent figures, never guess. "
+    "You may do simple arithmetic (sums, averages, percentages) on the "
+    "provided numbers. No financial advice, no predictions, no markdown. "
+    "Answer in 1-4 plain sentences. If the DATA cannot answer the question, "
+    "say exactly that and suggest what other data might help."
+)
+
+
+def build_data_context(user_id: int, settings: dict) -> str:
+    """A compact, sanitized snapshot of the user's financial data for the
+    chat prompt: numeric aggregates only, every free-text value stripped of
+    newlines and capped, so stored data can never inject instructions."""
+    import pandas as pd
+    from datetime import date as _date, timedelta as _td
+    from db import get_expenses, get_income, get_savings, get_loans, get_recurring
+    from gamification import get_logging_streak
+
+    today = _date.today()
+    first_this = today.replace(day=1)
+    first_prev = (first_this - _td(days=1)).replace(day=1)
+
+    expenses = get_expenses(user_id)
+    income = get_income(user_id)
+
+    def _month(df, start):
+        if df.empty:
+            return df
+        start_ts = pd.Timestamp(start)
+        end = start_ts + pd.offsets.MonthEnd(0) + pd.Timedelta(days=1)
+        return df[(df["date"] >= start_ts) & (df["date"] < end)]
+
+    def _sum(df, col):
+        return round(float(df[col].fillna(0).sum()), 2) if not df.empty else 0.0
+
+    lines = [f"Date: {today.isoformat()}"]
+    exp_m = _month(expenses, first_this)
+    exp_p = _month(expenses, first_prev)
+    inc_m = _month(income, first_this)
+    inc_p = _month(income, first_prev)
+
+    lines.append(f"Current month ({first_this.strftime('%Y-%m')}):")
+    lines.append(f"- expenses: {len(exp_m)} entries, {_sum(exp_m, 'amount_eur')} EUR total")
+    if not exp_m.empty:
+        cats = exp_m.groupby("category")["amount_eur"].sum().nlargest(5)
+        lines.append("- top expense categories: "
+                     + "; ".join(f"{_sanitize_stat(c)} ({round(float(a), 2)})"
+                                 for c, a in cats.items()))
+    lines.append(f"- income: {len(inc_m)} entries, {_sum(inc_m, 'actual_eur')} EUR total")
+    budget_total = float(settings.get("monthly_budget") or 0.0)
+    if budget_total > 0:
+        spent = _sum(exp_m, "amount_eur")
+        lines.append(f"- monthly budget: {round(budget_total, 2)} EUR "
+                     f"(remaining {round(max(budget_total - spent, 0), 2)} EUR)")
+    fun_allowance = float(settings.get("fun_money") or 0.0)
+    if fun_allowance > 0:
+        lines.append(f"- fun-money allowance: {round(fun_allowance, 2)} EUR")
+    savings = get_savings(user_id)
+    if not savings.empty:
+        for name in savings["goal_name"].fillna("").unique():
+            rows = savings[savings["goal_name"].fillna("") == name]
+            if rows.empty:
+                continue
+            last = rows.sort_values("date").iloc[-1]
+            bal = float(last["balance_eur"]) if last["balance_eur"] == last["balance_eur"] else 0.0
+            tgt = float(last["target_eur"]) if last["target_eur"] == last["target_eur"] else 0.0
+            lines.append(f"- savings goal '{_sanitize_stat(name)}': balance "
+                         f"{round(bal, 2)} of {round(tgt, 2)} EUR")
+    loans = get_loans(user_id)
+    if not loans.empty:
+        for _, r in loans.iterrows():
+            if str(r.get("status")) != "active":
+                continue
+            lines.append(f"- loan '{_sanitize_stat(r.get('name'))}': "
+                         f"{round(float(r.get('principal_eur') or 0), 2)} EUR principal, "
+                         f"{round(float(r.get('annual_rate') or 0), 2)}% annual rate")
+    recurring = get_recurring(user_id)
+    if not recurring.empty:
+        active = recurring[recurring["active"].fillna(False).astype(bool)]
+        bills = "; ".join(f"{_sanitize_stat(r['description'])} "
+                          f"{round(float(r['amount_eur'] or 0), 2)} EUR"
+                          for _, r in active.head(8).iterrows())
+        lines.append(f"- recurring bills: {len(active)} ({bills})")
+
+    lines.append(f"Previous month ({first_prev.strftime('%Y-%m')}): "
+                 f"expenses {_sum(exp_p, 'amount_eur')} EUR, "
+                 f"income {_sum(inc_p, 'actual_eur')} EUR")
+    lines.append(f"All time: {len(expenses)} expenses, {len(income)} income entries")
+    lines.append(f"Current logging streak: {get_logging_streak(expenses)} days")
+
+    recent = expenses.sort_values("date", ascending=False).head(10)
+    if not recent.empty:
+        lines.append("Recent expenses: " + "; ".join(
+            f"{_sanitize_stat(r['description'])} ({_sanitize_stat(r['category'])}, "
+            f"{round(float(r['amount_eur'] or 0), 2)} EUR, "
+            f"{r['date'].date().isoformat() if pd.notna(r['date']) else '?'})"
+            for _, r in recent.iterrows()))
+    return "\n".join(lines)
+
+
+def answer_query(user_id: int, question: str, settings: dict) -> str | None:
+    """Answer a natural-language question about the user's own data.
+
+    The question and every data field are sanitized before they reach the
+    model; returns None on any failure so the caller can show a fallback."""
+    if resolve_provider(settings) == "none":
+        return None
+    q = _sanitize_stat(question or "")[:300]
+    if not q.strip():
+        return None
+    context = build_data_context(user_id, settings)
+    user = f"DATA:\n{context}\n\nQUESTION:\n{q}\n\nAnswer the question now."
+    return _generate(settings, _ASK_SYSTEM, user, max_tokens=300)
