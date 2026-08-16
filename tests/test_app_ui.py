@@ -29,7 +29,8 @@ def _clear_cached_readers():
     and re-creating a user resets its data_revision to 0 — so a later test
     could otherwise hit a previous test's cache entry for the same
     (user_id, revision) key."""
-    for fn in (q._expenses, q._income, q._savings, q._budgets, q._recurring,
+    for fn in (q._expenses, q._income, q._savings, q._savings_accounts,
+               q._budgets, q._recurring,
                q._big_purchases, q._loans, q._loan_payments, q._holdings,
                q._holding_prices, q._audit, q._household_expenses,
                q._household_members):

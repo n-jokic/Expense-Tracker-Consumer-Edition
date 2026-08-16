@@ -20,6 +20,8 @@ resolution in Settings → Sync.
 import math
 from datetime import datetime, date
 
+from sqlalchemy.exc import IntegrityError
+
 from db import (
     get_session, Expense, Income, Savings, SavingsAccount,
     add_sync_conflict,
@@ -29,6 +31,12 @@ from utils import CATEGORIES, ALL_SUBCATS, remap_category_subcategory
 SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings,
                "savings_accounts": SavingsAccount}
 PROTECTED = ("id", "user_id", "created_at", "updated_at")
+
+# Fields a NEW record must include (the server fills id/user_id itself);
+# updates may send any subset.
+REQUIRED_FIELDS = {
+    "savings_accounts": ("goal_name",),
+}
 
 MAX_CHANGES = 500        # reject sync calls with more changes
 SNAPSHOT_LIMIT = 5000    # cap snapshot rows per table
@@ -164,6 +172,13 @@ def validate_fields(table: str, fields: dict):
     if table == "expenses" and clean.get("subcategory"):
         if clean["subcategory"] not in ALL_SUBCATS:
             errors.append("unknown subcategory")
+    if table == "savings_accounts":
+        # goal_name is NOT NULL in the model: a create without it would raise
+        # an IntegrityError (and a blank value makes the row invisible).
+        if "goal_name" in clean and not str(clean["goal_name"]).strip():
+            errors.append("goal_name must not be blank")
+        if "status" in clean and clean["status"] not in ("active", "closed"):
+            errors.append("unknown status")
     return clean, errors
 
 
@@ -194,18 +209,25 @@ def create_record(user_id, table, record_id, fields):
     model = SYNC_MODELS.get(table)
     if not model:
         return False, None
-    with get_session() as s:
-        existing = s.query(model).filter(model.id == record_id).first()
-        if existing is not None and existing.user_id == user_id:
-            return False, None
-        final_id = record_id if existing is None else str(_uuid.uuid4())
-        obj = model(id=final_id, user_id=user_id)
-        for k, v in fields.items():
-            if k in PROTECTED:
-                continue
-            if hasattr(obj, k):
-                setattr(obj, k, v)
-        s.add(obj)
+    if any(k not in fields for k in REQUIRED_FIELDS.get(table, ())):
+        return False, None
+    try:
+        with get_session() as s:
+            existing = s.query(model).filter(model.id == record_id).first()
+            if existing is not None and existing.user_id == user_id:
+                return False, None
+            final_id = record_id if existing is None else str(_uuid.uuid4())
+            obj = model(id=final_id, user_id=user_id)
+            for k, v in fields.items():
+                if k in PROTECTED:
+                    continue
+                if hasattr(obj, k):
+                    setattr(obj, k, v)
+            s.add(obj)
+    except IntegrityError:
+        # e.g. a NOT NULL column the schema check missed — report this change
+        # as failed instead of crashing the whole sync call.
+        return False, None
     return True, final_id
 
 

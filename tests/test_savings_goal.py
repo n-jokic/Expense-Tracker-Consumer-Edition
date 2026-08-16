@@ -148,3 +148,44 @@ def test_sync_supports_savings_accounts(test_user):
         "fields": {"hacker_field": 1},
     }])
     assert res["failed"] and "unknown field" in res["failed"][0]["error"]
+
+
+def test_sync_create_without_goal_name_fails_cleanly(test_user):
+    """Regression: a savings_accounts create without goal_name used to raise
+    an IntegrityError that crashed the whole sync call after partial apply."""
+    res = apply_changes(test_user, [{
+        "table": "savings_accounts", "id": "acc-no-goal",
+        "fields": {"name": "CD", "amount": 100.0, "amount_eur": 100.0},
+    }])
+    assert res["applied"][0]["status"] == "failed"
+    assert get_savings_accounts(test_user).empty
+
+
+def test_sync_rejects_blank_goal_name_and_bad_status(test_user):
+    res = apply_changes(test_user, [{
+        "table": "savings_accounts", "id": "acc-blank",
+        "fields": {"goal_name": "   "},
+    }])
+    assert res["failed"] and "goal_name must not be blank" in res["failed"][0]["error"]
+
+    res = apply_changes(test_user, [{
+        "table": "savings_accounts", "id": "acc-status",
+        "fields": {"goal_name": "House", "status": "suspended"},
+    }])
+    assert res["failed"] and "unknown status" in res["failed"][0]["error"]
+
+
+def test_keep_device_value_supports_savings_accounts(test_user):
+    """Regression: db._SYNC_MODELS must include savings_accounts so the
+    Settings → Sync 'keep device value' resolution can apply it."""
+    from db import apply_record_fields
+    acc_id = add_savings_account(test_user, {
+        "goal_name": "House", "name": "CD", "amount": 100.0, "currency": "EUR",
+        "amount_eur": 100.0, "annual_rate": 3.0,
+        "start_date": date(2025, 1, 1), "maturity_date": date(2026, 1, 1),
+        "status": "active", "notes": "",
+    })
+    assert apply_record_fields(test_user, "savings_accounts", acc_id,
+                               {"annual_rate": 9.9})
+    accs = get_savings_accounts(test_user)
+    assert accs.iloc[0]["annual_rate"] == 9.9

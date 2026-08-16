@@ -1860,7 +1860,8 @@ def resolve_sync_conflict(user_id, conflict_id):
     return True
 
 
-_SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings}
+_SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings,
+                "savings_accounts": SavingsAccount}
 
 
 def apply_record_fields(user_id, table_name, record_id, fields) -> bool:

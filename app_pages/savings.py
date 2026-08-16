@@ -193,14 +193,17 @@ def delete_goal_dialog(uid: int, goal: str, n_entries: int, locked_eur: float):
 @st.dialog("Withdraw term deposit")
 def withdraw_account_dialog(uid: int, row):
     """Log the deposit's value into the goal and close the account."""
-    matured = (row["maturity_date"].date() <= today
-               if pd.notna(row["maturity_date"]) else False)
+    has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
+    matured = (has_dates and row["maturity_date"].date() <= today)
     payout_date = (row["maturity_date"].date() if matured else today)
-    val = (maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                          row["start_date"].date(), row["maturity_date"].date())
-           if matured
-           else accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                              row["start_date"].date(), today))
+    if matured:
+        val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                             row["start_date"].date(), row["maturity_date"].date())
+    elif has_dates:
+        val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                            row["start_date"].date(), today)
+    else:
+        val = float(row["amount_eur"] or 0.0)   # no dates -> no interest accrued
     gcur = str(row["currency"] or "EUR")
     st.markdown(f"**{row['name']}** ({row['goal_name']})")
     st.write(f"Logging **{fmt(val, DC, rates)}** into the goal on "
@@ -415,9 +418,11 @@ if not dfs.empty:
     for _, a in accs.iterrows():
         if a["status"] == "closed":
             continue
+        if pd.isna(a["start_date"]) or pd.isna(a["maturity_date"]):
+            locked_eur += float(a["amount_eur"] or 0.0)   # no dates -> no accrual
+            continue
         end = (a["maturity_date"].date()
-               if pd.notna(a["maturity_date"]) and a["maturity_date"].date() < today
-               else today)
+               if a["maturity_date"].date() < today else today)
         locked_eur += accrued_value(float(a["amount_eur"]), float(a["annual_rate"]),
                                     a["start_date"].date(), end)
 
@@ -454,9 +459,11 @@ if not dfs.empty:
         g_accs = accs[(accs["goal_name"] == g) & (accs["status"] != "closed")]
         g_locked = 0.0
         for _, a in g_accs.iterrows():
+            if pd.isna(a["start_date"]) or pd.isna(a["maturity_date"]):
+                g_locked += float(a["amount_eur"] or 0.0)
+                continue
             end = (a["maturity_date"].date()
-                   if pd.notna(a["maturity_date"]) and a["maturity_date"].date() < today
-                   else today)
+                   if a["maturity_date"].date() < today else today)
             g_locked += accrued_value(float(a["amount_eur"]), float(a["annual_rate"]),
                                       a["start_date"].date(), end)
         pct = min((bal + g_locked) / tgtv * 100, 100) if tgtv > 0 else 0
@@ -555,27 +562,30 @@ if not dfs.empty:
         if not accs.empty:
             for _, row in accs.iterrows():
                 acc_id = str(row["id"])
-                matured = (row["status"] == "active" and pd.notna(row["maturity_date"])
+                has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
+                matured = (row["status"] == "active" and has_dates
                            and row["maturity_date"].date() <= today)
-                end = (row["maturity_date"].date()
-                       if pd.notna(row["maturity_date"]) and row["maturity_date"].date() < today
-                       else today)
-                cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                        row["start_date"].date(), end)
-                mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                         row["start_date"].date(), row["maturity_date"].date()) \
-                    if pd.notna(row["maturity_date"]) else 0.0
+                if has_dates:
+                    end = (row["maturity_date"].date()
+                           if row["maturity_date"].date() < today else today)
+                    cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                            row["start_date"].date(), end)
+                    mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                             row["start_date"].date(), row["maturity_date"].date())
+                else:
+                    cur_val = float(row["amount_eur"] or 0.0)
+                    mat_val = cur_val
                 days_left = ((row["maturity_date"].date() - today).days
-                             if pd.notna(row["maturity_date"]) else None)
+                             if has_dates else None)
                 status_txt = ("**Matured — ready to withdraw**"
                               if matured else
                               ("Closed" if row["status"] == "closed" else "Active"))
                 with st.container(border=True):
-                    m1, m2, m3 = st.columns([2, 1.2, 1.2])
+                    m1, m2, m3, m4 = st.columns([2.4, 1, 1, 1])
                     with m1:
                         st.markdown(f"🔒 **{row['name']}** — *{row['goal_name']}* · {status_txt}")
                         maturity_txt = (row["maturity_date"].strftime("%d %b %Y")
-                                        if pd.notna(row["maturity_date"]) else "—")
+                                        if has_dates else "—")
                         days_txt = (f" · {days_left} days left" if days_left is not None
                                     and days_left >= 0 and row["status"] == "active" else "")
                         st.caption(f"Rate: {float(row['annual_rate']):.2f}% p.a. · "
@@ -584,7 +594,10 @@ if not dfs.empty:
                         st.metric("Deposited", fmt(row["amount_eur"], DC, rates),
                                   label_visibility="collapsed")
                     with m3:
-                        st.metric("Maturity value", fmt(mat_val, DC, rates),
+                        st.metric("Now", fmt(cur_val, DC, rates),
+                                  label_visibility="collapsed")
+                    with m4:
+                        st.metric("At maturity", fmt(mat_val, DC, rates),
                                   label_visibility="collapsed")
                     with st.container(horizontal=True):
                         if row["status"] == "active":
