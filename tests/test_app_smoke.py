@@ -105,6 +105,94 @@ def test_main_app_renders_and_navigates(smoke_user):
         assert not at.exception, f"page {page} failed: {at.exception}"
 
 
+def test_all_pages_with_rich_data(smoke_user):
+    """Sweep every page with data in EVERY table (incl. edge rows: a
+    future-dated expense, a matured term deposit, a loan with a logged
+    payment, holdings with a price snapshot). Each page must render without
+    an exception."""
+    from datetime import date, timedelta, datetime, timezone
+    from db import (
+        add_expense, add_income, add_budget, add_recurring, add_loan,
+        add_big_purchase, add_holding, add_holding_price,
+        add_savings, add_savings_account, bump_data_revision,
+    )
+    import queries as q
+    _readers = (q._expenses, q._income, q._savings, q._savings_accounts, q._budgets,
+                q._recurring, q._big_purchases, q._loans, q._loan_payments,
+                q._holdings, q._holding_prices, q._audit, q._household_expenses,
+                q._household_members)
+    for fn in _readers:
+        fn.clear()
+
+    today = date.today()
+    for i, cat in enumerate(["Food & Dining", "Transport", "Housing & Utilities",
+                             "Entertainment", "Other"]):
+        add_expense(smoke_user, {"date": today - timedelta(days=10 + i),
+                                 "category": cat, "subcategory": "",
+                                 "description": f"rich exp {i}", "amount": 10.0 + i,
+                                 "currency": "EUR", "amount_eur": 10.0 + i,
+                                 "recurring": False, "notes": ""})
+    add_expense(smoke_user, {"date": today + timedelta(days=5), "category": "Other",
+                             "subcategory": "", "description": "future row",
+                             "amount": 5.0, "currency": "EUR", "amount_eur": 5.0,
+                             "recurring": False, "notes": ""})
+    add_income(smoke_user, {"date": today - timedelta(days=20), "source": "Job",
+                            "income_type": "Salary", "hours": None, "rate": None,
+                            "budgeted": 2000.0, "actual": 2000.0, "currency": "EUR",
+                            "budgeted_eur": 2000.0, "actual_eur": 2000.0, "notes": ""})
+    add_budget(smoke_user, {"year": today.year, "month": today.month,
+                            "category": "Food & Dining", "subcategory": "",
+                            "budgeted_eur": 300.0})
+    add_recurring(smoke_user, {"category": "Entertainment",
+                               "subcategory": "Streaming Services",
+                               "description": "Netflix", "amount": 12.99,
+                               "currency": "EUR", "amount_eur": 12.99, "due_day": 5,
+                               "start_month": f"{today.year - 1}-01",
+                               "notes": "", "active": True})
+    loan_id = add_loan(smoke_user, {"name": "Car", "principal": 5000.0,
+                                    "currency": "EUR", "principal_eur": 5000.0,
+                                    "annual_rate": 5.0,
+                                    "start_date": today - timedelta(days=100),
+                                    "term_months": 24, "payment_day": 1,
+                                    "status": "active", "notes": ""})
+    add_expense(smoke_user, {"date": today - timedelta(days=40),
+                             "category": "Loans & Debt", "subcategory": "Loan Repayment",
+                             "description": "Car payment", "amount": 215.0,
+                             "currency": "EUR", "amount_eur": 215.0,
+                             "recurring": False, "loan_id": loan_id, "notes": ""})
+    add_big_purchase(smoke_user, {"name": "Laptop", "category": "Other",
+                                  "price": 1200.0, "currency": "EUR", "price_eur": 1200.0,
+                                  "usage_hours": 60.0, "importance": 4,
+                                  "status": "saving", "notes": ""})
+    hid = add_holding(smoke_user, {"symbol": "VWCE.DE", "name": "Vanguard All-World",
+                                   "quantity": 10.0, "currency": "EUR",
+                                   "cost_total": 1000.0, "cost_eur": 1000.0,
+                                   "last_price": 110.0,
+                                   "last_price_date": datetime.now(timezone.utc)})
+    add_holding_price(hid, 110.0, quantity=10.0, rate=1.0)
+    add_savings(smoke_user, {"date": today - timedelta(days=90), "goal_name": "House",
+                             "target_eur": 10000.0, "deposited": 2000.0, "currency": "EUR",
+                             "deposited_eur": 2000.0, "interest_rate": 3.0,
+                             "balance_eur": 2000.0, "notes": ""})
+    add_savings_account(smoke_user, {"goal_name": "House", "name": "Matured CD",
+                                     "amount": 1000.0, "currency": "EUR", "amount_eur": 1000.0,
+                                     "annual_rate": 4.0,
+                                     "start_date": today - timedelta(days=400),
+                                     "maturity_date": today - timedelta(days=10),
+                                     "status": "active", "notes": ""})
+    bump_data_revision(smoke_user, include_household=False)
+    for fn in _readers:
+        fn.clear()
+
+    at = _authenticated_at(smoke_user)
+    at.run()
+    assert not at.exception, f"main app with data failed: {at.exception}"
+    for page in PAGES:
+        at.switch_page(os.path.join(APP_DIR, "app_pages", page))
+        at.run()
+        assert not at.exception, f"page {page} with data failed: {at.exception}"
+
+
 def test_onboarding_gate_blocks_new_users(smoke_user):
     at = _authenticated_at(smoke_user)
     at.session_state["onboarding_complete"] = False
