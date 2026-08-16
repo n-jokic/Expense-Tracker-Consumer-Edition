@@ -126,6 +126,14 @@ def _generate(settings: dict, system: str, user: str, max_tokens: int = 256) -> 
     return None
 
 
+def _sanitize_stat(value) -> str:
+    """Make a stat value safe for prompt embedding: truncate and strip
+    newlines so stored data (which sync-pushed rows could theoretically
+    make hostile) cannot inject instructions into the prompt."""
+    s = str(value).replace("\r", " ").replace("\n", " ")
+    return s[:100]
+
+
 _SUMMARY_SYSTEM = (
     "You write ONE short paragraph for the user's own weekly spending "
     "summary email. Use ONLY the numbers provided. Do not give financial "
@@ -143,14 +151,14 @@ def generate_summary(stats: dict, settings: dict) -> str | None:
     """
     if resolve_provider(settings) == "none":
         return None
-    lines = [f"Total spent this week: {stats.get('total_eur', 0)} EUR"]
+    lines = [f"Total spent this week: {_sanitize_stat(stats.get('total_eur', 0))} EUR"]
     if stats.get("prev_week_eur") is not None:
-        lines.append(f"Previous week total: {stats['prev_week_eur']} EUR")
+        lines.append(f"Previous week total: {_sanitize_stat(stats['prev_week_eur'])} EUR")
     top = stats.get("top_categories") or []
     if top:
-        lines.append("Top categories: " + "; ".join(str(t) for t in top))
+        lines.append("Top categories: " + "; ".join(_sanitize_stat(t) for t in top))
     if stats.get("fun_remaining") is not None:
-        lines.append(f"Fun-money budget remaining this month: {stats['fun_remaining']} EUR")
+        lines.append(f"Fun-money budget remaining this month: {_sanitize_stat(stats['fun_remaining'])} EUR")
     user = "\n".join(lines) + "\n\nWrite the summary now."
     return _generate(settings, _SUMMARY_SYSTEM, user)
 
@@ -169,15 +177,16 @@ def generate_narrative(stats: dict, settings: dict) -> str | None:
     unusual (list of descriptions), budget_remaining (optional)."""
     if resolve_provider(settings) == "none":
         return None
-    lines = [f"Spent this month: {stats.get('spent_eur', 0)} EUR",
-             f"Previous month: {stats.get('prev_spent_eur', 0)} EUR",
-             f"Month-over-month change: {stats.get('change_pct', 0)} percent"]
+    lines = [f"Spent this month: {_sanitize_stat(stats.get('spent_eur', 0))} EUR",
+             f"Previous month: {_sanitize_stat(stats.get('prev_spent_eur', 0))} EUR",
+             f"Month-over-month change: {_sanitize_stat(stats.get('change_pct', 0))} percent"]
     if stats.get("top_category"):
-        lines.append(f"Top category: {stats['top_category']}")
+        lines.append(f"Top category: {_sanitize_stat(stats['top_category'])}")
     unusual = stats.get("unusual") or []
     if unusual:
-        lines.append("Unusually large expenses: " + "; ".join(str(u) for u in unusual))
+        lines.append("Unusually large expenses: "
+                     + "; ".join(_sanitize_stat(u) for u in unusual))
     if stats.get("budget_remaining") is not None:
-        lines.append(f"Budget remaining: {stats['budget_remaining']} EUR")
+        lines.append(f"Budget remaining: {_sanitize_stat(stats['budget_remaining'])} EUR")
     user = "\n".join(lines) + "\n\nWrite the narrative now."
     return _generate(settings, _NARRATIVE_SYSTEM, user)
