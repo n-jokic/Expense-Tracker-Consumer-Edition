@@ -242,7 +242,7 @@ if not ms_rows.empty:
         val = custom_metric_value(str(r["metric"]), dfe, dfi, dfs)
         done = pd.notna(r.get("achieved_at"))
         target = float(r["target"])
-        pct = (min(val / target, 1.0) if target > 0 else 0.0)
+        pct = (min(max(val / target, 0.0), 1.0) if target > 0 else 0.0)
         label = CUSTOM_METRIC_LABELS.get(str(r["metric"]), str(r["metric"]))
         c1, c2 = st.columns([5, 1])
         with c1:

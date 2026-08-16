@@ -268,16 +268,25 @@ def build_data_context(user_id: int, settings: dict) -> str:
         for _, r in loans.iterrows():
             if str(r.get("status")) != "active":
                 continue
+            _prin = float(r.get("principal_eur") or 0)
+            _rate = float(r.get("annual_rate") or 0)
+            if _prin != _prin:
+                _prin = 0.0
+            if _rate != _rate:
+                _rate = 0.0
             lines.append(f"- loan '{_sanitize_stat(r.get('name'))}': "
-                         f"{round(float(r.get('principal_eur') or 0), 2)} EUR principal, "
-                         f"{round(float(r.get('annual_rate') or 0), 2)}% annual rate")
+                         f"{round(_prin, 2)} EUR principal, "
+                         f"{round(_rate, 2)}% annual rate")
     recurring = get_recurring(user_id)
     if not recurring.empty:
         active = recurring[recurring["active"].fillna(False).astype(bool)]
-        bills = "; ".join(f"{_sanitize_stat(r['description'])} "
-                          f"{round(float(r['amount_eur'] or 0), 2)} EUR"
-                          for _, r in active.head(8).iterrows())
-        lines.append(f"- recurring bills: {len(active)} ({bills})")
+        bills = []
+        for _, r in active.head(8).iterrows():
+            _amt = float(r["amount_eur"] or 0)
+            if _amt != _amt:
+                _amt = 0.0
+            bills.append(f"{_sanitize_stat(r['description'])} {round(_amt, 2)} EUR")
+        lines.append(f"- recurring bills: {len(active)} ({'; '.join(bills)})")
 
     lines.append(f"Previous month ({first_prev.strftime('%Y-%m')}): "
                  f"expenses {_sum(exp_p, 'amount_eur')} EUR, "
@@ -287,11 +296,15 @@ def build_data_context(user_id: int, settings: dict) -> str:
 
     recent = expenses.sort_values("date", ascending=False).head(10)
     if not recent.empty:
-        lines.append("Recent expenses: " + "; ".join(
-            f"{_sanitize_stat(r['description'])} ({_sanitize_stat(r['category'])}, "
-            f"{round(float(r['amount_eur'] or 0), 2)} EUR, "
-            f"{r['date'].date().isoformat() if pd.notna(r['date']) else '?'})"
-            for _, r in recent.iterrows()))
+        parts = []
+        for _, r in recent.iterrows():
+            _amt = float(r["amount_eur"] or 0)
+            if _amt != _amt:
+                _amt = 0.0
+            _when = r["date"].date().isoformat() if pd.notna(r["date"]) else "?"
+            parts.append(f"{_sanitize_stat(r['description'])} "
+                         f"({_sanitize_stat(r['category'])}, {round(_amt, 2)} EUR, {_when})")
+        lines.append("Recent expenses: " + "; ".join(parts))
     return "\n".join(lines)
 
 
@@ -299,12 +312,17 @@ def answer_query(user_id: int, question: str, settings: dict) -> str | None:
     """Answer a natural-language question about the user's own data.
 
     The question and every data field are sanitized before they reach the
-    model; returns None on any failure so the caller can show a fallback."""
+    model; ANY failure — including a crash while building the data context —
+    returns None so the caller can show a fallback."""
     if resolve_provider(settings) == "none":
         return None
-    q = _sanitize_stat(question or "")[:300]
+    q = _sanitize_stat(question or "")
     if not q.strip():
         return None
-    context = build_data_context(user_id, settings)
-    user = f"DATA:\n{context}\n\nQUESTION:\n{q}\n\nAnswer the question now."
-    return _generate(settings, _ASK_SYSTEM, user, max_tokens=300)
+    try:
+        context = build_data_context(user_id, settings)
+        user = f"DATA:\n{context}\n\nQUESTION:\n{q}\n\nAnswer the question now."
+        return _generate(settings, _ASK_SYSTEM, user, max_tokens=300)
+    except Exception as e:
+        log.warning("answer_query failed: %s", e)
+        return None

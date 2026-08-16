@@ -144,10 +144,41 @@ def test_account_deletion_removes_custom_milestones(test_user):
     assert rows.empty
 
 
+def test_catalog_and_custom_awards_both_queue(monkeypatch, test_user):
+    # Regression: a catalog award and a custom-milestone award in the SAME
+    # rerun both queue onto next month's key — the second must ADD to the
+    # first (the merge reads fresh DB settings), never overwrite it.
+    from gamification import award_new_milestones
+    from db import get_expenses, get_income, get_savings
+    _exp(test_user, 3, amount=10.0)
+    add_custom_milestone(test_user, {"title": "3 expenses",
+                                     "metric": "expenses_count",
+                                     "target": 3.0, "reward": 15.0})
+
+    settings = get_settings(test_user)  # the SAME stale dict both calls get
+    earned = [{"id": "raise_earned"}]   # catalog badge with reward 20
+    _, cat_bonus = award_new_milestones(test_user, earned, settings)
+    assert cat_bonus == 20.0
+
+    _, cm_bonus = award_custom_milestones(
+        test_user, get_expenses(test_user), get_income(test_user),
+        get_savings(test_user), settings)
+    assert cm_bonus == 15.0
+
+    today = date.today()
+    nxt_m = today.month + 1 if today.month < 12 else 1
+    nxt_y = today.year if today.month < 12 else today.year + 1
+    nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
+    bonuses = get_settings(test_user).get("fun_bonuses") or {}
+    assert bonuses.get(nxt_key) == 35.0  # 20 + 15, not 15
+
+
 def test_manual_mark_achieved(test_user):
     mid = add_custom_milestone(test_user, {"title": "manual",
                                            "metric": "streak_days",
                                            "target": 1.0, "reward": 0.0})
     assert mark_custom_milestone_achieved(test_user, mid) is True
     assert get_custom_milestones(test_user).iloc[0]["achieved_at"] is not None
+    # The conditional UPDATE wins exactly once — a second mark loses.
+    assert mark_custom_milestone_achieved(test_user, mid) is False
     assert mark_custom_milestone_achieved(test_user, "missing-id") is False

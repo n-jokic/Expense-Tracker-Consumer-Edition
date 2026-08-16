@@ -349,10 +349,11 @@ require confirmation dialogs. Every change is written to the **audit log**.
 - A chat with your own finances, powered by the same AI assistant: ask
   "how much did I spend this month?", "what was my biggest category?", or
   "what did I spend at the grocery store?" and the model answers from a
-  **sanitized numeric snapshot** of your data (aggregates plus your recent
-  transaction descriptions, stripped and capped). With the local Gemma
-  provider nothing leaves the machine; with an API provider only that
-  sanitized snapshot is sent.
+  **sanitized numeric snapshot** of your data (aggregates plus sanitized
+  names/descriptions of goals, loans, bills, and your recent transactions —
+  newlines stripped, values capped). With the local Gemma provider nothing
+  leaves the machine; with an API provider only that sanitized snapshot is
+  sent.
 - The model may do simple arithmetic on the provided numbers but is prompted
   to never invent figures — and to say so when the data can't answer. Answers
   are conversational help, not an audit trail: double-check against the pages

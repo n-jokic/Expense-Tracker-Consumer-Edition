@@ -256,3 +256,14 @@ def test_answer_query_failure_returns_none(monkeypatch, test_user):
     monkeypatch.setattr(llm.requests, "post", failing_post)
     settings = {"ai_provider": "api", "ai_api_key_enc": encrypt_str("sk-x")}
     assert llm.answer_query(test_user, "how much?", settings) is None
+
+
+def test_answer_query_context_crash_returns_none(monkeypatch, test_user):
+    # A crash while BUILDING the data context must also fall back to None —
+    # it must never propagate to the Ask page and lose the user's question.
+    def boom(user_id, settings):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(llm, "build_data_context", boom)
+    settings = {"ai_provider": "api", "ai_api_key_enc": encrypt_str("sk-x")}
+    assert llm.answer_query(test_user, "how much?", settings) is None

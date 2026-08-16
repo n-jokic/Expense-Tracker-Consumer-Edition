@@ -746,6 +746,24 @@ def _migrate(engine):
     _migrate_settings_taxonomy()
     _enforce_budget_scopes(engine)
     _enforce_pairing_code_uniqueness(engine)
+    _enforce_milestone_uniqueness(engine)
+
+
+def _enforce_milestone_uniqueness(engine):
+    """(user_id, milestone_id) must be unique so INSERT OR IGNORE in
+    record_milestones can make badge awards atomic across concurrent
+    sessions. Dedupe any pre-existing double rows first."""
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    if "user_milestones" not in insp.get_table_names():
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM user_milestones WHERE id NOT IN ("
+            " SELECT MAX(id) FROM user_milestones GROUP BY user_id, milestone_id)"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_milestones"
+            " ON user_milestones (user_id, milestone_id)"))
 
 
 def _migrate_taxonomy(engine):
@@ -2258,15 +2276,27 @@ def get_earned_milestone_ids(user_id):
 
 
 def record_milestones(user_id, milestone_ids):
-    """Persist newly earned milestones (idempotent). Returns the new ids."""
-    with get_session() as s:
-        existing = {m.milestone_id for m in
-                    s.query(UserMilestone).filter(UserMilestone.user_id == user_id).all()}
-        new_ids = [mid for mid in milestone_ids if mid not in existing]
-        for mid in new_ids:
-            s.add(UserMilestone(user_id=user_id, milestone_id=mid))
-            log_audit(s, user_id, "CREATE", "user_milestones", mid, {})
-    return new_ids
+    """Persist newly earned milestones; INSERT OR IGNORE + the unique
+    (user_id, milestone_id) index make this atomic — concurrent sessions
+    can never both record the same badge (which would double its reward).
+
+    Returns the ids THIS caller actually inserted."""
+    from sqlalchemy import text
+    engine = get_engine()
+    inserted = []
+    with engine.begin() as conn:
+        for mid in milestone_ids:
+            result = conn.execute(text(
+                "INSERT OR IGNORE INTO user_milestones (user_id, milestone_id, earned_at)"
+                " VALUES (:uid, :mid, :now)"),
+                {"uid": user_id, "mid": mid, "now": _utcnow()})
+            if result.rowcount == 1:
+                inserted.append(mid)
+    if inserted:
+        with get_session() as s:
+            for mid in inserted:
+                log_audit(s, user_id, "CREATE", "user_milestones", mid, {})
+    return inserted
 
 
 # ── Custom milestones (user-created goals with fun-money rewards) ─────────────
@@ -2329,16 +2359,24 @@ def delete_custom_milestone(user_id, ms_id):
 
 
 def mark_custom_milestone_achieved(user_id, ms_id):
-    with get_session() as s:
-        obj = (s.query(CustomMilestone)
-               .filter(CustomMilestone.id == ms_id,
-                       CustomMilestone.user_id == user_id).first())
-        if not obj:
-            return False
-        obj.achieved_at = _utcnow()
-        log_audit(s, user_id, "UPDATE", "custom_milestones", ms_id,
-                  {"achieved": True})
-    return True
+    """Atomically mark a milestone achieved.
+
+    Returns True only for the ONE caller whose conditional UPDATE won the
+    race — concurrent sessions (two browser tabs rerunning the award flow)
+    can never both mark it and double-queue the reward."""
+    from sqlalchemy import text
+    engine = get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(text(
+            "UPDATE custom_milestones SET achieved_at = :now "
+            "WHERE id = :id AND user_id = :uid AND achieved_at IS NULL"),
+            {"now": _utcnow(), "id": ms_id, "uid": user_id})
+        won = result.rowcount == 1
+    if won:
+        with get_session() as s:
+            log_audit(s, user_id, "UPDATE", "custom_milestones", ms_id,
+                      {"achieved": True})
+    return won
 
 
 # ── Sync conflicts ───────────────────────────────────────────────────────────

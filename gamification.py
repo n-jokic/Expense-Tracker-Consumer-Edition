@@ -432,17 +432,24 @@ def _queue_fun_bonus(user_id: int, bonus: float, settings: dict) -> None:
     Bonuses are stored PER MONTH: a bonus queued for next month must never
     overwrite one still being displayed THIS month (the old single
     (amount, month) pair silently lost it mid-month). A legacy single-pair
-    bonus is seeded into the map first so it is never lost."""
+    bonus is seeded into the map first so it is never lost.
+
+    The merge reads the FRESHEST settings from the DB — not the caller's
+    (possibly stale) dict — so a catalog award and a custom-milestone award
+    in the same rerun both land on the same month key instead of the second
+    overwriting the first."""
     import queries as q
+    from db import get_settings as _db_get_settings
     if not (bonus > 0 and bonus == bonus):  # ignore zero/NaN
         return
     today = date.today()
     nxt_m = today.month + 1 if today.month < 12 else 1
     nxt_y = today.year if today.month < 12 else today.year + 1
     nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
-    bonuses = dict(settings.get("fun_bonuses") or {})
-    legacy_month = settings.get("fun_bonus_month")
-    legacy_amt = float(settings.get("fun_bonus_amount") or 0.0)
+    fresh = _db_get_settings(user_id) or {}
+    bonuses = dict(fresh.get("fun_bonuses") or {})
+    legacy_month = fresh.get("fun_bonus_month")
+    legacy_amt = float(fresh.get("fun_bonus_amount") or 0.0)
     if legacy_amt != legacy_amt:  # NaN must not enter the map
         legacy_amt = 0.0
     if legacy_month and legacy_amt > 0 and legacy_month not in bonuses:
@@ -538,9 +545,12 @@ def award_custom_milestones(user_id: int, expenses_df: pd.DataFrame,
         if target != target:  # corrupt stored target — skip, never award
             continue
         if val >= target:
-            mark_custom_milestone_achieved(user_id, str(r["id"]))
-            newly.append(dict(r))
-            total_reward += float(r.get("reward") or 0.0)
+            # The conditional UPDATE wins exactly once, even when two
+            # browser sessions rerun the award flow concurrently — only the
+            # winner queues the reward.
+            if mark_custom_milestone_achieved(user_id, str(r["id"])):
+                newly.append(dict(r))
+                total_reward += float(r.get("reward") or 0.0)
     if total_reward > 0:
         _queue_fun_bonus(user_id, total_reward, settings)
     return newly, total_reward
