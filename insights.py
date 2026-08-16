@@ -96,9 +96,9 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
         return empty
 
     latest       = rows.iloc[-1]
-    balance      = float(latest["balance_eur"])
-    target       = float(rows["target_eur"].max())
-    interest_rate = float(latest["interest_rate"])
+    balance      = float(latest["balance_eur"]) if pd.notna(latest["balance_eur"]) else 0.0
+    target       = float(rows["target_eur"].max()) if pd.notna(rows["target_eur"].max()) else 0.0
+    interest_rate = float(latest["interest_rate"]) if pd.notna(latest["interest_rate"]) else 0.0
 
     if target <= 0 or balance >= target:
         return {"current_balance": balance, "target": target,
@@ -115,8 +115,8 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
     else:
         monthly_dep = float(rows["deposited_eur"].mean())
 
-    # Withdrawals (or zero deposits) can't reach the goal — no projection.
-    if monthly_dep <= 0:
+    # Withdrawals (or zero/NaN deposits) can't reach the goal — no projection.
+    if pd.isna(monthly_dep) or monthly_dep <= 0:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": None, "projected_date": None}
 

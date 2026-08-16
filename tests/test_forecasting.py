@@ -211,6 +211,18 @@ def test_detect_subscriptions_ignores_irregular():
     assert detect_subscriptions(pd.DataFrame(rows)).empty
 
 
+def test_detect_subscriptions_tolerates_null_descriptions():
+    """Regression: an all-null description column (nullable String dtype from
+    sync/import) crashed the whole Insights page under pandas 3."""
+    rows = [
+        {"date": pd.Timestamp(2025, 1, 3), "category": "X", "description": None, "amount_eur": 10.0},
+        {"date": pd.Timestamp(2025, 2, 3), "category": "X", "description": None, "amount_eur": 10.0},
+        {"date": pd.Timestamp(2025, 3, 3), "category": "X", "description": None, "amount_eur": 10.0},
+    ]
+    out = detect_subscriptions(pd.DataFrame(rows))
+    assert out.empty  # no crash; null descriptions simply match nothing
+
+
 # ── Pattern clustering & budget suggestions ───────────────────────────────────
 
 def test_cluster_month_patterns():

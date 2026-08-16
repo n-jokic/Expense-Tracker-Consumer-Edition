@@ -155,16 +155,16 @@ else:
         key=lambda s: s.fillna(32).astype(int),
     )
 
-    logged_ids = set()
-    if not dfe.empty:
-        tm = dfe[(dfe["date"].dt.year == today.year) & (dfe["date"].dt.month == today.month)]
-        if "rec_template_id" in tm.columns:
-            logged_ids = set(tm["rec_template_id"].dropna().astype(str))
+    # One source of truth for "logged this month": the same helper the email/
+    # sidebar reminders use, including the legacy description+amount fallback
+    # for rows logged before rec_template_id links existed.
+    from notifications import _unlogged_templates
+    unlogged_ids = {str(r["id"]) for r in _unlogged_templates(active, dfe, today)}
 
     month_len = calendar.monthrange(today.year, today.month)[1]
 
     for idx, row in active.iterrows():
-        done = str(row["id"]) in logged_ids
+        done = str(row["id"]) not in unlogged_ids
         rc1, rc2, rc3, rc4 = st.columns([3, 1.4, 1.6, 1.6])
 
         with rc1:

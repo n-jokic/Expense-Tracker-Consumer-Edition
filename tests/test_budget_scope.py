@@ -66,7 +66,7 @@ def test_migration_dedupes_existing_overlaps(test_user):
                 " VALUES (:u, 2025, 6, 'Health', :s, :v)"),
                 {"u": test_user, "s": sub, "v": val})
 
-    init_db()  # migration dedupes (newest kept) + unique index
+    init_db(force_migrate=True)  # migration dedupes (newest kept) + unique index
 
     df = get_budgets(test_user)
     assert len(df) == 2

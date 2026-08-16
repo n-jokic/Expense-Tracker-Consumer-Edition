@@ -277,3 +277,52 @@ def test_extract_transactions_from_pdf_borderless_table_fallback(monkeypatch):
     assert df.iloc[0]["amount"] == pytest.approx(-30.0)
     assert page.calls[0]["vertical_strategy"] == "lines"
     assert page.calls[1]["vertical_strategy"] == "text"
+
+
+# --- Q&A regression tests -----------------------------------------------------
+
+def test_description_cell_with_number_is_not_an_amount():
+    """Regression: 'PAYMENT REF 1234' in a description column used to be
+    misread as amount 1234."""
+    rows = [
+        ["Date", "Description", "Amount"],
+        ["01.02.2025", "PAYMENT REF 1234", "-20.00"],
+    ]
+    out = parse_table_rows(rows)
+    assert len(out) == 1
+    assert out[0]["amount"] == pytest.approx(-20.0)
+    assert out[0]["description"] == "PAYMENT REF 1234"
+
+
+def test_headerless_description_cell_with_number_is_not_an_amount():
+    rows = [
+        ["01.02.2025", "PAYMENT REF 1234", "-20.00"],
+        ["02.02.2025", "SHOP", "-5.00"],
+    ]
+    out = parse_table_rows(rows)
+    assert len(out) == 2
+    assert out[0]["amount"] == pytest.approx(-20.0)
+    assert out[1]["amount"] == pytest.approx(-5.0)
+
+
+def test_iso_date_is_not_parsed_as_amount():
+    assert _parse_amount_token("2025-01-02") is None
+    rows = parse_text_lines("03.02.2025 TRANSFER 2025-01-02 -10.00")
+    assert len(rows) == 1
+    assert rows[0]["amount"] == pytest.approx(-10.0)
+
+
+def test_two_digit_year_pivot():
+    assert _parse_date_token("01.02.25") == date(2025, 2, 1)
+    assert _parse_date_token("01.02.99") == date(1999, 2, 1)
+
+
+def test_transaction_split_across_lines_is_joined():
+    """Regression: 'date+description' on one line and the bare amount on the
+    next used to drop the transaction entirely."""
+    rows = parse_text_lines("01.02.2025 LIDL BEOGRAD\n-20.00\n02.02.2025 SHOP -5.00\n")
+    assert len(rows) == 2
+    assert rows[0]["date"] == date(2025, 2, 1)
+    assert rows[0]["amount"] == pytest.approx(-20.0)
+    assert "LIDL" in rows[0]["description"]
+    assert rows[1]["amount"] == pytest.approx(-5.0)

@@ -121,7 +121,8 @@ with st.container(horizontal=True):
     st.metric("Market value", fmt(m["value"], DC, rates), border=True)
     st.metric("Invested", fmt(m["invested"], DC, rates), border=True)
     st.metric("Gain / loss", fmt(m["gain"], DC, rates), border=True)
-    st.metric("Gain %", f"{m['gain_pct']:+.1f}%", border=True)
+    gain_pct_txt = (f"{m['gain_pct']:+.1f}%" if m["invested"] > 0 else "—")
+    st.metric("Gain %", gain_pct_txt, border=True)
 
 # Allocation pie
 r1, r2 = st.columns(2)

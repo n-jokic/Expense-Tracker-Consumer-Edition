@@ -205,7 +205,8 @@ SAVINGS_TARGET_PCT    = 15
 SAVINGS_GOAL_PCT      = 20
 BACKUP_RETENTION_DAYS = 30
 APP_PORT              = 8501
-# LAN access is served over HTTPS (self-signed cert) unless explicitly disabled.
+# LAN access is plain HTTP by default; set EXPENSE_TRACKER_TLS=1 to serve
+# HTTPS with a self-signed cert (run make_cert.py first).
 TLS_ENABLED           = os.environ.get("EXPENSE_TRACKER_TLS") == "1"
 MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
@@ -247,13 +248,14 @@ def get_rates(settings: dict) -> dict:
     """
     rates = dict(DEFAULT_RATES)
     stored = settings.get("currency_rates")
-    if isinstance(stored, dict):
+    if isinstance(stored, dict) and stored:
         for k, v in stored.items():
             f = _valid_rate(v)
             if f is not None:
                 rates[k] = f
     else:
-        # Legacy installs: a single exchange_rate column (EUR -> RSD).
+        # Legacy installs (no stored table, or an EMPTY dict): a single
+        # exchange_rate column (EUR -> RSD).
         legacy = settings.get("exchange_rate")
         if legacy:
             f = _valid_rate(legacy)
@@ -494,11 +496,15 @@ def classify_quadrant(work_hours: float, usage_hours: float,
 # spreadsheet opens (or when a CSV is re-imported): a user-supplied value
 # like "=HYPERLINK(...)" would execute. Prefixing with a quote makes
 # openpyxl/pandas write them as literal text cells (data_type 's').
-_XL_UNSAFE_PREFIXES = ("=", "+", "-", "@")
+_XL_UNSAFE_PREFIXES = ("=", "+", "@")
 
 
 def _xl_safe(v):
     if isinstance(v, str) and v.startswith(_XL_UNSAFE_PREFIXES):
+        return "'" + v
+    # "-" alone starts a formula only when followed by a digit (a plain
+    # "-rebate" note is inert text and must not gain a stray quote).
+    if isinstance(v, str) and len(v) > 1 and v[0] == "-" and v[1].isdigit():
         return "'" + v
     return v
 
@@ -580,17 +586,16 @@ def inject_mobile_css():
 
     /* ── Mobile ─────────────────────────────────────────────────── */
     @media (max-width: 768px) {
-        .kpi { padding: 12px 8px; }
-        .kpi-val { font-size: 18px; }
         .stButton > button {
             width: 100%;
             font-size: 16px;
             padding: 12px;
             border-radius: 10px;
         }
-        /* Stack only KPI-card columns on phones (a global min-width on
-           every column broke tables and forms on every page). */
-        div[data-testid="column"]:has(.kpi) { min-width: 100% !important; }
+        /* Stack only KPI-column metrics on phones (a global min-width on
+           every column broke tables and forms on every page). Pages render
+           Streamlit's native st.metric, not the legacy .kpi divs. */
+        div[data-testid="column"]:has([data-testid="stMetric"]) { min-width: 100% !important; }
         .stDataFrame { font-size: 13px; }
         h1 { font-size: 1.6rem !important; }
         h2 { font-size: 1.3rem !important; }

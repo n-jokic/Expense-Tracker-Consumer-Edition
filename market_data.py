@@ -60,7 +60,10 @@ def fetch_price_stooq(symbol: str, timeout: int = 4) -> float | None:
         if not rows:
             return None
         close = rows[0].get("Close")
-        return float(close) if close not in (None, "", "N/D") else None
+        if close in (None, "", "N/D"):
+            return None
+        val = float(close)
+        return val if val > 0 else None   # zero/negative Close = bad data
     except Exception as e:
         logger.warning("Stooq fetch failed for %s: %s", symbol, e)
         return None
@@ -165,6 +168,8 @@ def maybe_refresh_in_background(user_id: int):
                 # revision — bump so the new prices show up immediately.
                 from db import bump_data_revision
                 bump_data_revision(user_id, include_household=False)
+        except Exception as e:
+            logger.warning("background price refresh failed: %s", e)
         finally:
             _refresh_lock.release()
 

@@ -50,6 +50,42 @@ def test_normalize_generic_drops_invalid_rows():
     assert len(out) == 1
 
 
+def test_normalize_generic_day_first_dates():
+    """Regression: '05/02/2025' was silently read as May 2 (month-first);
+    ambiguous dates must follow the PDF parser's day-first heuristic."""
+    df = pd.DataFrame({
+        "Date": ["05/02/2025", "13/02/2025"],
+        "Description": ["a", "b"],
+        "Amount": ["-5", "-6"],
+    })
+    out = normalize_bank_csv(df, "generic")
+    assert str(out.iloc[0]["date"])[:10] == "2025-02-05"
+    assert str(out.iloc[1]["date"])[:10] == "2025-02-13"
+
+
+def test_normalize_wise_dash_dates_day_first():
+    """Regression: Wise's DD-MM-YYYY dates were parsed month-first."""
+    df = pd.DataFrame({
+        "Date": ["05-02-2025"],
+        "Description": ["LIDL"],
+        "Source amount (after fees)": ["-5.00"],
+        "Source currency": ["EUR"],
+    })
+    out = normalize_bank_csv(df, "wise")
+    assert str(out.iloc[0]["date"])[:10] == "2025-02-05"
+
+
+def test_normalize_generic_serbian_dot_thousands():
+    """Regression: '1.234' was read as 1.234; pure 3-digit dot groups are
+    thousands separators (Serbian) and must parse as 1234."""
+    df = pd.DataFrame({
+        "Date": ["2025-01-15"], "Description": ["a"],
+        "Amount": ["1.234"], "Currency": ["RSD"],
+    })
+    out = normalize_bank_csv(df, "generic")
+    assert out.iloc[0]["amount"] == 1234.0
+
+
 def test_categorize_known_keyword():
     assert categorize_expense("LIDL 1234 BERLIN") == ("Groceries", "Groceries")
     assert categorize_expense("Netflix.com") == ("Entertainment", "Streaming Services")

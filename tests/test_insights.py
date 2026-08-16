@@ -97,3 +97,16 @@ def test_savings_projection_with_net_withdrawals_has_no_projection():
     p = savings_projection(df, "G")
     assert p["months_to_goal"] is None
     assert p["projected_date"] is None
+
+
+def test_savings_projection_nan_inputs_have_no_bogus_projection():
+    """Regression: NaN interest rate or NaN deposits used to return a fake
+    'goal in 1 month' projection."""
+    df = _df([
+        {"goal_name": "G", "date": "2025-01-01", "balance_eur": 100.0,
+         "target_eur": 500.0, "deposited_eur": float("nan"),
+         "interest_rate": float("nan")},
+    ])
+    p = savings_projection(df, "G")
+    assert p["months_to_goal"] is None
+    assert p["projected_date"] is None

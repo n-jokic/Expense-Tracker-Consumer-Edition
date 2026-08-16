@@ -64,7 +64,11 @@ def _decrypt(enc: str) -> str:
     from cryptography.fernet import Fernet
     try:
         return Fernet(_fernet_key()).decrypt(enc.encode("utf-8")).decode("utf-8")
-    except Exception:
+    except Exception as e:
+        # e.g. the key file was replaced (st.secrets vs file): the stored
+        # SMTP password can no longer be decrypted — log loudly for the
+        # operator instead of failing silently at every send.
+        log.warning("cannot decrypt stored SMTP password (key mismatch?): %s", e)
         return ""
 
 
@@ -74,7 +78,10 @@ def send_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_password: st
                to_email: str, subject: str, html_body: str) -> tuple[bool, str]:
     try:
         msg                    = MIMEMultipart("alternative")
-        msg["Subject"]         = subject
+        # Strip CR/LF from the subject: subjects interpolate user text
+        # (bill/loan names) and a newline would let a header inject extra
+        # fields into the message.
+        msg["Subject"]         = str(subject).replace("\r", " ").replace("\n", " ")
         msg["From"]            = smtp_user
         msg["To"]              = to_email
         msg.attach(MIMEText(html_body, "html"))
@@ -107,6 +114,14 @@ def send_email_async(*args, on_done=None):
 
 # ── Email template helpers ────────────────────────────────────────────────────
 
+def _esc(s: str) -> str:
+    """HTML-escape user-controlled text before it lands in an email body —
+    descriptions, categories and display names are free-text and must never
+    be interpreted as markup by the email client."""
+    from html import escape
+    return escape(str(s or ""))
+
+
 def _html_wrap(title: str, body: str) -> str:
     return f"""
     <html><body style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#333;">
@@ -128,8 +143,8 @@ def build_budget_alert_email(display_name: str, category: str,
     color = "#E94560" if over else "#F4A261"
     status = "exceeded" if over else f"at {pct}%"
     body = f"""
-    <p>Hi {display_name},</p>
-    <p>Your <strong>{category}</strong> budget is <span style="color:{color};font-weight:bold;">{status}</span>.</p>
+    <p>Hi {_esc(display_name)},</p>
+    <p>Your <strong>{_esc(category)}</strong> budget is <span style="color:{color};font-weight:bold;">{status}</span>.</p>
     <table style="width:100%;border-collapse:collapse;margin:16px 0;">
       <tr style="background:#f5f5f5;">
         <td style="padding:10px;border-radius:6px 0 0 6px;"><strong>Spent</strong></td>
@@ -140,19 +155,19 @@ def build_budget_alert_email(display_name: str, category: str,
         <td style="padding:10px;color:#0F3460;font-weight:bold;">€{budget_eur:,.2f}</td>
       </tr>
     </table>
-    <p>{'Consider cutting back on ' + category + ' spending for the rest of the month.' if over else 'You are close to your limit — keep an eye on ' + category + ' spending.'}</p>
+    <p>{'Consider cutting back on ' + _esc(category) + ' spending for the rest of the month.' if over else 'You are close to your limit — keep an eye on ' + _esc(category) + ' spending.'}</p>
     """
-    return _html_wrap(f"⚠️ Budget Alert: {category}", body)
+    return _html_wrap(f"⚠️ Budget Alert: {_esc(category)}", body)
 
 
 def build_bill_reminder_email(display_name: str, bill_name: str,
                                amount_str: str, due_note: str) -> str:
     body = f"""
-    <p>Hi {display_name},</p>
-    <p>A reminder that your recurring bill <strong>{bill_name}</strong> hasn't been logged yet this month.</p>
+    <p>Hi {_esc(display_name)},</p>
+    <p>A reminder that your recurring bill <strong>{_esc(bill_name)}</strong> hasn't been logged yet this month.</p>
     <div style="background:#f5f7fa;border-left:4px solid #0F3460;padding:14px;border-radius:6px;margin:16px 0;">
-      <strong>{bill_name}</strong> — {amount_str}<br>
-      <span style="color:#888;font-size:13px;">{due_note}</span>
+      <strong>{_esc(bill_name)}</strong> — {amount_str}<br>
+      <span style="color:#888;font-size:13px;">{_esc(due_note)}</span>
     </div>
     <p>Log it in the app when you're ready.</p>
     """
@@ -167,7 +182,7 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
     if not week_expenses_df.empty:
         cats = week_expenses_df.groupby("category")["amount_eur"].sum().nlargest(3)
         rows_html = "".join(
-            f"<tr><td style='padding:8px;'>{cat}</td>"
+            f"<tr><td style='padding:8px;'>{_esc(cat)}</td>"
             f"<td style='padding:8px;text-align:right;'>{fmt(amt, DC, rates)}</td></tr>"
             for cat, amt in cats.items()
         )
@@ -181,7 +196,7 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
                   if total_eur < 100 else
                   "Every euro tracked is a step toward your financial goals. 💪")
     body = f"""
-    <p>Hi {display_name},</p>
+    <p>Hi {_esc(display_name)},</p>
     <p>Here's your weekly spending summary:</p>
     <div style="background:#0F3460;color:#fff;border-radius:10px;padding:16px;text-align:center;margin:16px 0;">
       <div style="font-size:13px;opacity:0.8;">Total spent this week</div>
@@ -496,6 +511,12 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
     if today.weekday() != 0:  # Monday only
         return
 
+    # Session-level one-shot guard (the DB marker is only written after the
+    # async SMTP delivery, so without this every rerun before delivery
+    # re-sends the summary).
+    if st.session_state.get("weekly_summary_sent") == today:
+        return
+
     # Skip only when a summary was already sent THIS week. Comparing against
     # the previous Monday (today - 7d) let last week's send satisfy the check
     # and silently skipped every second Monday.
@@ -526,6 +547,7 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
         else:
             log.warning("weekly summary not delivered: %s — will retry", err)
 
+    st.session_state["weekly_summary_sent"] = today  # one-shot this session
     send_email_async(
         settings["smtp_host"], int(settings.get("smtp_port", 587)),
         settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),

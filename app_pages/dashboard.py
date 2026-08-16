@@ -260,7 +260,7 @@ if personal_view and not dfb.empty and not exp.empty:
     for c in ca.index:
         bud_val = float(cb.get(c, 0))
         act_val = float(ca.get(c, 0))
-        if bud_val > 0 and act_val > bud_val * NEAR_LIMIT_THRESHOLD:
+        if bud_val > 0 and act_val >= bud_val * NEAR_LIMIT_THRESHOLD:
             if act_val > bud_val:
                 alts.append(("error", c, act_val, bud_val,
                               f"Over by {fmt(act_val - bud_val, DC, rates)}"))
@@ -341,7 +341,7 @@ with r1b:
                 mg = ac.copy(); mg["budgeted_eur"] = 0
             mg["status"] = mg.apply(
                 lambda r: "Over budget" if r["budgeted_eur"] > 0 and r["ae"] > r["budgeted_eur"]
-                else ("Near limit" if r["budgeted_eur"] > 0 and r["ae"] > r["budgeted_eur"] * NEAR_LIMIT_THRESHOLD
+                else ("Near limit" if r["budgeted_eur"] > 0 and r["ae"] >= r["budgeted_eur"] * NEAR_LIMIT_THRESHOLD
                       else "On track"), axis=1)
             cmap = {"Over budget": "#E94560", "Near limit": "#F4A261", "On track": "#00B050"}
             fig  = go.Figure()

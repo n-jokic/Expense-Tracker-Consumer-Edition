@@ -11,8 +11,18 @@ import io
 import os
 import re
 import shutil
+import threading
 
-_AMOUNT_RE = re.compile(r"(?<![\d.,])(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+\.\d{2}|\d+,\d{2})")
+# Amounts: decimal forms (12,50 / 1.234,56 / 1,234.56) AND pure thousands
+# groups (Serbian "1.234" = 1234). Bare integers (quantities, times) do not
+# match.
+_AMOUNT_RE = re.compile(
+    r"(?<![\d.,])(?:"
+    r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?"   # 1.234  or  1.234,56
+    r"|\d{1,3}(?:[.,]\d{3})*[.,]\d{2}"       # 12,50  or  1.234,56
+    r"|\d+[.,]\d{2}"                          # 1234,56
+    r")(?![\d.,])"
+)
 _DATE_RE = re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _TOTAL_KEYS = ("total", "ukupno", "suma", "svega", "amount due",
                "to pay", "grand total", "плати", "укупно")
@@ -25,7 +35,8 @@ def _find_tesseract() -> str | None:
     `C:\Program Files\Tesseract-OCR` and writes a registry key, but does NOT
     add the folder to PATH — so a plain PATH lookup (pytesseract's default)
     keeps failing after install. Resolve: PATH first, then the common
-    install locations, then the registry InstallDir.
+    install locations, then the registry InstallDir (incl. WOW6432Node for
+    32-bit installs and the alternative `Path` value name).
     """
     exe = shutil.which("tesseract")
     if exe:
@@ -39,14 +50,20 @@ def _find_tesseract() -> str | None:
     try:
         import winreg
         for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            try:
-                with winreg.OpenKey(root, r"SOFTWARE\Tesseract-OCR") as k:
-                    install_dir, _ = winreg.QueryValueEx(k, "InstallDir")
-                    if install_dir:
-                        candidates.append(
-                            os.path.join(str(install_dir), "tesseract.exe"))
-            except OSError:
-                pass
+            for key_path in (r"SOFTWARE\Tesseract-OCR",
+                             r"SOFTWARE\WOW6432Node\Tesseract-OCR"):
+                try:
+                    with winreg.OpenKey(root, key_path) as k:
+                        for value_name in ("InstallDir", "Path"):
+                            try:
+                                install_dir, _ = winreg.QueryValueEx(k, value_name)
+                            except OSError:
+                                continue
+                            if install_dir:
+                                candidates.append(
+                                    os.path.join(str(install_dir), "tesseract.exe"))
+                except OSError:
+                    pass
     except Exception:
         pass
     for c in candidates:
@@ -55,50 +72,60 @@ def _find_tesseract() -> str | None:
     return None
 
 
+_OCR_TIMEOUT_S = 30
+
+
 def ocr_image(image_bytes: bytes):
-    """Run Tesseract on an image.
+    """Run Tesseract on an image (in a worker thread with a timeout, so a
+    hung OCR run can never freeze the app indefinitely).
 
     Returns (text, reason): text is the recognised string (or None), and
     reason explains a failure — "ocr_not_installed" when the Tesseract binary
-    can't be found, "ocr_failed" on any other error, None on success.
+    can't be found, "ocr_failed" on any other error or timeout, None on
+    success.
     """
-    try:
-        import pytesseract
-        tesseract = _find_tesseract()
-        if not tesseract:
-            return None, "ocr_not_installed"
-        pytesseract.pytesseract.tesseract_cmd = tesseract
-        from PIL import Image
-        img = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(img)
-        return (text.strip() if text else None), None
-    except Exception:
-        return None, "ocr_failed"
+    result: dict = {}
+
+    def _run():
+        try:
+            import pytesseract
+            tesseract = _find_tesseract()
+            if not tesseract:
+                result["text"], result["reason"] = None, "ocr_not_installed"
+                return
+            pytesseract.pytesseract.tesseract_cmd = tesseract
+            from PIL import Image
+            img = Image.open(io.BytesIO(image_bytes))
+            text = pytesseract.image_to_string(img)
+            result["text"] = text.strip() if text else None
+            result["reason"] = None
+        except Exception:
+            result["text"], result["reason"] = None, "ocr_failed"
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(_OCR_TIMEOUT_S)
+    if worker.is_alive():
+        return None, "ocr_failed"   # timed out; daemon thread dies with the process
+    return result.get("text"), result.get("reason")
 
 
 def extract_amounts(text: str) -> list[float]:
-    """Parse amounts in 1.234,56 / 1,234.56 / 1234.56 formats.
+    """Parse amounts in 1.234,56 / 1,234.56 / 1234.56 / 12,50 formats and
+    Serbian pure-thousands "1.234" (= 1234).
 
     Dates are stripped first so a receipt date like 15.05.2024 is never
     mistaken for an amount.
     """
+    from pdf_import import _parse_amount_core
     out = []
     if not text:
         return out
     cleaned = _DATE_RE.sub(" ", text)
     for m in _AMOUNT_RE.finditer(cleaned):
-        raw = m.group()
-        try:
-            last_sep = max(raw.rfind("."), raw.rfind(","))
-            if last_sep > 0 and len(raw) - last_sep - 1 == 2:
-                intpart = raw[:last_sep].replace(".", "").replace(",", "")
-                val = float(f"{intpart}.{raw[last_sep+1:]}")
-            else:
-                val = float(raw.replace(",", ""))
-            if 0.01 <= val <= 1_000_000:
-                out.append(val)
-        except ValueError:
-            continue
+        val = _parse_amount_core(m.group())
+        if val is not None and 0.01 <= val <= 1_000_000:
+            out.append(val)
     return out
 
 

@@ -100,7 +100,7 @@ def test_migration_adds_snapshot_columns():
             "CREATE TABLE holding_prices ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
             " holding_id VARCHAR NOT NULL, date DATE, price FLOAT DEFAULT 0)"))
-    init_db()
+    init_db(force_migrate=True)
     from sqlalchemy import inspect
     cols = {c["name"] for c in inspect(engine).get_columns("holding_prices")}
     assert {"quantity", "rate", "value_eur"} <= cols

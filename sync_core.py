@@ -159,7 +159,17 @@ def validate_fields(table: str, fields: dict):
                     continue
                 clean[k] = f
             elif spec == "bool":
-                clean[k] = bool(v)
+                # bool("false") is True — parse explicitly instead.
+                if isinstance(v, bool):
+                    clean[k] = v
+                elif isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on"):
+                    clean[k] = True
+                elif isinstance(v, str) and v.strip().lower() in ("0", "false", "no", "off"):
+                    clean[k] = False
+                elif isinstance(v, (int, float)) and v in (0, 1):
+                    clean[k] = bool(v)
+                else:
+                    errors.append(f"{k} invalid type")
         except (TypeError, ValueError):
             errors.append(f"{k} invalid type")
     if table == "expenses" and "category" in clean:

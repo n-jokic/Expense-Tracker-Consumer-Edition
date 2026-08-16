@@ -154,7 +154,27 @@ def _pick(df: pd.DataFrame, names, fallback_idx: int) -> pd.Series:
 
 
 def _to_numeric_locale(series: pd.Series) -> pd.Series:
-    """Locale-aware numeric parsing: handles '12,50', '1.234,56', '1,234.56'."""
+    """Locale-aware numeric parsing: handles '12,50', '1.234,56', '1,234.56'
+    and Serbian dot-thousands '1.234' (= 1234)."""
+    def _pure_dot_thousands(v):
+        """True when the token is digits split ONLY into 3-digit dot groups
+        (Serbian thousands), e.g. '1.234' or '12.345.678'."""
+        if not isinstance(v, str):
+            return False
+        t = v.strip()
+        if not t or "," in t or "." not in t:
+            return False
+        groups = t.split(".")
+        return (len(groups) >= 2
+                and all(len(g) == 3 for g in groups[1:])
+                and groups[0].isdigit())
+
+    non_null = [v for v in series.tolist() if isinstance(v, str) and v.strip()]
+    if non_null and all(_pure_dot_thousands(v) for v in non_null):
+        # Every value is a pure dot-thousands number: dots are separators.
+        return pd.to_numeric(series.astype(str).str.replace(".", "", regex=False),
+                             errors="coerce")
+
     num = pd.to_numeric(series, errors="coerce")
     if num.notna().all():
         return num
@@ -176,6 +196,14 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
     return num.fillna(alt)
 
 
+def _parse_date_series(series: pd.Series) -> pd.Series:
+    """Parse a raw date column with the same heuristics as the PDF parser:
+    ISO first, then day-first with a day>12 ambiguity heuristic (avoids
+    silently reading '05/02/2025' as May 2)."""
+    from pdf_import import _parse_date_token
+    return series.map(lambda v: _parse_date_token(v) if isinstance(v, str) else v)
+
+
 def _clean_currency(series: pd.Series) -> pd.Series:
     """Normalise a currency column: strip/upper-case, leaving missing cells
     EMPTY (""). The render step fills them with the user's "Statement
@@ -193,8 +221,8 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
     try:
         if bank_format == "revolut":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(_pick(df, ["Started Date"], 0), errors="coerce")
-            out["description"] = _pick(df, ["Description"], 2).astype(str)
+            out["date"]        = _parse_date_series(_pick(df, ["Started Date"], 0))
+            out["description"] = _pick(df, ["Description"], 2).fillna("").astype(str)
             out["amount"]      = _to_numeric_locale(_pick(df, ["Amount"], 5))
             out["currency"]    = (_clean_currency(df["Currency"])
                                   if "Currency" in df.columns
@@ -202,8 +230,8 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
 
         elif bank_format == "n26":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(_pick(df, ["Date"], 0), errors="coerce")
-            out["description"] = _pick(df, ["Payee", "Partner Name"], 1).astype(str)
+            out["date"]        = _parse_date_series(_pick(df, ["Date"], 0))
+            out["description"] = _pick(df, ["Payee", "Partner Name"], 1).fillna("").astype(str)
             amt_col = next((c for c in df.columns if "amount" in c.lower()), None)
             amt = df[amt_col] if amt_col is not None else (
                 df.iloc[:, -1] if df.shape[1] else pd.Series(dtype=object))
@@ -212,8 +240,8 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
 
         elif bank_format == "wise":
             out = pd.DataFrame()
-            out["date"]        = pd.to_datetime(_pick(df, ["Date"], 0), errors="coerce")
-            out["description"] = _pick(df, ["Description"], 2).astype(str)
+            out["date"]        = _parse_date_series(_pick(df, ["Date"], 0))
+            out["description"] = _pick(df, ["Description"], 2).fillna("").astype(str)
             out["amount"]      = _to_numeric_locale(
                 _pick(df, ["Source amount (after fees)", "Amount"], 3))
             out["currency"]    = (_clean_currency(df["Source currency"])
@@ -231,8 +259,8 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             amt_col  = next((c for c in df.columns if "amount" in c.lower()),
                             df.columns[-1] if df.shape[1] else None)
             cur_col  = next((c for c in df.columns if "currency" in c.lower()), None)
-            out["date"]        = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.Series(dtype=object)
-            out["description"] = df[desc_col].astype(str) if desc_col else pd.Series(dtype=object)
+            out["date"]        = _parse_date_series(df[date_col]) if date_col else pd.Series(dtype=object)
+            out["description"] = df[desc_col].fillna("").astype(str) if desc_col else pd.Series(dtype=object)
             out["amount"]      = _to_numeric_locale(df[amt_col]) if amt_col else pd.Series(dtype=object)
             out["currency"]    = _clean_currency(df[cur_col]) if cur_col else pd.Series([""] * len(df))
 
@@ -410,14 +438,28 @@ def render_bank_import_page(user_id: int, rates: dict):
         st.warning("No valid rows found. Please check the file format.")
         return
 
-    # Only keep debit rows (negative amounts = expenses)
-    expenses_only = normalised[normalised["amount"] < 0].copy()
+    # Only keep debit rows (negative amounts = expenses). Statements that mix
+    # both signs get an invert toggle for banks that export debits POSITIVE;
+    # single-sign statements use that sign as the expenses.
+    has_both_signs = bool((normalised["amount"] < 0).any()
+                          and (normalised["amount"] > 0).any())
+    invert = False
+    if has_both_signs:
+        invert = st.checkbox(
+            "My bank exports debits as POSITIVE amounts (inverted sign convention)",
+            key="bank_invert_sign", value=False,
+            help="Tick this when the negative rows in your statement are the "
+                 "INCOMING payments, not the expenses.")
+    expenses_only = normalised[
+        normalised["amount"] > 0 if invert else normalised["amount"] < 0].copy()
     expenses_only["amount"] = expenses_only["amount"].abs()
 
     if expenses_only.empty:
-        st.info("No debit transactions found. If your bank uses positive amounts for expenses, "
-                "all rows are shown below.")
-        expenses_only = normalised[normalised["amount"] > 0].copy()
+        if not has_both_signs:
+            st.info("No debit transactions found. If your bank uses positive amounts for expenses, "
+                    "all rows are shown below.")
+        expenses_only = normalised[
+            normalised["amount"] < 0 if invert else normalised["amount"] > 0].copy()
 
     if expenses_only.empty:
         st.warning("No importable rows found.")

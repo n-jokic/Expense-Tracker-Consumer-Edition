@@ -377,10 +377,22 @@ class UserSettings(Base):
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
-def init_db():
+_MIGRATED = False
+
+
+def init_db(force_migrate: bool = False):
+    """Create missing tables and run additive migrations.
+
+    Migrations only run ONCE per process by default (they issue DELETE/UPDATE
+    loops otherwise); pass force_migrate=True when a test has re-seeded
+    legacy data and needs the migration re-applied.
+    """
+    global _MIGRATED
     engine = get_engine()
     Base.metadata.create_all(engine)
-    _migrate(engine)
+    if force_migrate or not _MIGRATED:
+        _migrate(engine)
+        _MIGRATED = True
 
 
 def _add_missing_columns(engine, table: str, columns: dict):
@@ -1677,7 +1689,17 @@ def delete_user_account(user_id):
         s.query(Recurring).filter(Recurring.user_id == user_id).delete()
         s.query(UserSettings).filter(UserSettings.user_id == user_id).delete()
         s.query(AuditLog).filter(AuditLog.user_id == user_id).delete()
+        # Remove a now-empty household (its invite code should not outlive
+        # its last member).
+        hh_id = None
+        u = s.query(User).filter(User.id == user_id).first()
+        if u is not None:
+            hh_id = u.household_id
         s.query(User).filter(User.id == user_id).delete()
+        if hh_id is not None:
+            remaining = s.query(User).filter(User.household_id == hh_id).count()
+            if remaining == 0:
+                s.query(Household).filter(Household.id == hh_id).delete()
     return True
 
 
@@ -1769,6 +1791,9 @@ def create_pairing_device(user_id):
             if not s.query(Device).filter(Device.pairing_code == code).first():
                 break
             code = _random_invite_code(6)
+        else:
+            # All retries collided (astronomically unlikely) — widen the space.
+            code = _random_invite_code(8)
         dev = Device(user_id=user_id, pairing_code=code)
         s.add(dev)
         s.flush()
@@ -1777,23 +1802,40 @@ def create_pairing_device(user_id):
 
 
 def complete_pairing(code, device_name="Phone", token=None):
-    """Validate a pairing code and bind a token. Returns token or None."""
+    """Validate a pairing code and bind a token. Returns token or None.
+
+    The consume step is a single conditional UPDATE (WHERE pairing_code =
+    code) so two concurrent /api/pair calls with the same code cannot both
+    succeed — the second one finds no row to update.
+    """
     import hashlib
     code = (code or "").strip().upper()
+    token = token or uuid.uuid4().hex
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     with get_session() as s:
-        dev = s.query(Device).filter(Device.pairing_code == code).first()
-        if not dev:
+        updates = {
+            "pairing_code": None,
+            "token_hash": token_hash,
+            "token_expires_at": now_naive + timedelta(days=TOKEN_LIFETIME_DAYS),
+        }
+        if device_name:
+            updates["name"] = device_name
+        res = (s.query(Device)
+               .filter(Device.pairing_code == code)
+               .update(updates, synchronize_session=False))
+        if res != 1:
             return None
-        # codes expire after 10 minutes (created_at reads back as naive UTC)
-        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        dev = s.query(Device).filter(Device.token_hash == token_hash).first()
+        if dev is None:
+            return None
+        # Codes expire after 10 minutes — verify AFTER the atomic claim and
+        # undo when the claimed code was already stale.
         if (now_naive - _naive_utc(dev.created_at)) > timedelta(minutes=10):
+            dev.token_hash = None
+            dev.token_expires_at = None
+            dev.pairing_code = code
             return None
-        token = token or uuid.uuid4().hex
-        dev.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        dev.name = device_name or dev.name
-        dev.pairing_code = None
-        dev.token_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) \
-            + timedelta(days=TOKEN_LIFETIME_DAYS)
         return token
 
 
@@ -1906,7 +1948,9 @@ _SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings,
 
 def apply_record_fields(user_id, table_name, record_id, fields) -> bool:
     """Generic field update used by 'keep device value' conflict resolution
-    and the sync API. Protected fields are ignored."""
+    and the sync API. Protected fields are ignored; ISO date/datetime strings
+    from the JSON-serialised device value are coerced back to real date
+    objects so they never land as strings in Date columns."""
     model = _SYNC_MODELS.get(table_name)
     if not model:
         return False
@@ -1919,6 +1963,19 @@ def apply_record_fields(user_id, table_name, record_id, fields) -> bool:
             if k in ("id", "user_id", "created_at", "updated_at"):
                 continue
             if hasattr(obj, k):
+                col = obj.__table__.columns.get(k)
+                if isinstance(v, str) and col is not None:
+                    if isinstance(col.type, DateTime):
+                        try:
+                            v = datetime.fromisoformat(
+                                v.replace("Z", "+00:00")).replace(tzinfo=None)
+                        except ValueError:
+                            continue
+                    elif isinstance(col.type, Date):
+                        try:
+                            v = date.fromisoformat(v[:10])
+                        except ValueError:
+                            continue
                 setattr(obj, k, v)
         log_audit(s, user_id, "UPDATE", table_name, record_id,
                   {"fields": list(fields.keys()), "via": "sync"})

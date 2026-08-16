@@ -27,6 +27,13 @@ def test_extract_amounts_comma_decimal_without_thousands():
     assert extract_amounts("Ukupno 1234,56") == [1234.56]
 
 
+def test_extract_amounts_serbian_pure_thousands():
+    """Regression: '1.234' / '1.200 din' (dot-thousands, no decimals) used to
+    parse as 1.23 / 1.2."""
+    assert extract_amounts("ukupno 1.234") == [1234.0]
+    assert extract_amounts("ukupno 1.200 din") == [1200.0]
+
+
 def test_extract_amounts_ignores_dates():
     """Regression: receipt dates like 15.05.2024 must not become amounts."""
     text = "15.05.2024 14:33\nMAXI\nBread 120,00\nTOTAL 120,00"

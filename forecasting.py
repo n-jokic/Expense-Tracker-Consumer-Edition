@@ -55,6 +55,8 @@ def _ets_forecast(expenses_df: pd.DataFrame):
         series = t.set_index("ym")["amount_eur"].reindex(idx).astype(float)
         if series.isna().any():
             return None, None, None  # a month is missing: no fabricated data
+        if float(series.sum()) <= 0:
+            return None, None, None  # all-zero history: no real signal
         ts = pd.Series(series.values, index=idx.to_timestamp())
         model = ExponentialSmoothing(
             ts, trend="add", initialization_method="estimated").fit()
@@ -102,7 +104,9 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
     df = expenses_df.copy()
     df["dow"]      = df["date"].dt.dayofweek
     df["month"]    = df["date"].dt.month
-    df["cat_code"] = df["category"].astype("category").cat.codes
+    # fillna("") so a missing category becomes its own class (code -1 is the
+    # NaN sentinel and would be treated as a real category by the model).
+    df["cat_code"] = df["category"].fillna("").astype("category").cat.codes
     X = df[["amount_eur","dow","month","cat_code"]].fillna(0)
 
     model = IsolationForest(contamination=contamination, random_state=42)
@@ -230,6 +234,7 @@ def _dataset_fingerprint(expenses_df: pd.DataFrame) -> str:
     df = expenses_df[["description", "category", "subcategory"]].dropna(
         subset=["description", "category"]).copy()
     df["description"] = df["description"].astype(str).str.strip().str.lower()
+    df["category"] = df["category"].astype(str).str.strip().str.lower()
     df["subcategory"] = df["subcategory"].fillna("").astype(str).str.strip().str.lower()
     joined = sorted(
         f"{d}|{c}|{s}"
@@ -335,7 +340,18 @@ def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.D
     if expenses_df is None or expenses_df.empty:
         return pd.DataFrame()
     df = expenses_df.copy()
-    df["key"] = (df["description"].str.strip().str.lower()
+    if "description" not in df.columns:
+        return pd.DataFrame()
+    # Null descriptions (nullable String column from sync/import) must never
+    # reach the .str accessor — pandas 3 raises TypeError on NaN + str ops.
+    # The normalised form is only the grouping key; the OUTPUT keeps the
+    # original description.
+    df["desc_norm"] = df["description"].fillna("").astype(str).str.strip().str.lower()
+    # A subscription needs a name; empty descriptions can't form one.
+    df = df[df["desc_norm"] != ""]
+    if df.empty:
+        return pd.DataFrame()
+    df["key"] = (df["desc_norm"]
                  + "|" + df["amount_eur"].round(2).astype(str))
     groups = []
     for key, grp in df.groupby("key"):
@@ -346,7 +362,9 @@ def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.D
             continue
         gaps = dates.diff().dropna().dt.days
         avg_gap = float(gaps.mean()) if len(gaps) else 0.0
-        if not (25 <= avg_gap <= 35):
+        max_gap = float(gaps.max()) if len(gaps) else 0.0
+        # Regularity: the average alone can hide gaps like [1, 59] (avg 30).
+        if not (25 <= avg_gap <= 35) or max_gap > 60:
             continue
         groups.append({
             "description": grp.iloc[0]["description"],

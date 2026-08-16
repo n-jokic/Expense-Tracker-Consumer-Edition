@@ -171,11 +171,15 @@ def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
         if st.button("Confirm & log expense", key=f"bp_confirm_{purchase_id}",
                      type="primary", width="stretch"):
             update_big_purchase(uid, purchase_id, {"status": "bought"})
+            # Recompute the EUR value at confirm time with the CURRENT rates —
+            # the snapshotted price_eur may be stale if rates changed since
+            # the item was added/edited.
+            ae = to_eur(float(amount), str(currency), rates)
             add_expense(uid, {
                 "date": today, "category": category, "subcategory": "",
                 "description": f"{name} (big purchase)",
                 "amount": float(amount), "currency": str(currency),
-                "amount_eur": float(amount_eur),
+                "amount_eur": ae,
                 "recurring": False, "notes": str(notes) or "Big purchase",
             })
             q.bump_db_version()

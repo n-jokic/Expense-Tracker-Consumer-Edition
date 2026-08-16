@@ -158,6 +158,26 @@ def test_weekly_summary_failed_send_not_marked(monkeypatch, test_user):
     assert (get_settings(test_user) or {}).get("weekly_summary_last_sent") is None
 
 
+def test_weekly_summary_session_guard_prevents_resend(monkeypatch, test_user):
+    """Regression: reruns before the async SMTP delivery completes used to
+    re-send the weekly summary (the DB marker only lands on delivery)."""
+    monkeypatch.setattr(notifications, "date", _PinnedDate)
+    monkeypatch.setattr(notifications.st, "session_state",
+                        {"display_name": "Tester"})
+    calls = []
+
+    def fake_send(*args, **kwargs):
+        calls.append(args)   # on_done NOT fired: simulating slow delivery
+
+    monkeypatch.setattr(notifications, "send_email_async", fake_send)
+    import pandas as pd
+    settings = _weekly_settings()
+    notifications.check_and_send_weekly_summary(test_user, pd.DataFrame(), settings)
+    assert len(calls) == 1
+    notifications.check_and_send_weekly_summary(test_user, pd.DataFrame(), settings)
+    assert len(calls) == 1   # session guard suppresses the re-send
+
+
 def test_weekly_email_uses_user_currency():
     import pandas as pd
     rows = pd.DataFrame({

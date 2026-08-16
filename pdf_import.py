@@ -19,8 +19,9 @@ import pandas as pd
 import pdfplumber
 
 # --- Date patterns -----------------------------------------------------------
-# Ambiguous dd.mm.yyyy / mm.dd.yyyy (day-first by default; day>12 heuristic).
-_DATE_AMBIG_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})[./](\d{2,4})\b")
+# Ambiguous dd.mm.yyyy / mm.dd.yyyy / dd-mm-yyyy (day-first by default;
+# day>12 heuristic). ISO/yyyy-first formats are matched FIRST above.
+_DATE_AMBIG_RE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
 # ISO / yyyy.mm.dd / yyyy/mm/dd / yyyy-mm-dd.
 _DATE_ISO_RE = re.compile(r"\b(\d{4})[-./](\d{1,2})[-./](\d{1,2})\b")
 _DATE_RES = [_DATE_AMBIG_RE, _DATE_ISO_RE]
@@ -120,7 +121,9 @@ def _parse_date_token(tok: str):
     m = _DATE_AMBIG_RE.search(s)
     if m:
         a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        y = y + 2000 if y < 100 else y
+        if y < 100:
+            # 2-digit years: 00-50 -> 2000s, 51-99 -> 1900s.
+            y = y + (2000 if y <= 50 else 1900)
         if a > 12 and b <= 12:
             d, mo = a, b          # first token is the day (dd/mm)
         elif b > 12 and a <= 12:
@@ -207,6 +210,10 @@ def _parse_amount_token(tok: str) -> float | None:
         s = s[:-1].strip()
     # Strip currency symbols from either end.
     s = s.strip(_CURRENCY_SYMBOLS + " \t")
+    # A whole ISO date (e.g. "2025-01-02") is not an amount, even though its
+    # year part matches the number pattern.
+    if _DATE_ISO_RE.fullmatch(s):
+        return None
     m = _AMOUNT_RE.search(s)
     if not m:
         return None
@@ -219,6 +226,23 @@ def _parse_amount_token(tok: str) -> float | None:
     if val is None:
         return None
     return sign * val
+
+
+def _is_pure_amount_cell(cell: str) -> bool:
+    """True when a whole cell is nothing but a (possibly signed/parenthesised,
+    possibly currency-prefixed) number — used for headerless tables where
+    description cells may contain digits (e.g. 'PAYMENT REF 1234')."""
+    s = str(cell or "").strip().replace("\u2212", "-").replace("\u00a0", " ")
+    if not s:
+        return False
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1].strip()
+    if s.endswith("-"):
+        s = s[:-1].strip()
+    s = s.strip(_CURRENCY_SYMBOLS + " \t")
+    if not s or _DATE_ISO_RE.fullmatch(s):
+        return False
+    return bool(_AMOUNT_RE.fullmatch(s))
 
 
 def _is_noise(s: str) -> bool:
@@ -294,7 +318,7 @@ def _detect_balance_column(rows):
             cell = str(r[col] or "").strip() if col < len(r) else ""
             if _parse_date_token(cell) is not None:
                 continue
-            v = _parse_amount_token(cell)
+            v = _parse_amount_token(cell) if _is_pure_amount_cell(cell) else None
             if v is not None:
                 col_vals.setdefault(col, []).append(v)
     for col in range(n_cols - 1, -1, -1):
@@ -309,8 +333,13 @@ def _detect_balance_column(rows):
 
 
 def parse_text_lines(text: str) -> list[dict]:
-    """Extract transactions from plain text lines (date ... description ... amount)."""
+    """Extract transactions from plain text lines (date ... description ... amount).
+
+    Transactions whose amount wraps onto its own line (date+description on one
+    line, bare amount on the next) are joined back together.
+    """
     out = []
+    pending_tx = None   # dated line still waiting for its amount fragment
     for raw in (text or "").splitlines():
         s = raw.strip()
         if not s:
@@ -324,9 +353,17 @@ def parse_text_lines(text: str) -> list[dict]:
         if d is None:
             # Noise lines (summary/balance/page furniture) are never continuations.
             if _is_noise(s):
+                pending_tx = None
                 continue
             if amts:
-                continue  # amount fragment with no date: skip
+                # Bare amount fragment: complete the previous dated line if one
+                # is waiting (transaction split across lines).
+                if pending_tx is not None:
+                    amount = amts[-1]
+                    if not (amount == 0 or abs(amount) > 1_000_000):
+                        out.append({**pending_tx, "amount": amount})
+                    pending_tx = None
+                continue
             # Wrapped description continuation of the previous transaction.
             if out:
                 cont = re.sub(r"\s{2,}", " ", s).strip(" -–—|")
@@ -335,7 +372,14 @@ def parse_text_lines(text: str) -> list[dict]:
             continue
         # Has a date.
         if not amts:
+            # Maybe the amount wraps onto the next line.
+            desc = _AMOUNT_RE.sub("", s2).strip()
+            desc = re.sub(r"\s{2,}", " ", desc).strip(" -–—|")
+            if not desc:
+                desc = "Bank transaction"
+            pending_tx = {"date": d, "description": desc}
             continue
+        pending_tx = None
         # Trailing balance heuristic: with 2+ amounts the last is the running
         # balance, so the transaction amount is the FIRST amount.
         amount = amts[0] if len(amts) >= 2 else amts[-1]
@@ -377,7 +421,15 @@ def parse_table_rows(rows) -> list[dict]:
                 continue
             if role == "date":
                 continue
-            a = None if cell_date is not None else _parse_amount_token(cell)
+            # Amount parsing by column ROLE: description columns are never
+            # amount-parsed (a description like 'PAYMENT REF 1234' must not
+            # become the amount). Headerless cells count only when they are
+            # pure numbers.
+            a = None
+            if cell_date is None and role in ("amount", "debit", "credit"):
+                a = _parse_amount_token(cell)
+            elif cell_date is None and role is None and _is_pure_amount_cell(cell):
+                a = _parse_amount_token(cell)
             if a is not None:
                 if role == "debit":
                     a = -abs(a)

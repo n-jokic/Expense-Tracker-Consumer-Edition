@@ -11,7 +11,7 @@ import streamlit as st
 
 import queries as q
 from utils import (
-    CATEGORIES, CAT_LIST, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
+    CATEGORIES, CAT_LIST, ALL_SUBCATS, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
     travel_spent, fmt, get_currency_symbol,
     help_expander,
 )
@@ -42,8 +42,18 @@ with st.expander("Travel budget settings", icon=":material/settings:"):
         all_pairs = ([f"{c} › (all)" for c in CAT_LIST] +
                      [f"{c} › {s}" for c in CAT_LIST for s in CATEGORIES[c]])
         current = settings.get("travel_categories") or DEFAULT_TRAVEL_CATEGORIES
-        # map stored "Category › " (whole category) back to the "(all)" display form
-        current_display = [p + "(all)" if p.endswith(" › ") else p for p in current]
+        # Map stored forms back to the display forms: "Category › " (whole
+        # category) -> "Category › (all)" and BARE category names (the
+        # default ["Travel"]) -> "Category › (all)" too, so a fresh user's
+        # defaults stay selected instead of being silently wiped on save.
+        def _to_display(p: str) -> str:
+            p = str(p or "")
+            if p.endswith(" › "):
+                return p + "(all)"
+            if p in CAT_LIST:
+                return p + " › (all)"
+            return p
+        current_display = [_to_display(p) for p in current]
         t_cats = st.multiselect("Categories that count as travel",
                                 all_pairs,
                                 default=[p for p in current_display if p in all_pairs])
@@ -92,16 +102,24 @@ with c1:
     st.subheader(f"Travel spending by month ({year})")
     if not dfe.empty:
         def _is_travel(row):
+            # Mirror travel_spent's semantics: a bare SUBCATEGORY name in the
+            # pool matches that subcategory across categories.
             for p in pairs:
                 if " › " in p:
                     cat, sub = p.split(" › ", 1)
+                    cat, sub = cat.strip(), sub.strip()
                 else:
-                    cat, sub = p, ""
-                if row["category"] != cat:
-                    continue
-                if sub and row["subcategory"] != sub:
-                    continue
-                return True
+                    cat, sub = p.strip(), ""
+                if sub and cat in CAT_LIST:
+                    if row["category"] != cat or row["subcategory"] != sub:
+                        continue
+                    return True
+                if not sub and cat in CAT_LIST:
+                    if row["category"] == cat:
+                        return True
+                elif not sub and cat in ALL_SUBCATS:
+                    if row["subcategory"] == cat:
+                        return True
             return False
 
         ydf = dfe[dfe["date"].dt.year == year].copy()

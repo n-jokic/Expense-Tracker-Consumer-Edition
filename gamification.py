@@ -410,9 +410,17 @@ def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
         today = date.today()
         nxt_m = today.month + 1 if today.month < 12 else 1
         nxt_y = today.year if today.month < 12 else today.year + 1
+        nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
+        # Accumulate only while queued for the SAME month. A bonus queued for
+        # an earlier month was already shown in that month's allowance —
+        # adding to it would count it twice.
+        if settings.get("fun_bonus_month") == nxt_key:
+            new_amount = float(settings.get("fun_bonus_amount") or 0.0) + bonus
+        else:
+            new_amount = bonus
         q.save_settings(user_id, {
-            "fun_bonus_amount": float(settings.get("fun_bonus_amount") or 0.0) + bonus,
-            "fun_bonus_month": f"{nxt_y:04d}-{nxt_m:02d}",
+            "fun_bonus_amount": new_amount,
+            "fun_bonus_month": nxt_key,
         })
     return new_ms, bonus
 

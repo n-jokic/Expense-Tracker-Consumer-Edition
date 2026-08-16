@@ -103,6 +103,9 @@ with tab_cur:
                          "than zero. Fix the highlighted rates and save again.")
             else:
                 q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
+                # Let the sidebar selectbox re-initialise from the new default
+                # (its keyed widget state would otherwise keep the old value).
+                st.session_state.pop("dc_sidebar", None)
                 st.success("✅ Saved — rates updated for every page.")
                 st.rerun()
 

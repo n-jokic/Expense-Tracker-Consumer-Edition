@@ -41,6 +41,9 @@ _pair_attempts: dict = {}
 def _pair_rate_limited(ip: str) -> bool:
     now = time.monotonic()
     with _pair_lock:
+        # Bound the in-memory dict: forget idle IPs beyond a sane cap.
+        if len(_pair_attempts) > 1000:
+            _pair_attempts.clear()
         attempts = [t for t in _pair_attempts.get(ip, [])
                     if now - t < _PAIR_WINDOW_S]
         _pair_attempts[ip] = attempts

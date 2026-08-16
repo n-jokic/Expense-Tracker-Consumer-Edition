@@ -68,7 +68,7 @@ def test_migration_maps_pairs_exactly(user):
     for i, (oc, os_, _ec, _es) in enumerate(CASES):
         _add_old_expense(user, f"old-{i}", oc, os_)
 
-    init_db()  # run the taxonomy migration
+    init_db(force_migrate=True)  # run the taxonomy migration
 
     df = get_expenses(user)
     by_desc = {r["description"]: (r["category"], r["subcategory"])
@@ -79,13 +79,13 @@ def test_migration_maps_pairs_exactly(user):
 
 def test_migration_is_idempotent(user):
     _add_old_expense(user, "grocery-run", "Food & Dining", "Groceries")
-    init_db()
+    init_db(force_migrate=True)
     df1 = get_expenses(user)
     assert len(df1) == 1
     assert df1.iloc[0]["category"] == "Groceries"
     assert df1.iloc[0]["subcategory"] == "Groceries"
 
-    init_db()  # second run must be a no-op
+    init_db(force_migrate=True)  # second run must be a no-op
     df2 = get_expenses(user)
     assert len(df2) == 1
     assert df2.iloc[0]["category"] == "Groceries"
@@ -103,7 +103,7 @@ def test_migration_rewrites_settings_fun_travel_categories(user):
             "Transport › Fuel",
         ],
     })
-    init_db()
+    init_db(force_migrate=True)
     s = get_settings(user)
     assert s["fun_categories"] == ["Entertainment", "Dining Out", "Housing"]
     assert s["travel_categories"] == ["Travel", "Transport › Fuel"]
@@ -121,7 +121,7 @@ def test_migration_rewrites_recurring_and_big_purchases(user):
         "status": "wishlist", "notes": "",
     })
 
-    init_db()
+    init_db(force_migrate=True)
 
     rec = get_recurring(user)
     assert rec.iloc[0]["category"] == "Dining Out"

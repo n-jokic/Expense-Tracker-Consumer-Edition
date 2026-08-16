@@ -43,12 +43,14 @@ WINDOW_SECONDS = 60
 
 
 def _client_key() -> str:
-    try:
-        fwd = st.context.headers.get("X-Forwarded-For")
-        if fwd:
-            return fwd.split(",")[0].strip()
-    except Exception:
-        pass
+    """A stable per-client-ish key for login throttling.
+
+    X-Forwarded-For is NOT trusted: a client could randomise it on every
+    attempt to bypass throttling entirely. Without a trustworthy socket-peer
+    in Streamlit, all clients of this single-machine app share one bucket —
+    a 60-second lockout after 5 bad guesses, which is the honest trade-off
+    for a home-LAN app.
+    """
     return "local"
 
 
@@ -120,7 +122,12 @@ def register_user(username: str, email: str, password: str, display_name: str) -
         return False, "An account with that email already exists."
 
     pw_hash = hash_password(password)
-    create_user(username, email, pw_hash, display_name or username)
+    try:
+        create_user(username, email, pw_hash, display_name or username)
+    except Exception:
+        # A concurrent registration won the race: the DB unique constraint
+        # (not the pre-check) is the source of truth.
+        return False, "That username or email was just taken. Please choose another."
     return True, "Account created successfully! You can now log in."
 
 
@@ -166,9 +173,17 @@ def change_password(user_id: int, old_password: str, new_password: str) -> tuple
 def logout():
     for key in ["authenticated", "user_id", "username", "display_name",
                 "household_id", "onboarding_complete", "onboarding_step",
-                "settings", "db_version", "dc", "rates"]:
+                "settings", "db_version", "dc", "rates",
+                "pair_code", "weekly_summary_sent"]:
         st.session_state.pop(key, None)
     st.cache_data.clear()
+    # The per-user ML categorizer is a cache_resource: data-cache clearing
+    # alone would leave the previous user's trained model resident.
+    try:
+        from forecasting import clear_categorizers
+        clear_categorizers()
+    except Exception:
+        pass
 
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
