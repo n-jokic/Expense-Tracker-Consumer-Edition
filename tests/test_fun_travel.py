@@ -61,6 +61,17 @@ def test_travel_spent_whole_category_when_subcategory_empty():
     assert travel_spent(df, ["Shopping › "], 2025) == pytest.approx(30.0)
 
 
+def test_travel_spent_overlapping_pairs_not_double_counted():
+    """Regression: selecting both 'Travel › ' (whole category) and
+    'Travel › Flights & Trains' in the pool used to count flights twice."""
+    df = _df([
+        {"date": "2025-07-01", "category": "Travel", "subcategory": "Flights & Trains", "amount_eur": 500.0},
+        {"date": "2025-07-02", "category": "Travel", "subcategory": "Hotels & Lodging", "amount_eur": 200.0},
+    ])
+    spent = travel_spent(df, ["Travel › ", "Travel › Flights & Trains"], 2025)
+    assert spent == pytest.approx(700.0)
+
+
 # ── Milestones & rewards (DB-backed) ─────────────────────────────────────────
 
 from db import (

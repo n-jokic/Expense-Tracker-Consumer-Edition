@@ -434,14 +434,16 @@ def travel_spent(expenses_df, pairs, year: int) -> float:
 
     Each entry may be a "Category › Subcategory" pair (empty subcategory =
     whole category counts), a bare category name (whole category), or a bare
-    subcategory name (backward compatibility).
+    subcategory name (backward compatibility). Overlapping pairs (e.g.
+    "Travel › (all)" plus "Travel › Flights") are unioned — an expense is
+    never counted twice.
     """
     if expenses_df is None or expenses_df.empty or not pairs:
         return 0.0
     y = expenses_df[expenses_df["date"].dt.year == year]
     if y.empty:
         return 0.0
-    total = 0.0
+    mask = pd.Series(False, index=y.index)
     for pair in pairs:
         if not pair:
             continue
@@ -451,17 +453,17 @@ def travel_spent(expenses_df, pairs, year: int) -> float:
             cat, sub = pair.split(" › ", 1)
             cat, sub = cat.strip(), sub.strip()
             if sub:
-                total += float(y[(y["category"] == cat) &
-                                 (y["subcategory"] == sub)]["amount_eur"].sum())
+                mask = mask | ((y["category"] == cat) &
+                               (y["subcategory"] == sub))
             else:
-                total += float(y[y["category"] == cat]["amount_eur"].sum())
+                mask = mask | (y["category"] == cat)
         else:
             bare = pair.strip()
             if bare in CATEGORIES:
-                total += float(y[y["category"] == bare]["amount_eur"].sum())
+                mask = mask | (y["category"] == bare)
             elif bare in ALL_SUBCATS:
-                total += float(y[y["subcategory"].fillna("") == bare]["amount_eur"].sum())
-    return total
+                mask = mask | (y["subcategory"].fillna("") == bare)
+    return float(y[mask]["amount_eur"].sum())
 
 
 # ── Big-purchase priority matrix ──────────────────────────────────────────────
