@@ -47,6 +47,8 @@ st.caption("A monthly allowance for guilt-free spending (Entertainment, eating "
            "out, hobbies…). Tracked on the Dashboard and Insights.")
 
 fun_allowance = float(settings.get("fun_money") or 0.0)
+if not math.isfinite(fun_allowance):
+    fun_allowance = 0.0
 fun_cats = settings.get("fun_categories") or DEFAULT_FUN_CATEGORIES
 fun_month = fun_spent(dfe, fun_cats, today.year, today.month)
 

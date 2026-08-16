@@ -809,7 +809,7 @@ make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # the 17 UI pages (incl. Budgets, Rewards & badges)
-tests/                  # 355 pytest regression/AppTest suites
+tests/                  # 356 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -819,7 +819,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (355 tests) covers the currency engine, loan amortization edge
+The suite (356 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
 date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
