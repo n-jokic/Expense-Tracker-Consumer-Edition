@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 import urllib.request
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st

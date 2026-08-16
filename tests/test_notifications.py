@@ -77,7 +77,7 @@ def _weekly_settings(**overrides):
         "smtp_host": "smtp.example.com",
         "smtp_user": "me@example.com",
         "smtp_port": 587,
-        "display_currency": "EUR",
+        "default_currency": "EUR",
     }
     s.update(overrides)
     return s
@@ -115,6 +115,32 @@ def test_weekly_summary_sends_every_monday(monkeypatch, test_user):
 
     # And the "last sent" marker lands in the DB only after delivery.
     assert (get_settings(test_user) or {}).get("weekly_summary_last_sent") == date(2025, 6, 2)
+
+
+def test_weekly_summary_uses_default_currency(monkeypatch, test_user):
+    """Regression: the checker read the non-existent `display_currency` key,
+    so every weekly email fell back to EUR. With default_currency=RSD the
+    email must be formatted in dinars."""
+    monkeypatch.setattr(notifications, "date", _PinnedDate)
+    monkeypatch.setattr(notifications.st, "session_state",
+                        {"display_name": "Tester"})
+    captured = {}
+
+    def fake_send(*args, **kwargs):
+        captured["args"] = args
+        kwargs["on_done"](True, "OK")
+
+    monkeypatch.setattr(notifications, "send_email_async", fake_send)
+    import pandas as pd
+    week = pd.DataFrame({"date": [pd.Timestamp(2025, 6, 1)],
+                         "category": ["Food & Dining"], "amount_eur": [100.0]})
+    notifications.check_and_send_weekly_summary(
+        test_user, week,
+        _weekly_settings(default_currency="RSD",
+                         currency_rates={"RSD": 117.0, "EUR": 1.0}))
+    html = captured["args"][-1]
+    assert "11,700 din" in html
+    assert "€100.00" not in html
 
 
 def test_weekly_summary_failed_send_not_marked(monkeypatch, test_user):

@@ -14,7 +14,7 @@ import bcrypt
 
 from db import (
     create_user, get_user_by_username, username_exists, email_exists,
-    update_user_password, get_session, log_audit, init_db
+    update_user_password, init_db
 )
 
 logger = logging.getLogger(__name__)
@@ -145,8 +145,7 @@ def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
 
 
 def change_password(user_id: int, old_password: str, new_password: str) -> tuple[bool, str]:
-    from db import get_session
-    from db import User
+    from db import get_session, User
     old_password = old_password.strip()
     new_password = new_password.strip()
     with get_session() as s:

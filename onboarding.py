@@ -9,7 +9,7 @@ import streamlit as st
 import queries as q
 from db import add_expense, set_onboarding_complete, get_settings
 from utils import (
-    CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_AMOUNT,
+    CAT_LIST, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     get_rates, get_currency_symbol,
 )
 

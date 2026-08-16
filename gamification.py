@@ -267,7 +267,6 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
 
     # savings totals
     if not savings_df.empty:
-        max_balance = float(savings_df.groupby("goal_name")["balance_eur"].max().max())
         total_saved = float(savings_df["deposited_eur"].sum())
         if total_saved >= 100:
             earned.append(MILESTONE_INDEX["saver_100"])

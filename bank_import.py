@@ -3,14 +3,11 @@ bank_import.py — Bank statement CSV importer for Expense Tracker v3.
 Supports Revolut, N26, Wise, and generic CSV formats.
 """
 
-import uuid
-from datetime import date
-
 import pandas as pd
 import streamlit as st
 
 import queries as q
-from utils import CATEGORIES, CAT_LIST, ALL_SUBCATS, MAX_AMOUNT
+from utils import CAT_LIST, ALL_SUBCATS, MAX_AMOUNT
 from db import add_expense
 
 # ── Keyword-based auto-categorisation ────────────────────────────────────────
@@ -374,7 +371,7 @@ def render_bank_import_page(user_id: int, rates: dict):
     # Auto-categorise: learned classifier first, keyword map as fallback.
     # The suggestion source/confidence travel with each row so the save path
     # can record whether the user accepted or corrected it (ML telemetry).
-    from forecasting import suggest_category, CATEGORIZER_MODEL_VERSION
+    from forecasting import suggest_category
     user_exp = q.expenses(user_id)
     cats, subs, sources, confs = [], [], [], []
     for d in expenses_only["description"]:

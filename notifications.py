@@ -487,7 +487,9 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
               if not expenses_df.empty else pd.DataFrame())
     from utils import get_rates
     rates = get_rates(settings)
-    dc = settings.get("display_currency") or "EUR"
+    # NB: the settings key is `default_currency` — reading `display_currency`
+    # here used to make every weekly summary fall back to EUR.
+    dc = settings.get("default_currency") or "EUR"
     html = build_weekly_summary_email(
         st.session_state.get("display_name", ""), window, rates, dc)
 

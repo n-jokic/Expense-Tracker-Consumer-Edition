@@ -129,7 +129,7 @@ if hourly_rate > 0 and not pending.empty:
 
 
 @st.dialog("Confirm purchase")
-def confirm_purchase_dialog(user_id, purchase_id, name, category, amount, currency,
+def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
                             amount_eur, notes):
     """Confirm a wishlist item was bought: marks it bought and logs the expense."""
     st.write(f"Mark **{name}** as bought and log it as an expense?")
@@ -144,8 +144,8 @@ def confirm_purchase_dialog(user_id, purchase_id, name, category, amount, curren
     with c2:
         if st.button("Confirm & log expense", key=f"bp_confirm_{purchase_id}",
                      type="primary", width="stretch"):
-            update_big_purchase(user_id, purchase_id, {"status": "bought"})
-            add_expense(user_id, {
+            update_big_purchase(uid, purchase_id, {"status": "bought"})
+            add_expense(uid, {
                 "date": today, "category": category, "subcategory": "",
                 "description": f"{name} (big purchase)",
                 "amount": float(amount), "currency": str(currency),

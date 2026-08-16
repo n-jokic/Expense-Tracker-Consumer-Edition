@@ -155,10 +155,10 @@ if not dfs.empty:
     df_hold = q.holdings(user_id)
     if not df_hold.empty:
         for _, h in df_hold.iterrows():
-            cur = str(h["currency"] or "EUR")
+            hcur = str(h["currency"] or "EUR")  # NB: not `cur` — that's the save widget
             price_eur = float(h["last_price"] or 0.0)
-            if cur != "EUR" and price_eur > 0:
-                price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
+            if hcur != "EUR" and price_eur > 0:
+                price_eur = price_eur / (rates.get(hcur, 1.0) or 1.0)
             portfolio_value += float(h["quantity"] or 0.0) * price_eur
 
     st.divider()

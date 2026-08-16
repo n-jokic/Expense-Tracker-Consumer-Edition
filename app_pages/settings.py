@@ -14,7 +14,7 @@ import streamlit as st
 
 import queries as q
 from db import (
-    add_budget, delete_budget, get_budgets, BACKUP_DIR,
+    add_budget, delete_budget, BACKUP_DIR,
     update_user_display_name, delete_user_account, backup_db,
     create_pairing_device, get_devices, revoke_device,
     get_sync_conflicts, resolve_sync_conflict, apply_record_fields,
@@ -41,6 +41,39 @@ st.title("⚙️ Settings")
 tab_cur, tab_bud, tab_notif, tab_acct, tab_data, tab_sync = st.tabs(
     ["💱 Currency", "💰 Budget", "📧 Notifications", "🔐 Account", "📦 Data", "🔗 Sync"]
 )
+
+# ── Confirmation dialogs (defined BEFORE their call sites — the page script
+# runs top-to-bottom, so a dialog called earlier than its def would NameError) ──
+
+@st.dialog("Delete budget row?")
+def budget_delete_dialog(uid: int, bid: int, category: str, subcategory: str):
+    label = category + (f" — {subcategory}" if subcategory else "")
+    st.write(f"Delete the **{label}** budget row? This cannot be undone.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Delete row", type="primary", width="stretch"):
+            delete_budget(uid, bid)
+            q.bump_db_version()
+            st.toast("Budget row deleted.", icon="🗑️")
+            st.rerun()
+
+
+@st.dialog("Revoke device?")
+def revoke_device_dialog(uid: int, device_id: str, name: str):
+    st.write(f"Revoke access for **{name}**? The phone will need to pair again.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", width="stretch"):
+            st.rerun()
+    with c2:
+        if st.button("Revoke", type="primary", width="stretch"):
+            revoke_device(uid, device_id)
+            st.toast("Device revoked.", icon="🔒")
+            st.rerun()
+
 
 # ── Currency tab ──────────────────────────────────────────────────────────────
 with tab_cur:
@@ -226,37 +259,6 @@ with tab_acct:
                 st.rerun()
             else:
                 safe_error("Please type DELETE exactly to confirm.")
-
-# ── Confirmation dialogs ──────────────────────────────────────────────────────
-
-@st.dialog("Delete budget row?")
-def budget_delete_dialog(uid: int, bid: int, category: str, subcategory: str):
-    label = category + (f" — {subcategory}" if subcategory else "")
-    st.write(f"Delete the **{label}** budget row? This cannot be undone.")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Cancel", width="stretch"):
-            st.rerun()
-    with c2:
-        if st.button("Delete row", type="primary", width="stretch"):
-            delete_budget(uid, bid)
-            q.bump_db_version()
-            st.toast("Budget row deleted.", icon="🗑️")
-            st.rerun()
-
-
-@st.dialog("Revoke device?")
-def revoke_device_dialog(uid: int, device_id: str, name: str):
-    st.write(f"Revoke access for **{name}**? The phone will need to pair again.")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Cancel", width="stretch"):
-            st.rerun()
-    with c2:
-        if st.button("Revoke", type="primary", width="stretch"):
-            revoke_device(uid, device_id)
-            st.toast("Device revoked.", icon="🔒")
-            st.rerun()
 
 
 # ── Data tab ──────────────────────────────────────────────────────────────────

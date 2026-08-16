@@ -6,13 +6,12 @@ Vacation / Travel savings goal.
 import calendar
 from datetime import date
 
-import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 import queries as q
 from utils import (
-    CATEGORIES, CAT_LIST, ALL_SUBCATS, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
+    CATEGORIES, CAT_LIST, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
     travel_spent, fmt, pbar, get_currency_symbol,
     help_expander,
 )

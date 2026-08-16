@@ -69,7 +69,7 @@ with st.form("loan_form", clear_on_submit=False):
 
 
 @st.dialog("Delete loan?")
-def delete_loan_dialog(user_id, loan_id, name, remaining):
+def delete_loan_dialog(uid, loan_id, name, remaining):
     """Confirm deleting a loan; payments already logged stay as expenses."""
     st.write(f"Delete loan **{name}**?")
     st.caption(f"Remaining balance: **{remaining}** · "
@@ -81,7 +81,7 @@ def delete_loan_dialog(user_id, loan_id, name, remaining):
     with c2:
         if st.button("Delete loan", key=f"loan_confirm_{loan_id}",
                      type="primary", width="stretch"):
-            delete_loan(user_id, loan_id)
+            delete_loan(uid, loan_id)
             q.bump_db_version()
             st.toast("Loan deleted (payments remain as expenses).", icon="🗑️")
             st.rerun()
@@ -239,8 +239,10 @@ else:
             with c1:
                 with st.expander(f"🧾 Payments ({len(payments)})"):
                     if payments:
-                        for p_date, amt in sorted(payments, reverse=True):
-                            st.write(f"{p_date.strftime('%d %b %Y')} — {fmt(amt, DC, rates)}")
+                        # NB: pay_date/pay_amt, not p_date/p_amt — those are
+                        # the "Log payment" popover widgets in this same scope.
+                        for pay_date, pay_amt in sorted(payments, reverse=True):
+                            st.write(f"{pay_date.strftime('%d %b %Y')} — {fmt(pay_amt, DC, rates)}")
                     else:
                         st.caption("No payments logged yet.")
             with c2:

@@ -3,7 +3,7 @@ insights.py — Auto-generated spending insights for Expense Tracker v3.
 Receives DataFrames; returns human-readable insight strings rendered in Streamlit.
 """
 
-from datetime import date, datetime
+from datetime import date
 import calendar
 
 import pandas as pd

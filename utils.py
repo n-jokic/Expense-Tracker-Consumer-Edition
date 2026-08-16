@@ -10,7 +10,6 @@ import calendar
 from datetime import date as _date, timedelta as _td
 
 import streamlit as st
-import pandas as pd
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

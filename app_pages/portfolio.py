@@ -13,10 +13,10 @@ import streamlit as st
 import queries as q
 from db import add_holding, update_holding, delete_holding
 from finance import portfolio_metrics
-from market_data import refresh_prices_if_due, fetch_price, _fetch_cached
+from market_data import refresh_prices_if_due, _fetch_cached
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET, CHART_COLORS,
-    fmt, fmt_row, to_display, to_eur, get_currency_symbol, get_rates,
+    fmt, to_display, to_eur, get_currency_symbol,
     help_expander,
 )
 
@@ -200,7 +200,7 @@ st.dataframe(pd.DataFrame(tbl), hide_index=True)
 
 
 @st.dialog("Remove holding?")
-def remove_holding_dialog(user_id, holding_id, symbol, quantity):
+def remove_holding_dialog(uid, holding_id, symbol, quantity):
     """Confirm removing a holding (and its saved price history) from the portfolio."""
     st.write(f"Remove **{symbol}** from your holdings?")
     st.caption(f"Quantity: {quantity:,.4f} · This also removes its saved price history.")
@@ -211,7 +211,7 @@ def remove_holding_dialog(user_id, holding_id, symbol, quantity):
     with c2:
         if st.button("Delete holding", key=f"hold_confirm_{holding_id}",
                      type="primary", width="stretch"):
-            delete_holding(user_id, holding_id)
+            delete_holding(uid, holding_id)
             q.bump_db_version()
             st.toast(f"Holding **{symbol}** removed.", icon=":material/delete:")
             st.rerun()
