@@ -80,21 +80,27 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     interest_paid = 0.0
     months_paid = 0
     payoff = None
+
+    # Simulate through the CURRENT calendar month (relative to the first due)
+    # so a payment logged this month reduces the balance immediately — even
+    # before that month's payment day has arrived. Interest only accrues once
+    # a month's due date has actually passed; payments in future months are
+    # never applied.
+    cur_k = (asof.year - first_due.year) * 12 + (asof.month - first_due.month)
     k = 0
-    while bal > 0.005 and k < 1200:
-        k += 1
-        due = _next_due(start_date, payment_day, k - 1)
-        if due > asof:
-            break
-        interest_due = bal * r
-        interest_paid += interest_due
-        paid = by_due.get(due, 0.0)
-        bal = bal + interest_due - paid
-        months_paid += 1
+    while bal > 0.005 and k <= max(cur_k, 0) and k < 1200:
+        due = _next_due(start_date, payment_day, k)
+        if due <= asof:
+            interest_due = bal * r
+            interest_paid += interest_due
+            bal += interest_due
+            months_paid += 1
+        bal -= by_due.get(due, 0.0)
         if bal <= 0.005:
             bal = 0.0
             payoff = due
             break
+        k += 1
 
     remaining_months = 0
     if bal > 0.005:
@@ -111,10 +117,17 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
                 remaining_months = 0
         remaining_months = max(remaining_months, 1)
         if remaining_months:
-            # k was incremented for the month that failed the asof check,
-            # so the next unprocessed month index is k - 1.
+            # k = last simulated month index + 1. If that month's due date
+            # hasn't arrived yet, its payment event is still owed and counts
+            # as one of the remaining events; otherwise the next unprocessed
+            # month is k.
+            last_idx = k - 1
+            if _next_due(start_date, payment_day, last_idx) > asof:
+                next_idx = last_idx
+            else:
+                next_idx = last_idx + 1
             payoff = _next_due(start_date, payment_day,
-                               (k - 1) + remaining_months - 1)
+                               next_idx + remaining_months - 1)
 
     interest_remaining = (monthly * remaining_months - bal) if remaining_months else 0.0
 
@@ -128,6 +141,38 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
         "months_paid": months_paid,
         "total_cost": round(principal + interest_paid + max(interest_remaining, 0.0), 2),
     }
+
+
+# ── Term deposit math ─────────────────────────────────────────────────────────
+
+def months_between(start: date, end: date) -> int:
+    """Whole calendar months from start to end (0 when end is not later)."""
+    if end <= start:
+        return 0
+    return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+def compound_months(amount: float, annual_rate_pct: float, months: int) -> float:
+    """Value of a deposit after `months` whole months of monthly compounding."""
+    if amount <= 0 or months <= 0:
+        return round(amount, 2)
+    return round(amount * (1 + annual_rate_pct / 100 / 12) ** months, 2)
+
+
+def maturity_value(amount: float, annual_rate_pct: float,
+                   start: date, maturity: date) -> float:
+    """Projected value of a fixed-term deposit at its maturity date."""
+    return compound_months(amount, annual_rate_pct, months_between(start, maturity))
+
+
+def accrued_value(amount: float, annual_rate_pct: float,
+                  start: date, asof: date | None = None) -> float:
+    """Current value of a term deposit: compounded monthly up to asof
+    (default today). Callers cap asof at the maturity date themselves."""
+    asof = asof or date.today()
+    if asof <= start:
+        return round(amount, 2)
+    return compound_months(amount, annual_rate_pct, months_between(start, asof))
 
 
 # ── Portfolio math ────────────────────────────────────────────────────────────

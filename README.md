@@ -161,17 +161,35 @@ The app is organised into five navigation groups: **Overview**, **Track**,
   dialog — and editing touches only that row.
 - Soft-delete + restore, like expenses.
 
-**Savings goals** (`app_pages/savings.py`)
+**Savings** (`app_pages/savings.py`)
 
 - Named goals with a target; log **deposits and withdrawals** (balance is
-  clamped at zero, never negative).
+  clamped at zero, never negative). Creating a goal is as simple as logging the
+  first entry — the target and interest rate you give it become the goal's.
+- **Goal cards** make a goal easy to manage after creation: every goal has
+  **Deposit**, **Withdraw**, **Edit goal** and **Delete goal** actions right on
+  the card.
+  - *Edit goal* renames the goal (across all its entries and term deposits),
+    and sets its **target and interest rate** — applied to all of the goal's
+    entries; the balance chain recomputes automatically.
+  - *Delete goal* moves every entry to the trash (restorable) and removes its
+    term-deposit accounts.
 - **Monthly compound interest**: the balance chain is recomputed on every read
   from the deposit history, compounding at each entry's interest rate over the
   elapsed months. This means the chain is always consistent — and editing or
   deleting an entry intentionally updates the chain *from that entry forward*
   (nothing else is rewritten).
-- Entries are editable (date, amount, target in EUR, interest rate, notes)
-  via an "Edit a savings entry" dialog, and soft-delete/restore is supported.
+- **Term-deposit accounts**: open one or several accounts *under a goal* —
+  each has its own amount, currency, **fixed annual interest rate**, start date
+  and **maturity date**. The value compounds monthly; the card shows the
+  current and maturity values, the days remaining, and when the deposit
+  matures you can **withdraw it into the goal** (or early, at the accrued
+  value) with one click — it is logged as a goal deposit and the account is
+  closed. Accounts, goals, and locked value also count towards the goal's
+  progress bar and the "Locked (term)" KPI.
+- Individual entries remain editable (date, amount, target, interest rate,
+  notes) via "Manage savings entries", and everything is soft-delete/restore
+  supported (including trashed term deposits).
 
 ### Editing & history safety (applies everywhere)
 
@@ -183,7 +201,8 @@ was already recorded.**
 |---|---|---|
 | Expenses | Inline in the history editor (all fields, paginated) | Each expense stores its own original amount/currency/EUR value; edits rewrite only that row |
 | Income | "Edit an income entry" dialog (date, source, type, amount, currency, budgeted, notes) | Only that row changes |
-| Savings entries | "Edit a savings entry" dialog (date, amount, target in EUR, interest, notes) | The balance **chain** recomputes from that entry forward — that's the intended math, no other rows are rewritten |
+| Savings entries | "Manage savings entries" dialog (date, amount, target, interest, notes); goals via "Edit goal" | The balance **chain** recomputes from that entry forward — that's the intended math, no other rows are rewritten |
+| Term deposits | "Edit" dialog (name, amount, currency, rate, dates, goal) | Only that account changes; logged goal entries are untouched |
 | Budgets | Re-save the same year/month/category/subcategory scope — it upserts | One row per scope, never duplicates |
 | Recurring templates | "Edit" dialog (description, expected amount, currency, due day, start month, notes, active) | **Past logged expenses are untouched** — they keep the amounts/categories they were saved with and only link back to the template |
 | Loans | "Edit" dialog (name, principal, currency, rate, term, payment day, start date, status, notes) | Logged payments are untouched; the amortization math simply recomputes |
@@ -245,7 +264,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
   attributes each logged payment to its due month (payments made off the due
   day still count), accrues interest monthly, and reports remaining balance,
   remaining months, payoff date, interest paid/remaining, and total cost.
-  Missed or partial payments extend the payoff date.
+  Missed or partial payments extend the payoff date. A logged payment reduces
+  the principal **immediately** — even before that month's payment day arrives
+  — while interest accrues only once a due date has passed.
 - The first due date is the first payment day **on or after** the start date
   (no phantom first month), and the remaining-payment count rounds up so a
   €149 balance at €100/month correctly needs 2 payments.
@@ -358,9 +379,9 @@ typed confirmation), data export/backup, and phone sync.
 ### Data, backups & export
 
 - **Export everything**: a zip containing Excel files for expenses, income,
-  savings, budgets, recurring, big purchases, loans, holdings, holding-price
-  history, audit log, settings, household metadata, devices, milestones, and
-  sync conflicts — plus individual per-table downloads.
+  savings, term deposits, budgets, recurring, big purchases, loans, holdings,
+  holding-price history, audit log, settings, household metadata, devices,
+  milestones, and sync conflicts — plus individual per-table downloads.
 - **Spreadsheet safety**: cells starting with `=`, `+`, `-`, or `@` are
   exported as inert text, so user-entered descriptions can't execute as
   formulas when the file is opened.
@@ -390,8 +411,9 @@ The v2 protocol is security-hardened:
   minutes, and are rate-limited (5 tries / 10 min / IP); device tokens are
   SHA-256-hashed, expire after 90 days, and are refreshed by use.
 
-The offline PWA client itself is the next milestone — the server contract is
-ready.
+The syncable tables are expenses, income, savings, and term-deposit accounts
+(`savings_accounts`). The offline PWA client itself is the next milestone —
+the server contract is ready.
 
 ### Receipt OCR setup (optional)
 

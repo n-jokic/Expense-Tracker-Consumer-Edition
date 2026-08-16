@@ -12,7 +12,7 @@ from db import (
     get_audit_log, get_settings as _db_get_settings,
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
     get_big_purchases, get_loans, get_loan_payments,
-    get_holdings, get_holding_prices,
+    get_holdings, get_holding_prices, get_savings_accounts,
     get_data_revision as _db_get_revision,
     bump_data_revision as _db_bump_revision,
 )
@@ -58,6 +58,11 @@ def _income(user_id: int, version: int, include_deleted: bool):
 @st.cache_data(ttl=300, show_spinner=False)
 def _savings(user_id: int, version: int, include_deleted: bool):
     return get_savings(user_id, include_deleted=include_deleted)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _savings_accounts(user_id: int, version: int, include_deleted: bool):
+    return get_savings_accounts(user_id, include_deleted=include_deleted)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -122,6 +127,10 @@ def income(user_id: int, include_deleted: bool = False):
 
 def savings(user_id: int, include_deleted: bool = False):
     return _savings(user_id, db_version(), include_deleted)
+
+
+def savings_accounts(user_id: int, include_deleted: bool = False):
+    return _savings_accounts(user_id, db_version(), include_deleted)
 
 
 def budgets(user_id: int):

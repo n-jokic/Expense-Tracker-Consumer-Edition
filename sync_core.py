@@ -21,12 +21,13 @@ import math
 from datetime import datetime, date
 
 from db import (
-    get_session, Expense, Income, Savings,
+    get_session, Expense, Income, Savings, SavingsAccount,
     add_sync_conflict,
 )
 from utils import CATEGORIES, ALL_SUBCATS, remap_category_subcategory
 
-SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings}
+SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings,
+               "savings_accounts": SavingsAccount}
 PROTECTED = ("id", "user_id", "created_at", "updated_at")
 
 MAX_CHANGES = 500        # reject sync calls with more changes
@@ -51,6 +52,12 @@ FIELD_SCHEMAS = {
         "deposited": "float", "currency": "str", "deposited_eur": "float",
         "interest_rate": "float", "balance_eur": "float", "notes": "str",
         "is_deleted": "bool",
+    },
+    "savings_accounts": {
+        "goal_name": "str", "name": "str", "amount": "float",
+        "currency": "str", "amount_eur": "float", "annual_rate": "float",
+        "start_date": "date", "maturity_date": "date", "status": "str",
+        "notes": "str", "is_deleted": "bool",
     },
 }
 

@@ -290,6 +290,7 @@ with tab_data:
         "expenses":       q.expenses(user_id, include_deleted=True),
         "income":         q.income(user_id, include_deleted=True),
         "savings":        q.savings(user_id, include_deleted=True),
+        "term_deposits":  q.savings_accounts(user_id, include_deleted=True),
         "budgets":        q.budgets(user_id),
         "recurring":      q.recurring(user_id),
         "big_purchases":  q.big_purchases(user_id),

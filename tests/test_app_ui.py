@@ -155,3 +155,40 @@ def test_dashboard_with_start_month_template_no_crash(ui_user):
     labels = [str(getattr(el, "label", "") or "") for el in at.main]
     assert any("Fixed costs" in lbl for lbl in labels), \
         "fixed-costs metric missing from dashboard"
+
+
+def test_savings_page_goal_cards_and_term_deposits(ui_user):
+    """The new savings page must render goal cards (with quick-action buttons)
+    and term-deposit account cards when the user has data."""
+    from db import add_savings, add_savings_account
+    add_savings(ui_user, {
+        "date": date(2025, 1, 1), "goal_name": "Laptop", "target_eur": 1500.0,
+        "deposited": 300.0, "currency": "EUR", "deposited_eur": 300.0,
+        "interest_rate": 3.0, "balance_eur": 300.0, "notes": "",
+    })
+    add_savings(ui_user, {
+        "date": date(2025, 2, 1), "goal_name": "Laptop", "target_eur": 1500.0,
+        "deposited": 200.0, "currency": "EUR", "deposited_eur": 200.0,
+        "interest_rate": 3.0, "balance_eur": 500.0, "notes": "",
+    })
+    add_savings_account(ui_user, {
+        "goal_name": "Laptop", "name": "6-month CD", "amount": 500.0,
+        "currency": "EUR", "amount_eur": 500.0, "annual_rate": 4.0,
+        "start_date": date.today(), "maturity_date": date.today() + timedelta(days=180),
+        "status": "active", "notes": "",
+    })
+    bump_data_revision(ui_user, include_household=False)
+    _clear_cached_readers()
+    at = _authenticated(ui_user)
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "savings.py"))
+    at.run()
+    assert not at.exception, f"savings page crashed: {at.exception}"
+    text = (_main_text(at, "markdown") + " " + _main_text(at, "caption")
+            + " " + _main_text(at, "subheader"))
+    assert "Term-deposit accounts" in text
+    assert "6-month CD" in text
+    btn_labels = [str(getattr(el, "label", "") or "") for el in at.main
+                  if el.type == "button"]
+    assert any("Deposit" == lbl for lbl in btn_labels)
+    assert any("Withdraw" == lbl for lbl in btn_labels)
+    assert any("Edit goal" == lbl for lbl in btn_labels)

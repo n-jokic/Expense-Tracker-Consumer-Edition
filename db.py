@@ -179,6 +179,28 @@ class Savings(Base):
     updated_at    = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class SavingsAccount(Base):
+    """A fixed-term deposit ('savings account') under a savings goal:
+    money locked until a maturity date at a fixed annual rate."""
+    __tablename__ = "savings_accounts"
+    id            = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id       = Column(Integer, ForeignKey("users.id"), nullable=False)
+    goal_name     = Column(String, nullable=False)
+    name          = Column(String, default="")
+    amount        = Column(Float, default=0.0)      # deposit, original currency
+    currency      = Column(String, default="EUR")
+    amount_eur    = Column(Float, default=0.0)      # deposit, EUR
+    annual_rate   = Column(Float, default=0.0)      # percent, compounded monthly
+    start_date    = Column(Date)
+    maturity_date = Column(Date)
+    status        = Column(String, default="active")  # active | closed
+    notes         = Column(String, default="")
+    is_deleted    = Column(Boolean, default=False)
+    deleted_at    = Column(DateTime, nullable=True)
+    created_at    = Column(DateTime, default=_utcnow)
+    updated_at    = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 class Budget(Base):
     __tablename__ = "budgets"
     __table_args__ = (
@@ -928,6 +950,142 @@ def restore_savings(user_id, savings_id):
     return True
 
 
+# ── Savings goal helpers (goal-wide edits) ────────────────────────────────────
+
+def rename_savings_goal(user_id, old_name, new_name):
+    """Rename a goal across its entries AND its term-deposit accounts."""
+    new_name = (new_name or "").strip()
+    if not new_name or new_name == old_name:
+        return 0
+    with get_session() as s:
+        n = 0
+        for model in (Savings, SavingsAccount):
+            for obj in (s.query(model)
+                        .filter(model.user_id == user_id,
+                                model.goal_name == old_name).all()):
+                obj.goal_name = new_name
+                n += 1
+        log_audit(s, user_id, "RENAME", "savings_goal",
+                  old_name, {"new_name": new_name, "rows": n})
+    return n
+
+
+def update_savings_goal(user_id, goal_name, updates):
+    """Apply goal-wide values (e.g. target_eur, interest_rate) to every
+    active entry of a goal. Balances are a derived chain recomputed on read,
+    so editing an entry intentionally updates the chain forward."""
+    with get_session() as s:
+        rows = (s.query(Savings)
+                .filter(Savings.user_id == user_id,
+                        Savings.goal_name == goal_name,
+                        Savings.is_deleted == False).all())
+        for obj in rows:
+            for k, v in updates.items():
+                if hasattr(obj, k):
+                    setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "savings_goal", goal_name,
+                  {**updates, "rows": len(rows)})
+        return len(rows)
+
+
+def soft_delete_savings_goal(user_id, goal_name):
+    """Move every entry of a goal to the trash and remove its term accounts."""
+    with get_session() as s:
+        n = 0
+        rows = (s.query(Savings)
+                .filter(Savings.user_id == user_id,
+                        Savings.goal_name == goal_name,
+                        Savings.is_deleted == False).all())
+        for obj in rows:
+            obj.is_deleted = True
+            obj.deleted_at = _utcnow()
+            n += 1
+        accs = (s.query(SavingsAccount)
+                .filter(SavingsAccount.user_id == user_id,
+                        SavingsAccount.goal_name == goal_name,
+                        SavingsAccount.is_deleted == False).all())
+        for obj in accs:
+            obj.is_deleted = True
+            obj.deleted_at = _utcnow()
+        log_audit(s, user_id, "DELETE", "savings_goal", goal_name,
+                  {"entries_trashed": n, "accounts_removed": len(accs)})
+        return n
+
+
+# ── Term-deposit accounts (under a savings goal) ──────────────────────────────
+
+_SAV_ACC_COLS = ["id","user_id","goal_name","name","amount","currency",
+                 "amount_eur","annual_rate","start_date","maturity_date",
+                 "status","notes","is_deleted","deleted_at","created_at","updated_at"]
+
+
+def get_savings_accounts(user_id, include_deleted=False):
+    with get_session() as s:
+        q = s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id)
+        if not include_deleted:
+            q = q.filter(SavingsAccount.is_deleted == False)
+        rows = q.order_by(SavingsAccount.maturity_date.asc()).all()
+    df = _to_df(rows, _SAV_ACC_COLS)
+    return _parse_dates(df, ["start_date", "maturity_date", "created_at", "deleted_at"])
+
+
+def add_savings_account(user_id, row):
+    acc_id = str(uuid.uuid4())
+    with get_session() as s:
+        obj = SavingsAccount(
+            id=acc_id, user_id=user_id,
+            goal_name=row.get("goal_name", ""), name=row.get("name", ""),
+            amount=float(row.get("amount", 0)), currency=row.get("currency", "EUR"),
+            amount_eur=float(row.get("amount_eur", 0)),
+            annual_rate=float(row.get("annual_rate", 0)),
+            start_date=row.get("start_date"), maturity_date=row.get("maturity_date"),
+            status=row.get("status", "active"), notes=row.get("notes", ""),
+        )
+        s.add(obj)
+        log_audit(s, user_id, "CREATE", "savings_accounts", acc_id, row)
+    return acc_id
+
+
+def update_savings_account(user_id, acc_id, updates):
+    with get_session() as s:
+        obj = (s.query(SavingsAccount)
+               .filter(SavingsAccount.id == acc_id,
+                       SavingsAccount.user_id == user_id).first())
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "savings_accounts", acc_id, updates)
+    return True
+
+
+def soft_delete_savings_account(user_id, acc_id):
+    with get_session() as s:
+        obj = (s.query(SavingsAccount)
+               .filter(SavingsAccount.id == acc_id,
+                       SavingsAccount.user_id == user_id).first())
+        if not obj:
+            return False
+        obj.is_deleted = True
+        obj.deleted_at = _utcnow()
+        log_audit(s, user_id, "DELETE", "savings_accounts", acc_id, {"soft": True})
+    return True
+
+
+def restore_savings_account(user_id, acc_id):
+    with get_session() as s:
+        obj = (s.query(SavingsAccount)
+               .filter(SavingsAccount.id == acc_id,
+                       SavingsAccount.user_id == user_id).first())
+        if not obj:
+            return False
+        obj.is_deleted = False
+        obj.deleted_at = None
+        log_audit(s, user_id, "RESTORE", "savings_accounts", acc_id, {})
+    return True
+
+
 # ── Budgets ───────────────────────────────────────────────────────────────────
 
 _BUD_COLS = ["id","user_id","year","month","category","subcategory","budgeted_eur"]
@@ -1474,6 +1632,7 @@ def delete_user_account(user_id):
         s.query(Expense).filter(Expense.user_id == user_id).delete()
         s.query(Income).filter(Income.user_id == user_id).delete()
         s.query(Savings).filter(Savings.user_id == user_id).delete()
+        s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id).delete()
         s.query(Budget).filter(Budget.user_id == user_id).delete()
         s.query(Recurring).filter(Recurring.user_id == user_id).delete()
         s.query(UserSettings).filter(UserSettings.user_id == user_id).delete()

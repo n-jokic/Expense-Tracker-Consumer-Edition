@@ -133,6 +133,57 @@ def test_payment_in_first_due_month_counts():
     assert s["months_paid"] == 1
 
 
+def test_payment_before_due_day_reduces_balance_immediately():
+    """Regression: a payment logged this month, BEFORE the payment day has
+    passed, must reduce the balance right away (no interest yet)."""
+    s = loan_schedule(10000, 0, 12, date(2026, 1, 1), 25,
+                      [(date(2026, 1, 5), 1000.0)], asof=date(2026, 1, 10))
+    assert s["remaining_balance"] == 9000.0
+    assert s["months_paid"] == 0
+    assert s["total_interest_paid"] == 0.0
+
+
+def test_payment_before_first_due_reduces_balance():
+    """Regression: a payment made before the very first due date must count."""
+    s = loan_schedule(10000, 0, 12, date(2026, 1, 20), 1,
+                      [(date(2026, 1, 25), 1000.0)], asof=date(2026, 1, 26))
+    assert s["remaining_balance"] == 9000.0
+    assert s["months_paid"] == 0
+
+
+def test_early_payoff_in_current_month_uses_due_date():
+    """Paying the whole balance before the due day clears the loan with the
+    current month's due date as the payoff date."""
+    s = loan_schedule(10000, 0, 12, date(2026, 1, 1), 25,
+                      [(date(2026, 1, 5), 10000.0)], asof=date(2026, 1, 10))
+    assert s["remaining_balance"] == 0.0
+    assert s["payoff_date"] == date(2026, 1, 25)
+
+
+def test_current_month_payment_not_counted_twice_after_due_passes():
+    """Once the due day passes, the same payment is applied as that month's
+    payment — the balance must not change again."""
+    before = loan_schedule(10000, 0, 12, date(2026, 1, 1), 5,
+                           [(date(2026, 1, 3), 1000.0)], asof=date(2026, 1, 4))
+    after = loan_schedule(10000, 0, 12, date(2026, 1, 1), 5,
+                          [(date(2026, 1, 3), 1000.0)], asof=date(2026, 1, 6))
+    assert before["remaining_balance"] == 9000.0
+    assert after["remaining_balance"] == 9000.0
+    assert after["months_paid"] == 1
+
+
+def test_term_deposit_math():
+    from finance import months_between, maturity_value, accrued_value
+    assert months_between(date(2026, 1, 10), date(2026, 2, 9)) == 1
+    assert months_between(date(2026, 1, 10), date(2026, 1, 11)) == 0
+    # 1000 at 12% p.a. for 12 months -> 1000 * 1.01^12
+    assert maturity_value(1000.0, 12.0, date(2026, 1, 1), date(2027, 1, 1)) \
+        == pytest.approx(1126.83, abs=0.01)
+    assert accrued_value(1000.0, 12.0, date(2026, 1, 1), date(2026, 1, 15)) == 1000.0
+    assert accrued_value(1000.0, 12.0, date(2026, 1, 1), date(2026, 4, 15)) \
+        == pytest.approx(1030.30, abs=0.01)
+
+
 def test_portfolio_metrics():
     m = portfolio_metrics([
         {"quantity": 2, "last_price_eur": 50.0, "cost_eur": 80.0},
