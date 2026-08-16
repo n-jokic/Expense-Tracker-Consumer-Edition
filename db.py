@@ -4,6 +4,7 @@ All data operations are scoped to user_id.
 """
 
 import os
+import time
 import uuid
 import json
 import secrets
@@ -19,6 +20,13 @@ from sqlalchemy import (
     DateTime, Date, ForeignKey, Text, event, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+from crypto import sqlcipher_key_pragma
+
+try:
+    from sqlcipher3 import dbapi2 as sqlcipher_dbapi  # wheels: sqlcipher3-wheels
+except Exception:  # pragma: no cover - import failure surfaces in _sqlite_module
+    sqlcipher_dbapi = None
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +45,198 @@ _engine  = None
 _Session = None
 Base     = declarative_base()
 
+# ── At-rest encryption (SQLCipher) ────────────────────────────────────────────
+# The whole SQLite file is encrypted with a raw key derived (SHA-256) from the
+# master secret in crypto.py. EXPENSE_TRACKER_NO_ENCRYPT=1 opts out (e.g. for
+# exotic hosts); PostgreSQL via DATABASE_URL is never encrypted here.
+_ENCRYPT = os.environ.get("EXPENSE_TRACKER_NO_ENCRYPT", "").strip().lower() \
+    not in ("1", "true", "yes", "on")
+_SQLITE_HEADER = b"SQLite format 3\x00"
+_ENCRYPTION_LOCK = os.path.join(BASE_DIR, ".db-encrypting")
+_ENCRYPTION_DONE = False
+
 
 def _utcnow():
     return datetime.now(timezone.utc)
+
+
+def _sqlite_module():
+    """The DBAPI module for SQLite: SQLCipher when encryption is enabled."""
+    if not _ENCRYPT:
+        return sqlite3
+    if sqlcipher_dbapi is None:
+        raise RuntimeError(
+            "Database encryption requires the 'sqlcipher3-wheels' package. "
+            "Install dependencies with:  pip install -r requirements.txt")
+    return sqlcipher_dbapi
+
+
+def _keyed_pragmas(con):
+    """Apply the encryption key + safety pragmas to a raw connection."""
+    if _ENCRYPT:
+        con.execute(f"PRAGMA key = {sqlcipher_key_pragma()}")
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA busy_timeout=5000")
+
+
+def _raw_connect(path=None):
+    """A raw DBAPI connection with the same key/pragmas as the engine.
+
+    Used by backup_db and by tests that must read DB files directly."""
+    module = _sqlite_module()
+    con = module.connect(path or DB_PATH, check_same_thread=False)
+    _keyed_pragmas(con)
+    return con
+
+
+def _file_is_plaintext(path):
+    """True when the file starts with the SQLite magic header (ciphertext
+    SQLCipher files have a random salt there instead)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == _SQLITE_HEADER
+    except OSError:
+        return False
+
+
+def _wait_for_migration_lock(timeout_s=120):
+    """Block while another process is encrypting the database (or break a
+    stale lock left behind by a crashed process)."""
+    deadline = time.time() + timeout_s
+    while os.path.exists(_ENCRYPTION_LOCK) and time.time() < deadline:
+        try:
+            if time.time() - os.path.getmtime(_ENCRYPTION_LOCK) > 600:
+                os.remove(_ENCRYPTION_LOCK)  # stale lock from a crash
+                break
+        except OSError:
+            pass
+        time.sleep(0.5)
+
+
+def _migrate_plaintext_to_encrypted():
+    """One-time, crash-safe conversion of a plaintext DB to SQLCipher.
+
+    Uses the SQLCipher-documented export path: the plaintext copy is
+    ATTACHed with an empty key and sqlcipher_export() copies its schema and
+    data into a fresh keyed database. The original file is replaced only
+    after the encrypted file has been verified, so a failure at any point
+    leaves the plaintext database intact and working.
+    """
+    os.makedirs(BASE_DIR, exist_ok=True)
+    with open(_ENCRYPTION_LOCK, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    tmp_plain = f"{DB_PATH}.migrating"
+    tmp_enc = f"{DB_PATH}.enc-new"
+    try:
+        # 1. Checkpoint WAL, then take a WAL-safe plaintext copy.
+        src = sqlite3.connect(DB_PATH)
+        try:
+            src.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            orig_tables = src.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+            dst = sqlite3.connect(tmp_plain)
+            try:
+                with dst:
+                    src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        # 2. Build the encrypted database: sqlcipher_export copies the
+        # plaintext schema + data into a fresh keyed database.
+        con = sqlcipher_dbapi.connect(tmp_enc, check_same_thread=False)
+        try:
+            con.execute(f"PRAGMA key = {sqlcipher_key_pragma()}")
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute(f"ATTACH DATABASE '{tmp_plain}' AS plaintext KEY ''")
+            try:
+                con.execute("SELECT sqlcipher_export('main', 'plaintext')")
+            finally:
+                con.execute("DETACH DATABASE plaintext")
+            table_count = con.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+            con.commit()
+            # Move WAL frames into the main file so the moved file is
+            # self-contained (the -wal file is not moved along).
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            con.close()
+        if _file_is_plaintext(tmp_enc):
+            raise RuntimeError("encryption migration did not produce ciphertext")
+        if table_count != orig_tables:
+            raise RuntimeError(
+                f"encryption migration verification failed "
+                f"({table_count} tables vs {orig_tables} expected)")
+        # 3. Swap the verified encrypted file into place.
+        os.replace(tmp_enc, DB_PATH)
+        for suffix in ("-wal", "-shm"):
+            for base in (DB_PATH, tmp_enc):
+                try:
+                    os.remove(base + suffix)
+                except OSError:
+                    pass
+        # The plaintext working copy must not outlive the migration.
+        try:
+            os.remove(tmp_plain)
+        except OSError:
+            pass
+        logger.info("database encrypted at rest (SQLCipher) — migration complete")
+    except Exception as e:
+        for tmp in (tmp_plain, tmp_enc):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise RuntimeError(
+            f"Failed to encrypt the database: {e}. The original database is "
+            "unchanged; the app will keep working with "
+            "EXPENSE_TRACKER_NO_ENCRYPT=1 until this is resolved.") from e
+    finally:
+        try:
+            os.remove(_ENCRYPTION_LOCK)
+        except OSError:
+            pass
+
+
+def _ensure_db_encrypted():
+    """Make sure the on-disk DB is ciphertext before the engine connects.
+
+    Fresh DBs are created encrypted by the engine itself; existing plaintext
+    DBs are converted once (guarded by a lock file so concurrent processes —
+    app, sync API, MCP — cannot race). Already-encrypted DBs are verified
+    with the key so a key mismatch fails with a clear message.
+    """
+    global _ENCRYPTION_DONE
+    if _ENCRYPTION_DONE or not _ENCRYPT:
+        return
+    if not os.path.exists(DB_PATH):
+        _ENCRYPTION_DONE = True
+        return
+    if not _file_is_plaintext(DB_PATH):
+        # Already ciphertext (or an empty/corrupt file). Verify the key.
+        try:
+            con = _raw_connect()
+            try:
+                con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            finally:
+                con.close()
+            _ENCRYPTION_DONE = True
+            return
+        except Exception as e:
+            msg = str(e).lower()
+            if "not a database" in msg or "encrypted" in msg or "key" in msg:
+                raise RuntimeError(
+                    "The database is encrypted but the key does not match. "
+                    "Set EXPENSE_TRACKER_DB_KEY or restore data/.secret_key "
+                    "from your backup.") from e
+            raise
+    _wait_for_migration_lock()
+    if not _file_is_plaintext(DB_PATH):
+        _ENCRYPTION_DONE = True  # another process finished migrating
+        return
+    _migrate_plaintext_to_encrypted()
+    _ENCRYPTION_DONE = True
 
 
 def get_engine():
@@ -49,12 +246,15 @@ def get_engine():
             _engine = create_engine(DATABASE_URL)
         else:
             os.makedirs(BASE_DIR, exist_ok=True)
-            _engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
-            # Enable WAL mode for better concurrent access (SQLite only)
+            _ensure_db_encrypted()
+            _engine = create_engine(
+                f"sqlite:///{DB_PATH}",
+                module=_sqlite_module(),
+                connect_args={"check_same_thread": False})
+            # Key + WAL + FK + busy timeout for concurrent access (SQLite only)
             @event.listens_for(_engine, "connect")
-            def set_wal(dbapi_conn, _):
-                dbapi_conn.execute("PRAGMA journal_mode=WAL")
-                dbapi_conn.execute("PRAGMA foreign_keys=ON")
+            def _on_connect(dbapi_conn, _):
+                _keyed_pragmas(dbapi_conn)
     return _engine
 
 
@@ -377,6 +577,14 @@ class UserSettings(Base):
     smtp_port        = Column(Integer, default=587)
     smtp_user        = Column(String, nullable=True)
     smtp_password_enc = Column(String, nullable=True)
+    # GitHub backups (token stored Fernet-encrypted; never exported)
+    gh_backup_enabled = Column(Boolean, default=False)
+    gh_repo           = Column(String, nullable=True)        # "owner/repo" — private
+    gh_token_enc      = Column(String, nullable=True)
+    gh_retention_days = Column(Integer, default=14)
+    gh_last_backup_at = Column(DateTime, nullable=True)
+    gh_last_status    = Column(String, nullable=True)        # "ok" | "error"
+    gh_last_error     = Column(String, nullable=True)
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────
@@ -433,6 +641,13 @@ def _migrate(engine):
         "weekly_summary": "BOOLEAN DEFAULT 0",
         "weekly_summary_last_sent": "DATE",
         "hourly_rate": "FLOAT DEFAULT 0",
+        "gh_backup_enabled": "BOOLEAN DEFAULT 0",
+        "gh_repo": "VARCHAR",
+        "gh_token_enc": "VARCHAR",
+        "gh_retention_days": "INTEGER DEFAULT 14",
+        "gh_last_backup_at": "TIMESTAMP",
+        "gh_last_status": "VARCHAR",
+        "gh_last_error": "VARCHAR",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -1489,6 +1704,9 @@ _SETTINGS_DEFAULTS = {
     "weekly_summary_last_sent": None, "hourly_rate": 0.0,
     "email_alerts": False, "alert_email": None, "smtp_host": None,
     "smtp_port": 587, "smtp_user": None, "smtp_password_enc": None,
+    "gh_backup_enabled": False, "gh_repo": None, "gh_token_enc": None,
+    "gh_retention_days": 14, "gh_last_backup_at": None,
+    "gh_last_status": None, "gh_last_error": None,
 }
 
 def get_settings(user_id):
@@ -1776,7 +1994,7 @@ def delete_user_account(user_id):
 # ── Backups (SQLite only) ─────────────────────────────────────────────────────
 
 def backup_db(force: bool = False):
-    """Copy the SQLite database into BACKUP_DIR (WAL-safe).
+    """Copy the SQLite database into BACKUP_DIR (WAL-safe, stays encrypted).
 
     Without force: one backup per day (a ".last_backup" marker is checked).
     With force=True: ALWAYS take a fresh, timestamped snapshot — a second
@@ -1807,9 +2025,9 @@ def backup_db(force: bool = False):
     dest = os.path.join(BACKUP_DIR,
                         f"expense_tracker_{stamp}_{uuid.uuid4().hex[:6]}.db")
     tmp = f"{dest}.tmp"
-    src = sqlite3.connect(DB_PATH)
+    src = _raw_connect(DB_PATH)
     try:
-        dst = sqlite3.connect(tmp)
+        dst = _raw_connect(tmp)
         try:
             with dst:
                 src.backup(dst)

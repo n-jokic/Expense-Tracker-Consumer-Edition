@@ -328,8 +328,10 @@ with tab_data:
     }
     _s = dict(st.session_state.settings)
     # Never export credentials: the settings sheet must not leak the SMTP
-    # password ciphertext, user, or the alert email address.
-    for _k in ("smtp_password_enc", "smtp_user", "alert_email", "smtp_host", "smtp_port"):
+    # password ciphertext, user, the alert email address, or the GitHub
+    # backup token.
+    for _k in ("smtp_password_enc", "smtp_user", "alert_email", "smtp_host",
+               "smtp_port", "gh_token_enc"):
         _s.pop(_k, None)
     exports["settings"] = pd.DataFrame(
         [{k: (json.dumps(v, default=str) if isinstance(v, (list, dict)) else v)
@@ -390,6 +392,58 @@ with tab_data:
             st.success(f"✅ Backup saved to `{path}`")
         else:
             st.info("Backups are only available with the local SQLite database.")
+
+    st.subheader(":material/cloud_upload: GitHub backup (free)")
+    st.caption("Upload the **encrypted** database to a private GitHub repository. "
+               "Nothing readable is ever uploaded — see the README for setup.")
+    with st.form("gh_backup_form"):
+        gh_on = st.toggle("Back up automatically once a day",
+                          value=bool(settings.get("gh_backup_enabled")))
+        gh_repo = st.text_input("Repository", value=settings.get("gh_repo") or "",
+                                placeholder="owner/my-private-backup")
+        gh_token = st.text_input("GitHub token (fine-grained PAT)",
+                                 type="password",
+                                 placeholder="Leave blank to keep the existing token")
+        gh_ret = st.number_input("Keep backups for (days)", min_value=1, max_value=90,
+                                 value=int(settings.get("gh_retention_days") or 14),
+                                 step=1)
+        c_save, c_run = st.columns(2)
+        with c_save:
+            saved_gh = st.form_submit_button("Save configuration", type="primary",
+                                             icon=":material/save:", width="stretch")
+        with c_run:
+            run_gh = st.form_submit_button("Back up to GitHub now",
+                                           icon=":material/cloud_upload:",
+                                           width="stretch")
+
+    if saved_gh:
+        updates = {"gh_backup_enabled": bool(gh_on),
+                   "gh_repo": gh_repo.strip(),
+                   "gh_retention_days": int(gh_ret)}
+        if gh_token:
+            from crypto import encrypt_str
+            updates["gh_token_enc"] = encrypt_str(gh_token)
+        q.save_settings(user_id, updates)
+        st.success("GitHub backup configuration saved.", icon=":material/check:")
+        st.rerun()
+
+    if run_gh:
+        import threading
+        from github_backup import run_github_backup
+        threading.Thread(target=run_github_backup, args=(user_id,),
+                         name="gh-backup-manual", daemon=True).start()
+        st.info("Backup started in the background — the status appears here "
+                "after the next refresh.", icon=":material/hourglass_empty:")
+        st.rerun()
+
+    gh_last = settings.get("gh_last_backup_at")
+    if gh_last:
+        when = gh_last.strftime("%d %b %Y %H:%M") if hasattr(gh_last, "strftime") else str(gh_last)
+        if settings.get("gh_last_status") == "ok":
+            st.caption(f"Last GitHub backup: **{when}** ✅")
+        elif settings.get("gh_last_status") == "error":
+            st.error(f"Last GitHub backup failed ({when}): "
+                     f"{settings.get('gh_last_error')}")
 
 
 # ── Sync tab (phone pairing + conflicts) ─────────────────────────────────────

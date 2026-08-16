@@ -5,7 +5,6 @@ marker must keep non-forced calls to one backup per day.
 """
 
 import os
-import sqlite3
 from datetime import date
 
 import pytest
@@ -33,7 +32,7 @@ def test_user():
 
 
 def _count_rows(db_path: str, table: str) -> int:
-    con = sqlite3.connect(db_path)
+    con = db_module._raw_connect(db_path)   # backups are encrypted
     try:
         return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     finally:

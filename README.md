@@ -17,14 +17,16 @@ the same database, so there is nothing to sync and no conflicts.
 2. [Using it from your phone](#-using-it-from-your-phone)
 3. [Outside your home network](#-using-the-app-outside-your-home-network)
 4. [Feature guide](#feature-guide)
-5. [How the ML models work](#-how-the-ml-models-work)
-6. [Currency model](#currency-model)
-7. [Security notes](#security-notes)
-8. [Configuration](#configuration)
-9. [Project structure](#project-structure)
-10. [Running tests](#running-tests)
-11. [Hosting (VPS / server)](#hosting-later-vps--server)
-12. [Roadmap](#roadmap)
+5. [AI assistant access (OpenClaw / MCP)](#-ai-assistant-access-openclaw--mcp)
+6. [Backing up to GitHub (free)](#-backing-up-to-github-free)
+7. [How the ML models work](#-how-the-ml-models-work)
+8. [Currency model](#currency-model)
+9. [Security notes](#security-notes)
+10. [Configuration](#configuration)
+11. [Project structure](#project-structure)
+12. [Running tests](#running-tests)
+13. [Hosting (VPS / server)](#hosting-later-vps--server)
+14. [Roadmap](#roadmap)
 
 ---
 
@@ -44,6 +46,11 @@ run_server.bat
 dependencies, and starts the server on `0.0.0.0:8501` over plain **HTTP**.
 
 Open **http://localhost:8501** on the PC.
+
+> **First run on an existing installation:** the database is encrypted once,
+> automatically (SQLCipher, AES-256). The key lives in `data/.secret_key` —
+> keep it safe (see [Security notes](#security-notes)): it is deliberately
+> never included in backups, and losing it means losing your data.
 
 ### 🖥️ Desktop launcher (optional — no terminal needed)
 
@@ -410,7 +417,67 @@ typed confirmation), data export/backup, and phone sync.
 - **Backups**: a WAL-safe SQLite snapshot is taken automatically once per day;
   the manual "Back up now" button always takes a fresh, timestamped copy
   (even twice on the same day), writes are atomic, and old backups are pruned
-  after 30 days.
+  after 30 days. Backups are **ciphertext** — the database is SQLCipher-
+  encrypted at rest, so a backup file is useless without the key.
+- **Off-site backups**: Settings → Data can push the encrypted database to a
+  **private GitHub repository** automatically (once a day) or on demand — see
+  [Backing up to GitHub](#-backing-up-to-github-free).
+
+### ☁️ Backing up to GitHub (free)
+
+The app can upload its **encrypted** database backups to a **private GitHub
+repository** — free, off-site, and readable only with your key (which is never
+uploaded). Setup takes ~5 minutes:
+
+1. **Create a private repository** (one per household is fine) at
+   github.com → *New repository* → name it e.g. `expense-tracker-backup` →
+   **Private** → Create. Do not add a README.
+2. **Create a fine-grained personal access token**:
+   GitHub → *Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token*.
+   - *Repository access*: **Only select repositories** → your backup repo.
+   - *Permissions → Repository permissions → Contents*: **Read and write**.
+   - Expiration: your choice (a year is fine; you'll just re-enter a new one).
+3. In the app: **Settings → Data → GitHub backup** — paste
+   `your-username/expense-tracker-backup` and the token, set the retention
+   (days to keep backups, default 14), enable the daily automatic backup,
+   and press **Back up to GitHub now** for the first upload.
+
+What happens under the hood:
+
+- the local backup (already SQLCipher ciphertext) is uploaded to
+  `backups/YYYY-MM-DD/…` in the repo — **nothing readable ever leaves the PC**;
+- files over 50 MB are split into parts (GitHub hard-caps files at 100 MB)
+  and a `.manifest.json` with SHA-256 checksums of every part is written
+  **last** — a backup folder only becomes restorable once its manifest exists;
+- backups older than the retention window are deleted automatically;
+- the token is stored Fernet-encrypted in the local database, is **never
+  included in exports**, and only the GitHub API ever sees it;
+- the daily automatic backup runs in the background on app start (once per
+  24 h) and never blocks the UI; the last result is shown in Settings.
+
+**Restoring from GitHub** (after a disk loss / new PC):
+
+```bat
+:: list what's in the repo
+python github_backup.py list --user your_username
+
+:: download + verify (SHA-256) without touching the live database
+python github_backup.py restore 2026-08-16_120000 --user your_username --out C:\restore
+
+:: or restore directly over the live database (stop the app/API first!)
+python github_backup.py restore 2026-08-16_120000 --user your_username --replace
+```
+
+`restore --replace` refuses to run while WAL files exist (i.e. while the app
+is running), keeps the previous database as a `pre_restore_*` copy, and asks
+you to restart the app afterwards. If the database itself is unreadable (so
+Settings can't be read), point the CLI at the repo with `GH_REPO` and
+`GH_TOKEN` environment variables instead of `--user`.
+
+> ⚠️ The **key is not on GitHub**. Also back up `data/.secret_key` separately
+> (password manager, USB stick, or paper) — without it, neither the GitHub
+> backups nor the local database can ever be opened.
 
 ### Phone sync API (experimental — offline PWA groundwork)
 
@@ -449,6 +516,53 @@ Tesseract wherever winget installed it (PATH, `Program Files`, or the
 registry) — no PATH setup and no server restart needed; install once and the
 scan control starts working. Without Tesseract, the rest of the app works
 normally and the scan control explains exactly what's missing.
+
+### 🤖 AI assistant access (OpenClaw / MCP)
+
+The app ships an **MCP server** (`mcp_server.py`) so a local AI assistant —
+[OpenClaw](https://docs.openclaw.ai/tools/mcp) or any MCP client — can read
+your finances and log entries for you. It talks to the same encrypted
+database the app uses, so nothing is duplicated.
+
+Exposed tools:
+
+| Tool | What it does |
+|---|---|
+| `expense_summary` | Month's spending, income, net, budget usage, top category, fun money |
+| `list_expenses` / `search_expenses` | Expenses by month / free-text search |
+| `list_income`, `list_budgets` | Income entries and category budgets |
+| `list_savings_goals` | Goal balances, targets, term deposits |
+| `list_recurring_bills`, `list_loans` | Bills and loans |
+| `get_milestones` | Earned gamification badges |
+| `get_insights` | Month-over-month trends, unusual expenses, budget burn-down |
+| `add_expense`, `add_income` | **Writes** — validated, audit-logged ("via mcp"), instantly visible in the app |
+
+Connect it to OpenClaw (run once):
+
+```bat
+openclaw mcp add expense-tracker ^
+  --command C:\path\to\Expense-Tracker-Consumer-Edition\.venv\Scripts\python.exe ^
+  --arg C:\path\to\Expense-Tracker-Consumer-Edition\mcp_server.py ^
+  --cwd C:\path\to\Expense-Tracker-Consumer-Edition
+openclaw mcp doctor expense-tracker --probe
+```
+
+(Equivalently: Settings → MCP → *Add server* in the OpenClaw Control UI, or
+a `mcp.servers.expense-tracker` entry in the OpenClaw config with
+`command`/`args`/`cwd` and `transport: "stdio"`.)
+
+Notes:
+
+- The server targets one account: `EXPENSE_TRACKER_MCP_USERNAME`, or the
+  first-created account when unset.
+- Writes bump the shared cache revision, so open browser sessions pick them
+  up on their next refresh; every write lands in the audit log with its
+  MCP origin.
+- Stdio mode (the default, and the OpenClaw setup above) trusts the local
+  machine only. An optional HTTP mode (`python mcp_server.py --http`, port
+  8510) is **bound to 127.0.0.1 with no authentication** — enable it only for
+  a remote OpenClaw Gateway when you trust every local process, and restrict
+  the write tools with OpenClaw's tool policies.
 
 ---
 
@@ -560,8 +674,19 @@ silently interpreted as a 1:1 conversion.
 
 ## Security notes
 
-- Passwords are bcrypt-hashed; SMTP passwords are encrypted (Fernet) with a key
-  in `data/.secret_key` or the `encryption_key` Streamlit secret.
+- **The whole database is encrypted at rest** (SQLCipher 4, AES-256). The key
+  is derived from the master secret in `data/.secret_key` (or
+  `EXPENSE_TRACKER_DB_KEY` / the `encryption_key` Streamlit secret). An
+  existing plaintext database is migrated automatically on first start, with
+  verification and crash-safe rollback. **Back up `data/.secret_key`
+  separately** — without it the database, the backups, the SMTP password, and
+  the GitHub token are all unreadable. (`DATABASE_URL`/PostgreSQL hosts are
+  out of scope: encrypt the volume instead.)
+- Passwords are never stored in plaintext: logins are bcrypt-hashed, the SMTP
+  password and the GitHub backup token are Fernet-encrypted with the same
+  master key.
+- **Backups are ciphertext** — local `data/backups/` files and GitHub uploads
+  contain no readable data, and the key is never included.
 - LAN traffic is plain HTTP by default (suitable for a trusted home network).
   For encrypted traffic, set `EXPENSE_TRACKER_TLS=1` — the launchers generate
   a self-signed certificate and serve the app and the sync API over HTTPS.
@@ -588,6 +713,9 @@ silently interpreted as a 1:1 conversion.
 | `ALLOW_REGISTRATION` | `false` hides the create-account tab | `true` (app) / `false` (Docker) |
 | `DATABASE_URL` | SQLAlchemy URL (e.g. PostgreSQL) | SQLite `data/expense_tracker.db` |
 | `DB_PATH` / `BACKUP_DIR` | SQLite file / backup location overrides (used by tests) | `data/…` |
+| `EXPENSE_TRACKER_DB_KEY` | Master secret override (64 hex chars, a base64 key, or a passphrase — hashed) | `data/.secret_key` |
+| `EXPENSE_TRACKER_NO_ENCRYPT` | `1` disables SQLCipher (escape hatch; encryption is the default) | unset (encrypted) |
+| `EXPENSE_TRACKER_MCP_USERNAME` | Account the MCP server reads/writes | first-created account |
 | `EXPENSE_TRACKER_TLS` | `1` serves the app/API over HTTPS (self-signed cert) and advertises `https://` LAN URLs | unset (plain HTTP) |
 | `STREAMLIT_SERVER_PORT` | Streamlit port | 8501 |
 
@@ -612,11 +740,14 @@ pdf_import.py           # PDF bank-statement extraction
 bank_import.py          # CSV import + review + dedupe
 sync_core.py            # sync protocol: schemas, cursor, atomic apply, snapshot
 api.py                  # FastAPI sync API (port 8502), pairing, rate limits
+crypto.py               # master key: SQLCipher DB key + Fernet field encryption
+mcp_server.py           # MCP server for OpenClaw / AI assistants (stdio or HTTP)
+github_backup.py        # encrypted backups to GitHub + restore CLI
 make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # the 15 UI pages
-tests/                  # 200+ pytest regression/AppTest suites
+tests/                  # 330+ pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -626,14 +757,16 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (224 tests) covers the currency engine, loan amortization edge
+The suite (330+ tests) covers the currency engine, loan amortization edge
 cases, backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
 editing (including the "edits never rewrite history" guarantees), the sync
 protocol and API (pairing, throttling, cursors, conflicts), formula-injection
-safety, cache invalidation, gamification achievements, plus Streamlit AppTest
-smoke tests that run every page. Tests use a throwaway database and never
-touch `data/expense_tracker.db`.
+safety, cache invalidation, gamification achievements, database encryption
+(creation, plaintext→ciphertext migration, wrong keys, encrypted backups),
+GitHub backups (chunking, checksums, retention, error paths — with mocked
+HTTP), the MCP tools, plus Streamlit AppTest smoke tests that run every page.
+Tests use a throwaway database and never touch `data/expense_tracker.db`.
 
 ## Hosting later (VPS / server)
 
@@ -666,3 +799,7 @@ Cloudflare Tunnel) and disable open registration as above.
 - **OCR upgrade (optional)** — benchmark Tesseract against the small
   `latin_PP-OCRv5_mobile_rec` model (supports Serbian and other Latin-script
   languages); PP-Structure for table-heavy PDFs only where parsing fails.
+
+Shipped recently: SQLCipher database encryption with automatic migration,
+encrypted GitHub backups with a restore CLI, and the OpenClaw/MCP assistant
+integration.

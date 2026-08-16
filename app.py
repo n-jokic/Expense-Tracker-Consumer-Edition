@@ -49,6 +49,12 @@ st.session_state.settings = get_settings(user_id)
 # Refresh exchange rates on login when they're older than 3 days
 # (keeps the last known values on any network failure)
 st.session_state.settings, _ = refresh_rates_if_due(user_id, st.session_state.settings)
+# Daily GitHub backup (background thread, best-effort — never blocks the UI).
+try:
+    from github_backup import maybe_auto_backup
+    maybe_auto_backup(user_id, st.session_state.settings)
+except Exception:
+    pass
 
 # ── Onboarding gate (default False: never skip onboarding accidentally) ───────
 if not st.session_state.get("onboarding_complete", False):

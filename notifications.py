@@ -5,10 +5,7 @@ SMTP passwords are stored encrypted (Fernet) and emails are sent from a
 background thread so the UI never blocks on a slow SMTP server.
 """
 
-import os
 import ssl
-import base64
-import hashlib
 import logging
 import smtplib
 import threading
@@ -21,7 +18,7 @@ import streamlit as st
 import pandas as pd
 
 import queries as q
-from db import BASE_DIR, get_settings as _db_get_settings, \
+from db import get_settings as _db_get_settings, \
     save_settings as _db_save_settings
 from utils import NEAR_LIMIT_THRESHOLD, fmt, effective_category_budgets
 
@@ -29,47 +26,10 @@ log = logging.getLogger("notifications")
 
 
 # ── SMTP password encryption (Fernet) ─────────────────────────────────────────
+# Delegates to crypto.py so the SMTP password, the GitHub backup token, and
+# the whole SQLite database are all protected by the same master secret.
 
-def _fernet_key() -> bytes:
-    try:
-        secret = st.secrets.get("encryption_key")
-    except Exception:
-        secret = None
-    if secret:
-        digest = hashlib.sha256(str(secret).encode("utf-8")).digest()
-        return base64.urlsafe_b64encode(digest)
-
-    key_path = os.path.join(BASE_DIR, ".secret_key")
-    if os.path.exists(key_path):
-        with open(key_path, "rb") as f:
-            return f.read()
-    from cryptography.fernet import Fernet
-    key = Fernet.generate_key()
-    os.makedirs(BASE_DIR, exist_ok=True)
-    with open(key_path, "wb") as f:
-        f.write(key)
-    return key
-
-
-def _encrypt(plain: str) -> str:
-    if not plain:
-        return ""
-    from cryptography.fernet import Fernet
-    return Fernet(_fernet_key()).encrypt(plain.encode("utf-8")).decode("utf-8")
-
-
-def _decrypt(enc: str) -> str:
-    if not enc:
-        return ""
-    from cryptography.fernet import Fernet
-    try:
-        return Fernet(_fernet_key()).decrypt(enc.encode("utf-8")).decode("utf-8")
-    except Exception as e:
-        # e.g. the key file was replaced (st.secrets vs file): the stored
-        # SMTP password can no longer be decrypted — log loudly for the
-        # operator instead of failing silently at every send.
-        log.warning("cannot decrypt stored SMTP password (key mismatch?): %s", e)
-        return ""
+from crypto import encrypt_str as _encrypt, decrypt_str as _decrypt
 
 
 # ── Core email sender ─────────────────────────────────────────────────────────

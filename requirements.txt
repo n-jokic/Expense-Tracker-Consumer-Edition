@@ -14,3 +14,6 @@ pytesseract>=0.3
 pdfplumber>=0.11
 fastapi>=0.110
 uvicorn>=0.29
+sqlcipher3-wheels>=0.5.7
+mcp>=1.9
+requests>=2.31
