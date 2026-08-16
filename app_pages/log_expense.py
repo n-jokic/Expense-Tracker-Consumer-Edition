@@ -44,9 +44,14 @@ with st.expander("📷 Scan a receipt (OCR)"):
     if image_bytes is not None:
         result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
         if not result["ok"]:
-            st.warning("📷 OCR isn't available on this machine yet. "
-                       "Install Tesseract (Windows: `winget install UB-Mannheim.TesseractOCR`) "
-                       "and restart the app — see the README for details.")
+            if result.get("reason") == "ocr_not_installed":
+                st.warning("📷 Tesseract isn't installed on the server PC yet. "
+                           "Install it once with "
+                           "`winget install UB-Mannheim.TesseractOCR` — the app "
+                           "detects it automatically (no PATH setup or restart needed).")
+            else:
+                st.warning("📷 OCR couldn't read that image — try a sharper, "
+                           "straighter photo, or enter the expense manually below.")
         else:
             st.success("Text recognised — check the details, then save (or fix anything wrong).")
             with st.expander("Raw OCR text", expanded=False):

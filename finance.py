@@ -62,12 +62,17 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
 
     # Attribute payments to the accrual month they fall in: a payment made
     # on any day between two due dates counts towards the earlier due date's
-    # month (users rarely pay on the exact payment_day).
+    # month (users rarely pay on the exact payment_day). The month index is
+    # measured from the FIRST due date — not the loan start — so payments
+    # land in the right bucket even when the first due rolls into the month
+    # after the start (e.g. start Jan 31 with payment day 1 → first due Feb 1).
     by_due = {}
+    first_due = _first_due(start_date, payment_day)
     for p_date, amt in payments:
         if p_date is None:
             continue
-        k = (p_date.year - start_date.year) * 12 + (p_date.month - start_date.month)
+        k = ((p_date.year - first_due.year) * 12
+             + (p_date.month - first_due.month))
         due = _next_due(start_date, payment_day, max(k, 0))
         by_due[due] = by_due.get(due, 0.0) + float(amt or 0.0)
 

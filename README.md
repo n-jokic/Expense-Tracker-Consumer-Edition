@@ -45,6 +45,20 @@ dependencies, and starts the server on `0.0.0.0:8501` over plain **HTTP**.
 
 Open **http://localhost:8501** on the PC.
 
+### 🖥️ Desktop launcher (optional — no terminal needed)
+
+Build a double-clickable `ExpenseTracker.exe` once:
+
+```bat
+build_exe.bat
+```
+
+Copy `ExpenseTracker.exe` wherever you like (even the Desktop) and
+double-click it — it starts the server (plus the phone-sync API) and opens
+your browser automatically. The first time it runs from a new location it
+asks for the project folder once and remembers it. Rebuild after updates
+with `build_exe.bat` again.
+
 > Want HTTPS instead? Set `EXPENSE_TRACKER_TLS=1` before running the
 > launcher — it generates a self-signed certificate in `data/certs/` (once)
 > and serves the app and the sync API over HTTPS. Your browser/phone will
@@ -385,8 +399,11 @@ ready.
 winget install UB-Mannheim.TesseractOCR
 ```
 
-The Docker image installs it automatically. Without Tesseract, the rest of the
-app works normally and the scan control shows a friendly hint instead.
+The Docker image installs it automatically. The app **auto-detects**
+Tesseract wherever winget installed it (PATH, `Program Files`, or the
+registry) — no PATH setup and no server restart needed; install once and the
+scan control starts working. Without Tesseract, the rest of the app works
+normally and the scan control explains exactly what's missing.
 
 ---
 

@@ -170,36 +170,41 @@ else:
             st.write(fmt(float(row["amount_eur"]), DC, rates))
 
         with rc3:
-            dd = row.get("due_day")
-            if dd is not None and not pd.isna(dd) and int(dd) > 0:
-                dd = int(dd)
-                due_date = date(today.year, today.month, min(dd, month_len))
-                days_left = (due_date - today).days
-                if days_left < 0:
-                    st.caption("⚠️ overdue")
-                elif days_left == 0:
-                    st.caption("⏰ due today")
-                else:
-                    st.caption(f"due {calendar.month_name[today.month]} {dd} · in {days_left}d")
-            elif done:
-                st.caption("")
+            # NB: the due/overdue state is only meaningful while the bill is
+            # NOT logged this month — a logged bill must never show a stuck
+            # "overdue" warning (regression).
+            if done:
+                st.caption("paid this month")
             else:
-                st.caption("no due day")
+                dd = row.get("due_day")
+                if dd is not None and not pd.isna(dd) and int(dd) > 0:
+                    dd = int(dd)
+                    due_date = date(today.year, today.month, min(dd, month_len))
+                    days_left = (due_date - today).days
+                    if days_left < 0:
+                        st.caption("⚠️ overdue")
+                    elif days_left == 0:
+                        st.caption("⏰ due today")
+                    else:
+                        st.caption(f"due {calendar.month_name[today.month]} {dd} · in {days_left}d")
+                else:
+                    st.caption("no due day")
 
         with rc4:
+            rid = str(row["id"])
             if done:
                 st.success("Logged ✓")
             else:
-                with st.popover("Log now", key=f"lr_{idx}"):
+                with st.popover("Log now", key=f"lr_{rid}"):
                     cur2  = str(row["currency"])
                     sym2  = get_currency_symbol(cur2)
                     st.markdown(f"**{row['description']}** — expected {fmt(float(row['amount_eur']), DC, rates)}")
-                    p_date = st.date_input("Date", value=today, key=f"lr_d_{idx}")
+                    p_date = st.date_input("Date", value=today, key=f"lr_d_{rid}")
                     p_amt  = st.number_input(f"Actual amount ({sym2})",
                                              value=float(row["amount"]),
                                              min_value=0.01, max_value=MAX_AMOUNT,
-                                             step=0.50, format="%.2f", key=f"lr_a_{idx}")
-                    if st.button("✅ Log it", key=f"lr_c_{idx}", type="primary", width="stretch"):
+                                             step=0.50, format="%.2f", key=f"lr_a_{rid}")
+                    if st.button("✅ Log it", key=f"lr_c_{rid}", type="primary", width="stretch"):
                         ae = to_eur(p_amt, cur2, rates)
                         add_expense(user_id, {
                             "date": p_date, "category": row["category"],
@@ -209,7 +214,7 @@ else:
                             "currency": cur2,
                             "amount_eur": ae,
                             "recurring": True,
-                            "rec_template_id": str(row["id"]),
+                            "rec_template_id": rid,
                             "notes": str(row.get("notes","")),
                         })
                         q.bump_db_version()
@@ -219,9 +224,9 @@ else:
                             extra = f" ({'+' if diff > 0 else ''}{diff:,.2f} {cur2} vs expected)"
                         st.toast(f"✅ Logged {row['description']}: {p_amt:,.2f} {cur2}{extra}")
                         st.rerun()
-            if st.button(":material/edit: Edit", key=f"ed_{idx}", width="stretch"):
+            if st.button(":material/edit: Edit", key=f"ed_{rid}", width="stretch"):
                 edit_template_dialog(user_id, row)
-            if st.button("Remove", key=f"dr_{idx}", type="secondary", width="stretch"):
+            if st.button("Remove", key=f"dr_{rid}", type="secondary", width="stretch"):
                 update_recurring(user_id, row["id"], {"active": False})
                 q.bump_db_version()
                 st.rerun()

@@ -29,6 +29,13 @@ secrets.toml
 .DS_Store
 Thumbs.db
 
+# ── Desktop launcher build artifacts ────────────────────────────────────────────
+ExpenseTracker.exe
+ExpenseTracker.ini
+dist/
+build/
+*.spec
+
 # ── Exports / backups ───────────────────────────────────────────────────────────
 *.zip
 *.bak

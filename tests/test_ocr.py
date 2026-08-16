@@ -54,17 +54,17 @@ def test_guess_merchant_skips_noise():
 
 def test_analyze_receipt_without_tesseract(monkeypatch):
     def fake_ocr(_):
-        return None
+        return None, "ocr_not_installed"
 
     monkeypatch.setattr(ocr, "ocr_image", fake_ocr)
     res = analyze_receipt(b"not-an-image")
     assert res["ok"] is False
-    assert res["reason"] == "ocr_unavailable"
+    assert res["reason"] == "ocr_not_installed"
 
 
 def test_analyze_receipt_keyword_fallback(monkeypatch):
     def fake_ocr(_):
-        return "LIDL 1234\nBread 120,00\nTOTAL 120,00"
+        return "LIDL 1234\nBread 120,00\nTOTAL 120,00", None
 
     monkeypatch.setattr(ocr, "ocr_image", fake_ocr)
     res = analyze_receipt(b"img", expenses_df=None)

@@ -123,6 +123,16 @@ def test_february_clamp_uses_first_due_anchor():
     assert s["remaining_balance"] == 1100.0
 
 
+def test_payment_in_first_due_month_counts():
+    """Regression: start Jan 31 with payment day 1 -> first due is Feb 1. A
+    payment logged in February must credit the FEBRUARY due, not land one
+    bucket late (which made logged payments invisible to the balance)."""
+    s = loan_schedule(1200, 0, 12, date(2025, 1, 31), 1,
+                      [(date(2025, 2, 15), 100.0)], asof=date(2025, 2, 28))
+    assert s["remaining_balance"] == 1100.0
+    assert s["months_paid"] == 1
+
+
 def test_portfolio_metrics():
     m = portfolio_metrics([
         {"quantity": 2, "last_price_eur": 50.0, "cost_eur": 80.0},

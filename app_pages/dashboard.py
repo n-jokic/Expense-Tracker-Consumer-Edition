@@ -76,7 +76,16 @@ if personal_view:
     if not rec_df.empty:
         started = filter_started_templates(
             rec_df[rec_df["active"] == True], today.year, today.month)
+        # Skip bills already logged this month (same "done" logic as the
+        # Recurring checklist — a paid bill must not appear as upcoming).
+        logged_tids = set()
+        if not dfe.empty and "rec_template_id" in dfe.columns:
+            tm = dfe[(dfe["date"].dt.year == today.year) &
+                     (dfe["date"].dt.month == today.month)]
+            logged_tids = set(tm["rec_template_id"].dropna().astype(str))
         for _, r in started.iterrows():
+            if str(r["id"]) in logged_tids:
+                continue
             dd = r["due_day"]
             if dd is None or pd.isna(dd):
                 continue

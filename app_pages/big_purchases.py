@@ -36,6 +36,21 @@ help_expander("How the matrix works",
               "= reconsider. Lines are drawn at the median of your items.")
 
 hourly_rate = float(settings.get("hourly_rate") or 0.0)
+rate_source = "manual"
+if hourly_rate <= 0:
+    # Auto-derive the hourly rate from the salary settings (salary ÷ 160
+    # working hours per month) so the work-hour math works out of the box.
+    sal = float(settings.get("salary_amount") or 0.0)
+    if sal > 0:
+        sal_cur = settings.get("salary_currency") or "EUR"
+        try:
+            sal_eur = to_eur(sal, sal_cur, rates)
+        except ValueError:
+            sal_eur = 0.0
+        derived = sal_eur / 160.0
+        if derived > 0:
+            hourly_rate = derived
+            rate_source = "salary"
 
 # ── Hourly rate ───────────────────────────────────────────────────────────────
 hr1, hr2 = st.columns([3, 1])
@@ -44,6 +59,9 @@ with hr1:
                                value=hourly_rate, min_value=0.0,
                                max_value=10_000.0, step=0.5, format="%.2f",
                                key="bp_hourly_rate")
+    if rate_source == "salary":
+        st.caption("💼 Auto-calculated from your salary settings "
+                   "(salary ÷ 160 hours/month). Save a value above to override.")
 with hr2:
     st.write("")
     if st.button("💾 Save rate", width="stretch", key="bp_save_rate"):

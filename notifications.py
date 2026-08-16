@@ -263,8 +263,14 @@ def _unlogged_templates(recurring_df: pd.DataFrame, expenses_df: pd.DataFrame,
                              (expenses_df["date"].dt.month == today.month)]
         if "rec_template_id" in m_exp.columns:
             template_ids = set(m_exp["rec_template_id"].dropna().astype(str))
-        desc_amounts = set(zip(m_exp["description"].str.strip().str.lower(),
-                               m_exp["amount_eur"].round(2)))
+        # Legacy fallback: rows logged from a template BEFORE rec_template_id
+        # links existed. Restrict to recurring-flagged rows so a random manual
+        # expense with the same description+amount can't hide the reminder.
+        legacy = m_exp
+        if "recurring" in m_exp.columns:
+            legacy = m_exp[m_exp["recurring"] == True]
+        desc_amounts = set(zip(legacy["description"].str.strip().str.lower(),
+                               legacy["amount_eur"].round(2)))
 
     unlogged = []
     for _, row in active.iterrows():

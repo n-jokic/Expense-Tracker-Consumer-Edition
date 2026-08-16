@@ -8,12 +8,72 @@ ok=False with reason="ocr_unavailable" and the UI shows a setup hint.
 """
 
 import io
+import os
 import re
+import shutil
 
 _AMOUNT_RE = re.compile(r"(?<![\d.,])(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+\.\d{2}|\d+,\d{2})")
 _DATE_RE = re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 _TOTAL_KEYS = ("total", "ukupno", "suma", "svega", "amount due",
                "to pay", "grand total", "плати", "укупно")
+
+
+def _find_tesseract() -> str | None:
+    r"""Locate the Tesseract binary on Windows.
+
+    `winget install UB-Mannheim.TesseractOCR` installs into
+    `C:\Program Files\Tesseract-OCR` and writes a registry key, but does NOT
+    add the folder to PATH — so a plain PATH lookup (pytesseract's default)
+    keeps failing after install. Resolve: PATH first, then the common
+    install locations, then the registry InstallDir.
+    """
+    exe = shutil.which("tesseract")
+    if exe:
+        return exe
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe"),
+    ]
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Tesseract-OCR") as k:
+                    install_dir, _ = winreg.QueryValueEx(k, "InstallDir")
+                    if install_dir:
+                        candidates.append(
+                            os.path.join(str(install_dir), "tesseract.exe"))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def ocr_image(image_bytes: bytes):
+    """Run Tesseract on an image.
+
+    Returns (text, reason): text is the recognised string (or None), and
+    reason explains a failure — "ocr_not_installed" when the Tesseract binary
+    can't be found, "ocr_failed" on any other error, None on success.
+    """
+    try:
+        import pytesseract
+        tesseract = _find_tesseract()
+        if not tesseract:
+            return None, "ocr_not_installed"
+        pytesseract.pytesseract.tesseract_cmd = tesseract
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes))
+        text = pytesseract.image_to_string(img)
+        return (text.strip() if text else None), None
+    except Exception:
+        return None, "ocr_failed"
 
 
 def extract_amounts(text: str) -> list[float]:
@@ -72,18 +132,6 @@ def guess_merchant(text: str) -> str | None:
     return None
 
 
-def ocr_image(image_bytes: bytes) -> str | None:
-    """Run Tesseract on an image; None when it fails or isn't installed."""
-    try:
-        import pytesseract
-        from PIL import Image
-        img = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(img)
-        return text.strip() if text else None
-    except Exception:
-        return None
-
-
 def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     """Full pipeline: OCR → amount/merchant → category suggestion.
 
@@ -91,9 +139,9 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     "confidence", "reason"}. Never raises; the UI turns this into an
     editable prefill that the user accepts/rejects.
     """
-    text = ocr_image(image_bytes)
+    text, ocr_reason = ocr_image(image_bytes)
     if text is None:
-        return {"ok": False, "reason": "ocr_unavailable",
+        return {"ok": False, "reason": ocr_reason or "ocr_unavailable",
                 "text": None, "amount": None, "merchant": None,
                 "category": None, "subcategory": "", "confidence": 0.0}
 
