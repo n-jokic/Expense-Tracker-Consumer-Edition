@@ -4,6 +4,7 @@ Vacation / Travel savings goal.
 """
 
 import calendar
+import math
 from datetime import date
 
 import plotly.express as px
@@ -36,9 +37,10 @@ if (msg := st.session_state.pop("travel_flash", None)):
 # ── Setup ─────────────────────────────────────────────────────────────────────
 with st.expander("Travel budget settings", icon=":material/settings:"):
     with st.form("travel_setup", clear_on_submit=True):
+        _tb = float(settings.get("travel_budget") or 0.0)
         t_amt = st.number_input(f"Yearly travel budget ({get_currency_symbol('EUR')})", min_value=0.0,
                                 step=100.0, format="%.2f",
-                                value=float(settings.get("travel_budget") or 0.0))
+                                value=_tb if math.isfinite(_tb) else 0.0)
         all_pairs = ([f"{c} › (all)" for c in CAT_LIST] +
                      [f"{c} › {s}" for c in CAT_LIST for s in CATEGORIES[c]])
         current = settings.get("travel_categories") or DEFAULT_TRAVEL_CATEGORIES

@@ -20,7 +20,7 @@ API_PORT = 8502
 
 
 def _saved_project() -> str | None:
-    ini = os.path.join(os.path.dirname(sys.executable), "ExpenseTracker.ini")
+    ini = _ini_path()
     try:
         with open(ini, "r", encoding="utf-8", errors="replace") as f:
             path = f.read().strip()
@@ -33,8 +33,9 @@ def _saved_project() -> str | None:
 
 
 def _save_project(path: str) -> None:
-    ini = os.path.join(os.path.dirname(sys.executable), "ExpenseTracker.ini")
+    ini = _ini_path()
     try:
+        os.makedirs(os.path.dirname(ini), exist_ok=True)
         with open(ini, "w", encoding="utf-8") as f:
             f.write(path)
     except OSError:

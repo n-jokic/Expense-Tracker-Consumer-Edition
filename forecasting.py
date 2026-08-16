@@ -13,6 +13,7 @@ Every model degrades gracefully: not enough history -> forecast falls back,
 too few rows -> no anomalies, untrained classifier -> keyword-map fallback.
 """
 
+import math
 import pandas as pd
 import streamlit as st
 
@@ -60,7 +61,10 @@ def _ets_forecast(expenses_df: pd.DataFrame):
         ts = pd.Series(series.values, index=idx.to_timestamp())
         model = ExponentialSmoothing(
             ts, trend="add", initialization_method="estimated").fit()
-        fc = max(float(model.forecast(1).iloc[0]), 0.0)
+        raw_fc = float(model.forecast(1).iloc[0])
+        if not math.isfinite(raw_fc) or raw_fc < 0:
+            return None, None, None  # degenerate fit — no real signal
+        fc = raw_fc
         sd = float(model.resid.std()) if len(model.resid) else 0.0
         return fc, max(fc - 2 * sd, 0.0), fc + 2 * sd
     except Exception:

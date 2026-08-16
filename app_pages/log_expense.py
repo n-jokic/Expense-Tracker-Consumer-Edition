@@ -71,7 +71,8 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                                if result["subcategory"] in CATEGORIES[r_cat] else 0),
                         key="rcpt_sub")
                 with r2:
-                    r_amt  = st.number_input(f"Amount ({SYM})", value=float(result["amount"] or 0.0),
+                    _ocr_amt = float(result["amount"]) if pd.notna(result["amount"]) else 0.0
+                    r_amt  = st.number_input(f"Amount ({SYM})", value=_ocr_amt,
                                              min_value=0.0, max_value=MAX_AMOUNT,
                                              step=0.50, format="%.2f", key="rcpt_amt")
                     r_desc = st.text_input("Description", value=result["merchant"] or "",

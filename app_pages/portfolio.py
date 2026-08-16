@@ -103,15 +103,18 @@ if df_hold.empty:
 rows = []
 for _, h in df_hold.iterrows():
     cur = str(h["currency"] or "EUR")
-    price_eur = float(h["last_price"] or 0.0)
+    last_price = float(h["last_price"]) if pd.notna(h["last_price"]) else 0.0
+    quantity   = float(h["quantity"]) if pd.notna(h["quantity"]) else 0.0
+    cost_eur   = float(h["cost_eur"]) if pd.notna(h["cost_eur"]) else 0.0
+    price_eur = last_price
     if cur != "EUR" and price_eur > 0:
         price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
-    value_eur = float(h["quantity"] or 0.0) * price_eur
+    value_eur = quantity * price_eur
     rows.append({
         "id": str(h["id"]), "symbol": str(h["symbol"]), "name": str(h.get("name") or ""),
-        "quantity": float(h["quantity"] or 0.0), "currency": cur,
-        "last_price": float(h["last_price"] or 0.0), "price_eur": price_eur,
-        "value_eur": value_eur, "cost_eur": float(h["cost_eur"] or 0.0),
+        "quantity": quantity, "currency": cur,
+        "last_price": last_price, "price_eur": price_eur,
+        "value_eur": value_eur, "cost_eur": cost_eur,
         "last_price_date": h.get("last_price_date"),
     })
 view = pd.DataFrame(rows)

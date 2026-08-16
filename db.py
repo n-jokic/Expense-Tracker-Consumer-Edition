@@ -9,6 +9,7 @@ import json
 import secrets
 import string
 import sqlite3
+import logging
 from contextlib import contextmanager
 from datetime import datetime, date, timezone, timedelta
 
@@ -18,6 +19,8 @@ from sqlalchemy import (
     DateTime, Date, ForeignKey, Text, event, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+logger = logging.getLogger(__name__)
 
 # ── Engine & session setup ────────────────────────────────────────────────────
 
@@ -539,7 +542,7 @@ def _migrate_budgets_taxonomy(engine):
         if key not in scopes:
             scopes[key] = {"ids": [], "total": 0.0}
         scopes[key]["ids"].append(r["id"])
-        scopes[key]["total"] += float(r["budgeted_eur"] or 0.0)
+        scopes[key]["total"] += float(r["budgeted_eur"]) if pd.notna(r["budgeted_eur"]) else 0.0
 
     with engine.begin() as conn:
         for (uid, yr, mo, nc, ns), g in scopes.items():
@@ -882,8 +885,8 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
     if df.empty:
         return df
     df = df.copy()
-    for goal in df["goal_name"].dropna().unique():
-        rows = df[df["goal_name"] == goal].sort_values("date", na_position="first")
+    for goal in df["goal_name"].fillna("").unique():
+        rows = df[df["goal_name"].fillna("") == goal].sort_values("date", na_position="first")
         prev_date = None
         prev_rate = 0.0
         bal = 0.0
@@ -891,7 +894,8 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
         last_idx = None
         for idx in rows.index:
             r = df.loc[idx]
-            dep = float(r["deposited_eur"] or 0.0)
+            # NaN deposits (truthy!) must not poison the chain: treat as 0.
+            dep = float(r["deposited_eur"]) if pd.notna(r["deposited_eur"]) else 0.0
             d = r["date"]
             if first:
                 bal = dep
@@ -907,7 +911,7 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
             df.at[idx, "balance_eur"] = max(round(bal, 4), 0.0)
             if not pd.isna(d):
                 prev_date = d
-            prev_rate = float(r["interest_rate"] or 0.0)
+            prev_rate = float(r["interest_rate"]) if pd.notna(r["interest_rate"]) else 0.0
             last_idx = idx
         # Tail accrual: roll the last entry forward to `asof` (today) so the
         # balance reflects the current value, not the last deposit's date.
@@ -1502,8 +1506,15 @@ def save_settings(user_id, settings_dict):
             obj = UserSettings(user_id=user_id)
             s.add(obj)
         for k, v in settings_dict.items():
+            if k in ("id", "user_id"):
+                # Ownership columns are server-managed — never re-own the row.
+                continue
             if hasattr(obj, k):
                 setattr(obj, k, v)
+            else:
+                # A typo'd key must not vanish silently (the caller would
+                # read it back and believe the save succeeded).
+                logger.warning("save_settings: ignoring unknown key %r", k)
         log_audit(s, user_id, "UPDATE", "user_settings", user_id, {"keys": list(settings_dict.keys())})
     return True
 
@@ -1688,6 +1699,8 @@ def set_onboarding_complete(user_id):
         u = s.query(User).filter(User.id == user_id).first()
         if u:
             u.onboarding_complete = True
+            log_audit(s, user_id, "UPDATE", "users", user_id,
+                      {"onboarding_complete": True})
 
 
 def update_user_password(user_id, new_hash):
@@ -1861,6 +1874,8 @@ def create_pairing_device(user_id):
         s.add(dev)
         s.flush()
         dev_id = dev.id
+        log_audit(s, user_id, "CREATE", "devices", dev_id,
+                  {"pairing_code_created": True})
     return dev_id, code
 
 
@@ -1877,6 +1892,10 @@ def complete_pairing(code, device_name="Phone", token=None):
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     with get_session() as s:
+        dev_before = s.query(Device).filter(Device.pairing_code == code).first()
+        if dev_before is None:
+            return None
+        old_name = dev_before.name
         updates = {
             "pairing_code": None,
             "token_hash": token_hash,
@@ -1893,12 +1912,18 @@ def complete_pairing(code, device_name="Phone", token=None):
         if dev is None:
             return None
         # Codes expire after 10 minutes — verify AFTER the atomic claim and
-        # undo when the claimed code was already stale.
+        # undo when the claimed code was already stale (restoring the name
+        # the caller may have overwritten).
         if (now_naive - _naive_utc(dev.created_at)) > timedelta(minutes=10):
             dev.token_hash = None
             dev.token_expires_at = None
             dev.pairing_code = code
+            dev.name = old_name
+            log_audit(s, dev.user_id, "UPDATE", "devices", dev.id,
+                      {"pairing_expired": True})
             return None
+        log_audit(s, dev.user_id, "UPDATE", "devices", dev.id,
+                  {"paired": True, "name": dev.name})
         return token
 
 

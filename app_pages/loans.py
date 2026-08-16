@@ -116,15 +116,18 @@ def edit_loan_dialog(uid: int, row):
                                       key="loan_edit_principal")
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",
-                                 value=float(row["annual_rate"]), key="loan_edit_rate")
+                                 value=float(row["annual_rate"]) if pd.notna(row["annual_rate"]) else 0.0,
+                                 key="loan_edit_rate")
     with c2:
         e_start = st.date_input("Start date",
                                 value=row["start_date"].date() if pd.notna(row["start_date"]) else today,
                                 key="loan_edit_start")
         e_term = st.number_input("Duration (months)", min_value=1, max_value=600,
-                                 value=int(row["term_months"]), step=1, key="loan_edit_term")
+                                 value=int(row["term_months"]) if pd.notna(row["term_months"]) else 12,
+                                 step=1, key="loan_edit_term")
         e_day = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
-                                value=int(row["payment_day"]), step=1, key="loan_edit_day")
+                                value=int(row["payment_day"]) if pd.notna(row["payment_day"]) else 1,
+                                step=1, key="loan_edit_day")
         e_status = st.selectbox("Status", ["active", "paid_off"],
                                 index=0 if str(row["status"]) == "active" else 1,
                                 key="loan_edit_status")

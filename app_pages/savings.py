@@ -66,8 +66,9 @@ def goal_attrs(rows):
     lat = rows.iloc[-1]
     tr = rows[rows["target_eur"] > 0]
     tgt = float(tr["target_eur"].iloc[-1]) if not tr.empty else 0.0
+    rate = float(lat["interest_rate"]) if pd.notna(lat["interest_rate"]) else 0.0
     return (tgt,
-            float(lat["interest_rate"] or 0.0),
+            rate,
             str(lat["currency"] or "EUR"))
 
 
@@ -328,18 +329,21 @@ def edit_savings_dialog(uid: int, row):
         e_dep = st.number_input(f"Amount deposited ({get_currency_symbol(e_cur)}) — negative = withdrawal",
                                 min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
-                                value=float(row["deposited"]), key="sav_edit_dep")
+                                value=float(row["deposited"]) if pd.notna(row["deposited"]) else 0.0,
+                                key="sav_edit_dep")
         # Target is entered in the DISPLAY currency: prefill the stored EUR
         # value converted to display, and convert back to EUR on save.
+        _tgt_eur = float(row["target_eur"]) if pd.notna(row["target_eur"]) else 0.0
         e_tgt = st.number_input(f"Target ({SYM})", min_value=0.0,
                                 max_value=to_display(MAX_SAVINGS_TARGET, DC, rates),
                                 step=100.0, format="%.2f",
-                                value=min(to_display(float(row["target_eur"]), DC, rates),
+                                value=min(to_display(_tgt_eur, DC, rates),
                                           to_display(MAX_SAVINGS_TARGET, DC, rates)),
                                 key="sav_edit_tgt")
     e_ir = st.number_input("Annual interest rate (%)", min_value=0.0,
                            max_value=100.0, step=0.01, format="%.2f",
-                           value=float(row["interest_rate"]), key="sav_edit_ir")
+                           value=float(row["interest_rate"]) if pd.notna(row["interest_rate"]) else 0.0,
+                           key="sav_edit_ir")
     e_notes = st.text_input("Notes", value=str(row["notes"]) if pd.notna(row["notes"]) else "",
                             key="sav_edit_notes")
 

@@ -60,9 +60,16 @@ rates    = get_rates(settings)
 st.session_state.rates = rates
 
 # ── Milestone unlocks & rewards (persisted once; fun-money bonuses) ───────────
+# Compute the earned set ONCE per rerun and reuse it for both the award flow
+# and the sidebar renderer (previously recomputed, doubling the ML work).
+_expenses_snap = q.expenses(user_id)
+_income_snap   = q.income(user_id)
+_savings_snap  = q.savings(user_id)
+_budgets_snap  = q.budgets(user_id)
+_loans_snap    = q.loans(user_id)
 earned_ms = get_earned_milestones(
-    q.expenses(user_id), q.income(user_id), q.savings(user_id), q.budgets(user_id),
-    settings=settings, loans_df=q.loans(user_id),
+    _expenses_snap, _income_snap, _savings_snap, _budgets_snap,
+    settings=settings, loans_df=_loans_snap,
 )
 new_ms, ms_bonus = award_new_milestones(user_id, earned_ms, settings)
 if new_ms:
@@ -102,9 +109,9 @@ with st.sidebar:
 
     # Gamification
     render_gamification_sidebar(
-        q.expenses(user_id), q.income(user_id),
-        q.savings(user_id), q.budgets(user_id),
-        settings=settings, loans_df=q.loans(user_id),
+        _expenses_snap, _income_snap,
+        _savings_snap, _budgets_snap,
+        settings=settings, loans_df=_loans_snap,
     )
 
     # Phone access panel (experimental)
@@ -113,13 +120,17 @@ with st.sidebar:
     urls, hostname = get_lan_urls(port)
     if urls:
         st.code(urls[0], language=None)
-        qr_bytes = qr_png(urls[0])
-        st.image(qr_bytes, width=220)
-        st.download_button(
-            "Download QR code", data=qr_bytes,
-            file_name="expense_tracker_qr.png", mime="image/png",
-            key="dl_qr", icon=":material/download:", width="stretch",
-        )
+        try:
+            qr_bytes = qr_png(urls[0])
+            st.image(qr_bytes, width=220)
+            st.download_button(
+                "Download QR code", data=qr_bytes,
+                file_name="expense_tracker_qr.png", mime="image/png",
+                key="dl_qr", icon=":material/download:", width="stretch",
+            )
+        except Exception:
+            # A QR failure must never take the whole shell down.
+            st.caption("QR code unavailable — open the address above manually.")
         st.caption("Scan with your phone camera — same Wi-Fi network.")
         if hostname:
             scheme = "https" if TLS_ENABLED else "http"

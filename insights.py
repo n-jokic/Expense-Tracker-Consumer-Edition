@@ -5,6 +5,7 @@ Receives DataFrames; returns human-readable insight strings rendered in Streamli
 
 from datetime import date
 import calendar
+import math
 
 import pandas as pd
 import streamlit as st
@@ -218,7 +219,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                              f"congratulations!"))
 
     # ── Insight 5: Budget burn rate ───────────────────────────────────────────
-    total_budget = float(settings.get("monthly_budget", 0.0))
+    _bud_raw = float(settings.get("monthly_budget", 0.0))
+    total_budget = _bud_raw if math.isfinite(_bud_raw) else 0.0
     if total_budget > 0 and not expenses_df.empty:
         from datetime import date as _date
         period_start = _date(today.year, today.month, 1)
@@ -340,8 +342,10 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         active = loans_df[loans_df["status"] == "active"]
         if not active.empty:
             monthly_total = sum(
-                annuity_payment(float(r["principal_eur"] or 0), float(r["annual_rate"] or 0),
-                                int(r["term_months"] or 12))
+                annuity_payment(
+                    float(r["principal_eur"]) if pd.notna(r["principal_eur"]) else 0.0,
+                    float(r["annual_rate"]) if pd.notna(r["annual_rate"]) else 0.0,
+                    int(r["term_months"]) if pd.notna(r["term_months"]) else 12)
                 for _, r in active.iterrows())
             cards.append(("info",
                 f"You have **{len(active)} active loan(s)** — "

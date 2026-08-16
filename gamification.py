@@ -118,9 +118,14 @@ def detect_raise(income_df: pd.DataFrame) -> bool:
     sal = income_df[income_df["income_type"].fillna("Other") == "Salary"].sort_values("date")
     if len(sal) < 2:
         return False
-    prev_max = float(sal.iloc[0]["actual_eur"] or 0.0)
+
+    def _amt(r) -> float:
+        v = r["actual_eur"]
+        return float(v) if pd.notna(v) else 0.0
+
+    prev_max = _amt(sal.iloc[0])
     for _, r in sal.iloc[1:].iterrows():
-        a = float(r["actual_eur"] or 0.0)
+        a = _amt(r)
         if a > prev_max:
             return True
         prev_max = max(prev_max, a)
@@ -444,6 +449,12 @@ def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
         # never overwrite one still being displayed THIS month (the old
         # single (amount, month) pair silently lost it mid-month).
         bonuses = dict(settings.get("fun_bonuses") or {})
+        # Seed the map from a legacy single-pair bonus (pre-upgrade users):
+        # its month is still displayed until it passes.
+        legacy_month = settings.get("fun_bonus_month")
+        legacy_amt = float(settings.get("fun_bonus_amount") or 0.0)
+        if legacy_month and legacy_amt > 0 and legacy_month not in bonuses:
+            bonuses[legacy_month] = round(legacy_amt, 4)
         bonuses[nxt_key] = round(bonuses.get(nxt_key, 0.0) + bonus, 4)
         q.save_settings(user_id, {
             "fun_bonuses": bonuses,

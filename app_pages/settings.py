@@ -5,6 +5,7 @@ Settings page: currency & rates, budgets, notifications, account, data export/ba
 import calendar
 import io
 import json
+import math
 import os
 import zipfile
 from datetime import date
@@ -133,7 +134,8 @@ with tab_cur:
 # ── Budget tab ────────────────────────────────────────────────────────────────
 with tab_bud:
     st.subheader(":material/savings: Overall monthly budget")
-    cur_eur = float(settings.get("monthly_budget", 0.0))
+    _cur_eur_raw = float(settings.get("monthly_budget", 0.0))
+    cur_eur = _cur_eur_raw if math.isfinite(_cur_eur_raw) else 0.0
     with st.form("overall_bud_form"):
         # The cap and the current value live in the DISPLAY currency, so the
         # cap must be converted too — a fixed 10M cap in EUR would otherwise
@@ -211,9 +213,11 @@ with tab_bud:
     st.caption("A monthly allowance for guilt-free spending (Entertainment, "
                "eating out, hobbies…). Tracked on the Dashboard and Insights.")
     with st.form("fun_form"):
+        _fun_raw = float(settings.get("fun_money") or 0.0)
         f_amt = st.number_input(f"Monthly fun money ({get_currency_symbol(DC)})", min_value=0.0,
                                 step=10.0, format="%.2f",
-                                value=to_display(float(settings.get("fun_money") or 0.0), DC, rates))
+                                value=to_display(_fun_raw if math.isfinite(_fun_raw) else 0.0,
+                                                 DC, rates))
         f_cats = st.multiselect("Categories in the fun pool", CAT_LIST,
                                 default=[c for c in (settings.get("fun_categories")
                                                      or DEFAULT_FUN_CATEGORIES)
@@ -222,14 +226,26 @@ with tab_bud:
             q.save_settings(user_id, {"fun_money": float(to_eur(f_amt, DC, rates)), "fun_categories": f_cats})
             st.success("✅ Fun money saved!")
             st.rerun()
-    bonus = float(settings.get("fun_bonus_amount") or 0.0)
-    bonus_month = settings.get("fun_bonus_month")
-    if bonus > 0:
-        this_month = f"{date.today().year:04d}-{date.today().month:02d}"
-        if bonus_month == this_month:
-            st.success(f"🎁 Milestone bonus active this month: +{fmt(bonus, DC, rates)} fun money!")
-        else:
-            st.caption(f"🎁 Milestone bonus queued for {bonus_month}: +{fmt(bonus, DC, rates)} fun money.")
+    this_month = f"{date.today().year:04d}-{date.today().month:02d}"
+    bonuses_map = settings.get("fun_bonuses") or {}
+    # Read the per-month map (an active bonus and a queued one coexist).
+    if bonuses_map:
+        if this_month in bonuses_map:
+            st.success(f"🎁 Milestone bonus active this month: "
+                       f"+{fmt(float(bonuses_map[this_month]), DC, rates)} fun money!")
+        queued = sorted(k for k in bonuses_map if k != this_month)
+        if queued:
+            st.caption("🎁 Bonus queued for "
+                       + ", ".join(queued)
+                       + f": +{fmt(sum(float(bonuses_map[k]) for k in queued), DC, rates)} fun money.")
+    else:
+        bonus = float(settings.get("fun_bonus_amount") or 0.0)
+        bonus_month = settings.get("fun_bonus_month")
+        if bonus > 0:
+            if bonus_month == this_month:
+                st.success(f"🎁 Milestone bonus active this month: +{fmt(bonus, DC, rates)} fun money!")
+            else:
+                st.caption(f"🎁 Milestone bonus queued for {bonus_month}: +{fmt(bonus, DC, rates)} fun money.")
 
 # ── Notifications tab ─────────────────────────────────────────────────────────
 with tab_notif:
@@ -320,6 +336,8 @@ with tab_data:
           for k, v in _s.items()}])
     hh = get_household_by_member(user_id)
     if hh:
+        # The invite code is a shared membership secret — never in exports.
+        hh = {k: v for k, v in hh.items() if k != "invite_code"}
         exports["household"] = pd.DataFrame([hh])
     devs = get_devices(user_id)
     if devs:

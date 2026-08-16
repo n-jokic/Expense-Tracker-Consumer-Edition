@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 
 from db import (
     get_session, Expense, Income, Savings, SavingsAccount,
-    add_sync_conflict,
+    add_sync_conflict, log_audit,
 )
 from utils import CATEGORIES, ALL_SUBCATS, remap_category_subcategory
 
@@ -234,6 +234,8 @@ def create_record(user_id, table, record_id, fields):
                 if hasattr(obj, k):
                     setattr(obj, k, v)
             s.add(obj)
+            log_audit(s, user_id, "CREATE", table, final_id,
+                      {**fields, "via": "sync"})
     except IntegrityError:
         # e.g. a NOT NULL column the schema check missed — report this change
         # as failed instead of crashing the whole sync call.
@@ -264,6 +266,8 @@ def _apply_update(user_id, table, record_id, clean, since):
             if k in PROTECTED or not hasattr(obj, k):
                 continue
             setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", table, record_id,
+                  {**clean, "via": "sync"})
         return {"updated": True}
 
 

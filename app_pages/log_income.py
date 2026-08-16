@@ -4,6 +4,7 @@ Logging a salary above the stored fixed salary offers to record the raise.
 """
 
 import calendar
+import math
 from datetime import date
 
 import pandas as pd
@@ -33,8 +34,9 @@ with st.expander("My fixed salary", icon=":material/work:"):
     with st.form("salary_setup"):
         s1, s2, s3, s4 = st.columns([2, 1.5, 1, 1])
         with s1:
+            _sal_raw = float(settings.get("salary_amount") or 0.0)
             s_amt = st.number_input("Monthly salary amount",
-                                    value=float(settings.get("salary_amount") or 0.0),
+                                    value=_sal_raw if math.isfinite(_sal_raw) else 0.0,
                                     min_value=0.0, max_value=MAX_AMOUNT,
                                     step=10.0, format="%.2f")
         with s2:

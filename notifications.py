@@ -304,7 +304,7 @@ def _unlogged_templates(recurring_df: pd.DataFrame, expenses_df: pd.DataFrame,
     for _, row in active.iterrows():
         tid = str(row.get("id"))
         key = (str(row["description"]).strip().lower(),
-               round(float(row["amount_eur"] or 0.0), 2))
+               round(float(row["amount_eur"]) if pd.notna(row["amount_eur"]) else 0.0, 2))
         if tid in template_ids or key in desc_amounts:
             continue
         unlogged.append(row)
@@ -472,14 +472,15 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
         key = str(row["id"])
         if key in sent:
             continue
-        payment_day = int(row.get("payment_day") or 1)
+        payment_day = int(row.get("payment_day")) if pd.notna(row.get("payment_day")) else 1
         if today.day != due_reminder_day(payment_day, days_before, month_length):
             continue
         sent.add(key)
         st.session_state[sent_key] = sent
-        monthly = annuity_payment(float(row["principal_eur"] or 0),
-                                  float(row["annual_rate"] or 0),
-                                  int(row["term_months"] or 12))
+        monthly = annuity_payment(
+            float(row["principal_eur"]) if pd.notna(row["principal_eur"]) else 0.0,
+            float(row["annual_rate"]) if pd.notna(row["annual_rate"]) else 0.0,
+            int(row["term_months"]) if pd.notna(row["term_months"]) else 12)
         html = build_bill_reminder_email(
             st.session_state.get("display_name", ""),
             f"{row['name']} (loan)", f"€{monthly:,.2f}",

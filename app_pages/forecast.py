@@ -100,7 +100,12 @@ if method == "ML model":
 elif method == "7-day average":
     recent = period_exp[period_exp["date"] >= pd.Timestamp(today) - pd.Timedelta(days=6)]
     n_days = min(max(days_elapsed, 1), 7)
-    daily_avg = float(recent["amount_eur"].sum()) / n_days if not recent.empty else 0.0
+    if recent.empty:
+        # An empty recent window must fall back to the period average —
+        # a 0 daily average would project a 0 total.
+        daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0
+    else:
+        daily_avg = float(recent["amount_eur"].sum()) / n_days
     projected = daily_avg * days_in_period
 else:
     daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0
@@ -121,14 +126,15 @@ on_track   = total_budget == 0 or projected <= total_budget
 
 alt_ccy = "EUR" if DC != "EUR" else "RSD"
 with st.container(horizontal=True):
+    # The alt-currency value is a conversion, not a change — no delta arrows.
     st.metric("Spent so far", fmt(total_spent, DC, rates),
-              delta=fmt(total_spent, alt_ccy, rates), border=True)
+              delta=fmt(total_spent, alt_ccy, rates), delta_color="off", border=True)
     st.metric("Daily average", fmt(daily_avg, DC, rates),
-              delta=fmt(daily_avg, alt_ccy, rates), border=True)
+              delta=fmt(daily_avg, alt_ccy, rates), delta_color="off", border=True)
     st.metric("Projected total", fmt(projected, DC, rates),
-              delta=fmt(projected, alt_ccy, rates), border=True)
+              delta=fmt(projected, alt_ccy, rates), delta_color="off", border=True)
     st.metric("Monthly budget", fmt(total_budget, DC, rates),
-              delta=fmt(total_budget, alt_ccy, rates), border=True)
+              delta=fmt(total_budget, alt_ccy, rates), delta_color="off", border=True)
 
 if total_budget == 0:
     st.warning("No budget set. Go to Settings → Budget to set one.",
