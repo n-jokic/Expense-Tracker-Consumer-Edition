@@ -14,7 +14,7 @@ from db import add_loan, update_loan, delete_loan, add_expense
 from finance import annuity_payment, loan_schedule
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
-    fmt, pbar, to_eur, get_currency_symbol,
+    fmt, to_eur, get_currency_symbol,
     help_expander,
 )
 
@@ -23,7 +23,7 @@ DC      = st.session_state.dc
 rates   = st.session_state.rates
 today   = date.today()
 
-st.title("🏦 Loans")
+st.title(":material/account_balance: Loans")
 st.caption("Track loans with real amortization — payments are logged as expenses, "
            "so missed or partial payments automatically extend the payoff date.")
 help_expander("How loans work",
@@ -32,9 +32,15 @@ help_expander("How loans work",
               "month by month against your actual logged payments. Email reminders go "
               "out a few days before the payment day (Settings → Notifications).")
 
+if (flash := st.session_state.pop("loan_flash", None)):
+    if flash[0] == "success":
+        st.success(flash[1], icon=":material/check_circle:")
+    else:
+        st.toast(flash[1], icon=":material/check_circle:")
+
 # ── Add loan ──────────────────────────────────────────────────────────────────
-with st.form("loan_form", clear_on_submit=False):
-    st.markdown("**➕ New loan**")
+with st.form("loan_form", clear_on_submit=True):
+    st.markdown("**:material/add: New loan**")
     c1, c2 = st.columns(2)
     with c1:
         l_name    = st.text_input("Loan name", placeholder="e.g. Car loan")
@@ -51,7 +57,7 @@ with st.form("loan_form", clear_on_submit=False):
         l_day     = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
                                     value=1, step=1)
         l_notes   = st.text_input("Notes (optional)")
-    if st.form_submit_button("💾 Save loan", type="primary"):
+    if st.form_submit_button("Save loan", type="primary", width="stretch", icon=":material/save:"):
         if l_name.strip():
             pe = to_eur(l_principal, l_cur, rates)
             add_loan(user_id, {
@@ -61,8 +67,11 @@ with st.form("loan_form", clear_on_submit=False):
                 "payment_day": int(l_day), "status": "active", "notes": l_notes,
             })
             q.bump_db_version()
-            st.success(f"✅ Loan **{l_name}** saved "
-                       f"(monthly payment ~{fmt(annuity_payment(pe, l_rate, int(l_term)), DC, rates)})")
+            st.session_state["loan_flash"] = (
+                "success",
+                f"Loan **{l_name}** saved "
+                f"(monthly payment ~{fmt(annuity_payment(pe, l_rate, int(l_term)), DC, rates)})",
+            )
             st.rerun()
         else:
             st.error("Please give the loan a name.")
@@ -83,7 +92,7 @@ def delete_loan_dialog(uid, loan_id, name, remaining):
                      type="primary", width="stretch"):
             delete_loan(uid, loan_id)
             q.bump_db_version()
-            st.toast("Loan deleted (payments remain as expenses).", icon="🗑️")
+            st.session_state["loan_flash"] = ("toast", "Loan deleted (payments remain as expenses).")
             st.rerun()
 
 
@@ -139,16 +148,15 @@ def edit_loan_dialog(uid: int, row):
                     "status": e_status, "notes": e_notes,
                 })
                 q.bump_db_version()
-                st.toast(f"Loan **{e_name.strip()}** updated.", icon="✏️")
+                st.session_state["loan_flash"] = ("toast", f"Loan **{e_name.strip()}** updated.")
                 st.rerun()
 
 
 # ── Loan list ─────────────────────────────────────────────────────────────────
 df_loans = q.loans(user_id)
 if df_loans.empty:
-    st.info("No loans yet — add one above 👆")
+    st.info("No loans yet — add one above")
 else:
-    st.divider()
     total_debt = 0.0
     debt_free_dates = []
     for _, row in df_loans.iterrows():
@@ -179,7 +187,7 @@ else:
                 st.markdown(f"{status_icon} **{row['name']}** — "
                             f"{float(row['annual_rate']):.2f}% · "
                             f"{int(row['term_months'])} mo")
-                st.markdown(pbar(repaid_pct, "#0F3460"), unsafe_allow_html=True)
+                st.progress(repaid_pct / 100, text=f"{repaid_pct:.0f}% repaid")
                 payoff_str = (sched["payoff_date"].strftime("%b %Y")
                               if sched["payoff_date"] else "—")
                 overdue = False
@@ -213,7 +221,7 @@ else:
                                                  value=monthly_in_cur,
                                                  min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                                  step=10.0, format="%.2f", key=f"loan_pa_{loan_id}")
-                        if st.button("✅ Log", key=f"loan_pc_{loan_id}", type="primary", width="stretch"):
+                        if st.button("Log", icon=":material/check:", key=f"loan_pc_{loan_id}", type="primary", width="stretch"):
                             # the user-typed amount is already in the loan's currency
                             amount_in_cur = float(p_amt)
                             ae = to_eur(amount_in_cur, lcur, rates)
@@ -230,14 +238,14 @@ else:
                                 "notes": "Loan payment",
                             })
                             q.bump_db_version()
-                            st.toast(f"✅ Payment logged for {row['name']}", icon="🏦")
+                            st.session_state["loan_flash"] = ("toast", f"Payment logged for {row['name']}")
                             st.rerun()
                 else:
                     st.success("Paid off ✓")
 
             c1, c2 = st.columns(2)
             with c1:
-                with st.expander(f"🧾 Payments ({len(payments)})"):
+                with st.expander(f"Payments ({len(payments)})", icon=":material/receipt:"):
                     if payments:
                         # NB: pay_date/pay_amt, not p_date/p_amt — those are
                         # the "Log payment" popover widgets in this same scope.
@@ -246,33 +254,25 @@ else:
                     else:
                         st.caption("No payments logged yet.")
             with c2:
-                bc1, bc2, bc3 = st.columns(3)
-                with bc1:
+                with st.container(horizontal=True):
                     new_status = "paid_off" if row["status"] == "active" else "active"
-                    lbl = "✅ Mark paid off" if row["status"] == "active" else "↩️ Reopen"
-                    if st.button(lbl, key=f"loan_st_{loan_id}", width="stretch"):
+                    st_lbl, st_icon = ("Mark paid off", ":material/check_circle:") \
+                        if row["status"] == "active" else ("Reopen", ":material/undo:")
+                    if st.button(st_lbl, icon=st_icon, key=f"loan_st_{loan_id}"):
                         update_loan(user_id, loan_id, {"status": new_status})
                         q.bump_db_version()
                         st.rerun()
-                with bc2:
-                    if st.button(":material/delete: Delete", key=f"loan_del_{loan_id}", width="stretch"):
+                    if st.button("Delete", icon=":material/delete:", key=f"loan_del_{loan_id}"):
                         delete_loan_dialog(user_id, loan_id, str(row["name"]),
                                            fmt(sched["remaining_balance"], DC, rates))
-                with bc3:
-                    if st.button(":material/edit: Edit", key=f"loan_edit_{loan_id}", width="stretch"):
+                    if st.button("Edit", icon=":material/edit:", key=f"loan_edit_{loan_id}"):
                         edit_loan_dialog(user_id, row)
 
-    st.divider()
     if total_debt > 0:
-        dk1, dk2 = st.columns(2)
-        with dk1:
-            st.markdown(f'<div class="kpi"><div class="kpi-lbl">Total debt</div>'
-                        f'<div class="kpi-val neg">{fmt(total_debt, DC, rates)}</div></div>',
-                        unsafe_allow_html=True)
-        with dk2:
-            free_date = max(debt_free_dates).strftime("%b %Y") if debt_free_dates else "—"
-            st.markdown(f'<div class="kpi"><div class="kpi-lbl">Debt-free by</div>'
-                        f'<div class="kpi-val pos">{free_date}</div></div>',
-                        unsafe_allow_html=True)
+        free_date = max(debt_free_dates).strftime("%b %Y") if debt_free_dates else "—"
+        with st.container(border=True):
+            with st.container(horizontal=True):
+                st.metric("Total debt", fmt(total_debt, DC, rates))
+                st.metric("Debt-free by", free_date)
     else:
         st.success("🎉 You're debt-free!")

@@ -9,7 +9,8 @@ import calendar
 import pandas as pd
 import streamlit as st
 
-from utils import fmt, NEAR_LIMIT_THRESHOLD, DEFAULT_TRAVEL_CATEGORIES, DEFAULT_FUN_CATEGORIES
+from utils import (fmt, NEAR_LIMIT_THRESHOLD, DEFAULT_TRAVEL_CATEGORIES,
+                   DEFAULT_FUN_CATEGORIES, get_currency_symbol, to_display)
 from gamification import detect_raise
 from forecasting import detect_anomalies, detect_subscriptions
 import queries as q
@@ -145,8 +146,11 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     loans_df: pd.DataFrame | None = None,
                     user_id: int | None = None):
     """Render the full insights page."""
-    st.title("💡 Spending Insights")
+    st.title(":material/lightbulb: Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
+
+    SYM     = get_currency_symbol(DC)
+    AMT_FMT = f"%.0f {SYM}" if DC in ("RSD", "HUF", "HRK") else f"{SYM}%.2f"
 
     today   = date.today()
     year    = today.year
@@ -160,14 +164,14 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         prev_str = fmt(mom["previous"], DC, rates)
         pct      = abs(mom["change_pct"])
         if mom["trend"] == "up":
-            cards.append(("warning", f"📈 You've spent **{cur_str}** this month — "
+            cards.append(("warning", f"You've spent **{cur_str}** this month — "
                           f"**{pct:.0f}% more** than last month ({prev_str}). "
                           f"Consider reviewing your recent expenses."))
         elif mom["trend"] == "down":
-            cards.append(("success", f"📉 Great news! You've spent **{cur_str}** this month — "
+            cards.append(("success", f"Great news! You've spent **{cur_str}** this month — "
                           f"**{pct:.0f}% less** than last month ({prev_str}). Keep it up!"))
         else:
-            cards.append(("info", f"📊 Your spending this month (**{cur_str}**) "
+            cards.append(("info", f"Your spending this month (**{cur_str}**) "
                           f"is about the same as last month ({prev_str})."))
 
     # ── Insight 2: Top category ───────────────────────────────────────────────
@@ -179,7 +183,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         )
         direction = f"up {cat_mom['change_pct']:.0f}%" if cat_mom["trend"] == "up" \
                     else (f"down {abs(cat_mom['change_pct']):.0f}%" if cat_mom["trend"] == "down" else "steady")
-        cards.append(("info", f"🏆 Your biggest spend this month is **{cat}** "
+        cards.append(("info", f"Your biggest spend this month is **{cat}** "
                      f"at **{fmt(amt, DC, rates)}** — {direction} vs last month."))
 
     # ── Insight 3: Unusual expenses ───────────────────────────────────────────
@@ -191,7 +195,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         row = this_month_unusual.nlargest(1, "amount_eur").iloc[0]
         cat_avg = float(expenses_df[expenses_df["category"] == row["category"]]["amount_eur"].mean())
         mult    = round(row["amount_eur"] / cat_avg, 1) if cat_avg > 0 else 0
-        cards.append(("warning", f"⚠️ Unusual expense spotted: **{row['description']}** "
+        cards.append(("warning", f"Unusual expense spotted: **{row['description']}** "
                      f"({row['category']}) for **{fmt(row['amount_eur'], DC, rates)}** — "
                      f"{mult}× your typical {row['category']} spend."))
 
@@ -204,11 +208,11 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 bal_str  = fmt(proj["current_balance"], DC, rates)
                 tgt_str  = fmt(proj["target"], DC, rates)
                 cards.append(("success",
-                    f"🏦 **{goal}**: Balance is **{bal_str}** of {tgt_str} target. "
+                    f"**{goal}**: Balance is **{bal_str}** of {tgt_str} target. "
                     f"At your current deposit rate you'll reach it in ~**{proj['months_to_goal']} months** "
                     f"({proj_str})."))
             elif proj["months_to_goal"] == 0:
-                cards.append(("success", f"🎉 **{goal}** goal reached! "
+                cards.append(("success", f"**{goal}** goal reached! "
                              f"Balance: {fmt(proj['current_balance'], DC, rates)} — "
                              f"congratulations!"))
 
@@ -221,18 +225,18 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         if days_left is not None:
             if days_left == 0:
                 cards.append(("error",
-                    f"🚨 You've already exceeded your monthly budget of "
+                    f"You've already exceeded your monthly budget of "
                     f"**{fmt(total_budget, DC, rates)}**! Time to slow down spending."))
             elif days_left < 7:
                 cards.append(("warning",
-                    f"⏰ At your current pace your budget of **{fmt(total_budget, DC, rates)}** "
+                    f"At your current pace your budget of **{fmt(total_budget, DC, rates)}** "
                     f"will run out in ~**{days_left} days**. Consider cutting back."))
             else:
                 days_in_month = calendar.monthrange(today.year, today.month)[1]
                 days_remaining_month = days_in_month - today.day
                 if days_left >= days_remaining_month:
                     cards.append(("success",
-                        f"✅ You're on track — your budget should last the rest of the month "
+                        f"You're on track — your budget should last the rest of the month "
                         f"({fmt(total_budget, DC, rates)} total)."))
 
     # ── Insight 6: Income vs expense ratio ────────────────────────────────────
@@ -244,14 +248,14 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             saved_pct = 100 - ratio
             if saved_pct >= 20:
                 cards.append(("success",
-                    f"💪 You're saving **{saved_pct:.0f}%** of your income this month — excellent!"))
+                    f"You're saving **{saved_pct:.0f}%** of your income this month — excellent!"))
             elif saved_pct >= 10:
                 cards.append(("info",
-                    f"📊 You're saving **{saved_pct:.0f}%** of your income this month. "
+                    f"You're saving **{saved_pct:.0f}%** of your income this month. "
                     f"Aim for 20% for a healthy savings rate."))
             elif saved_pct < 0:
                 cards.append(("error",
-                    f"💸 Your expenses (**{fmt(exp_mom['current'], DC, rates)}**) exceed your income "
+                    f"Your expenses (**{fmt(exp_mom['current'], DC, rates)}**) exceed your income "
                     f"(**{fmt(inc_mom['current'], DC, rates)}**) this month. Review your spending."))
 
     # ── Insight 7: Top merchants this month ───────────────────────────────────
@@ -262,7 +266,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             merch = m_exp.groupby("description")["amount_eur"].sum().nlargest(3)
             top_list = ", ".join(
                 f"**{d}** ({fmt(a, DC, rates)})" for d, a in merch.items())
-            cards.append(("info", f"🛍️ Top spending this month: {top_list}."))
+            cards.append(("info", f"Top spending this month: {top_list}."))
 
     # ── Insight 8: No-spend days ──────────────────────────────────────────────
     if not expenses_df.empty:
@@ -273,7 +277,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             no_spend = today.day - len(spent_days)
             if no_spend >= 3:
                 cards.append(("success",
-                    f"🧘 You've had **{no_spend} no-spend days** so far this month. Nice discipline!"))
+                    f"You've had **{no_spend} no-spend days** so far this month. Nice discipline!"))
 
     # ── Insight 9: Fixed costs (recurring) ────────────────────────────────────
     if recurring_df is not None and not recurring_df.empty:
@@ -281,7 +285,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         if not rec_active.empty:
             monthly = float(rec_active["amount_eur"].sum())
             cards.append(("info",
-                f"🔁 Your fixed costs are **{fmt(monthly, DC, rates)}/month** "
+                f"Your fixed costs are **{fmt(monthly, DC, rates)}/month** "
                 f"({fmt(monthly * 12, DC, rates)}/year) across {len(rec_active)} recurring bills."))
 
     # ── Insight 10: Income highlights (raise / bonus / types) ─────────────────
@@ -292,7 +296,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 latest, prev = float(sal.iloc[-1]["actual_eur"]), float(sal.iloc[-2]["actual_eur"])
                 if latest > prev:
                     cards.append(("success",
-                        f"📈 Raise detected! Your latest salary is "
+                        f"Raise detected! Your latest salary is "
                         f"**{fmt(latest, DC, rates)}** "
                         f"(up from {fmt(prev, DC, rates)})."))
 
@@ -300,7 +304,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         bonus = bonus[bonus["date"].dt.year == year]
         if not bonus.empty:
             cards.append(("success",
-                f"🎁 Bonuses this year: **{fmt(float(bonus['actual_eur'].sum()), DC, rates)}**. "
+                f"Bonuses this year: **{fmt(float(bonus['actual_eur'].sum()), DC, rates)}**. "
                 f"Nice extra!"))
 
         m_inc = income_df[(income_df["date"].dt.year == year) &
@@ -309,7 +313,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             by_type = m_inc.groupby("income_type")["actual_eur"].sum()
             top_type, top_val = by_type.idxmax(), float(by_type.max())
             cards.append(("info",
-                f"💼 Income this month is led by **{top_type}** "
+                f"Income this month is led by **{top_type}** "
                 f"({fmt(top_val, DC, rates)})."))
 
     # ── Insight 11: Last 30 days vs previous 30 days ──────────────────────────
@@ -324,7 +328,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 kind = "error" if pct > 0 else "success"
                 direction = "more" if pct > 0 else "less"
                 cards.append((kind,
-                    f"📆 You spent **{abs(pct):.0f}% {direction}** in the last 30 days "
+                    f"You spent **{abs(pct):.0f}% {direction}** in the last 30 days "
                     f"({fmt(r_sum, DC, rates)}) than the 30 days before ({fmt(p_sum, DC, rates)})."))
 
     # ── Insight 12: Loans ─────────────────────────────────────────────────────
@@ -337,7 +341,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                                 int(r["term_months"] or 12))
                 for _, r in active.iterrows())
             cards.append(("info",
-                f"💳 You have **{len(active)} active loan(s)** — "
+                f"You have **{len(active)} active loan(s)** — "
                 f"**{fmt(monthly_total, DC, rates)}/month** in scheduled payments."))
 
     # ── Insight 13: Fun money ─────────────────────────────────────────────────
@@ -348,14 +352,14 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         spent = fun_spent(expenses_df, cats, year, month)
         if spent > fun_money:
             cards.append(("warning",
-                f"🎈 Fun money exhausted: **{fmt(spent, DC, rates)}** of "
+                f"Fun money exhausted: **{fmt(spent, DC, rates)}** of "
                 f"{fmt(fun_money, DC, rates)} — {fmt(spent - fun_money, DC, rates)} over."))
         elif spent > fun_money * NEAR_LIMIT_THRESHOLD:
             cards.append(("warning",
-                f"🎈 Fun money almost gone: {fmt(fun_money - spent, DC, rates)} left this month."))
+                f"Fun money almost gone: {fmt(fun_money - spent, DC, rates)} left this month."))
         else:
             cards.append(("success",
-                f"🎈 Fun money on track: **{fmt(fun_money - spent, DC, rates)}** left this month."))
+                f"Fun money on track: **{fmt(fun_money - spent, DC, rates)}** left this month."))
 
     # ── Insight 14: Travel budget ─────────────────────────────────────────────
     travel_budget = float(settings.get("travel_budget") or 0.0)
@@ -368,60 +372,61 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         budget_pct = spent_t / travel_budget * 100
         lvl = "error" if spent_t > travel_budget else ("warning" if budget_pct > year_pct else "info")
         cards.append((lvl,
-            f"🎒 Travel budget: **{fmt(spent_t, DC, rates)}** of "
+            f"Travel budget: **{fmt(spent_t, DC, rates)}** of "
             f"{fmt(travel_budget, DC, rates)} this year ({budget_pct:.0f}% used, "
             f"{year_pct:.0f}% of the year gone)."))
 
     # ── Render cards ──────────────────────────────────────────────────────────
     if not cards:
-        st.info("💡 Log some expenses and income to start seeing personalised insights here.")
+        st.info("Log some expenses and income to start seeing personalised insights here.",
+                icon=":material/lightbulb:")
         return
 
     for card_type, text in cards:
         if card_type == "success":
-            st.success(text)
+            st.success(text, icon=":material/check_circle:")
         elif card_type == "warning":
-            st.warning(text)
+            st.warning(text, icon=":material/warning:")
         elif card_type == "error":
-            st.error(text)
+            st.error(text, icon=":material/error:")
         else:
-            st.info(text)
+            st.info(text, icon=":material/info:")
 
     # ── ML anomaly scan (IsolationForest; runs on the server) ─────────────────
     anomalies = detect_anomalies(expenses_df)
     if not anomalies.empty:
-        st.divider()
-        st.subheader("🔍 ML anomaly scan")
+        st.subheader(":material/search: ML anomaly scan")
         st.caption("A lightweight isolation-forest model flags transactions that "
                    "don't fit your usual spending pattern.")
         show = anomalies.sort_values("date", ascending=False).head(10).copy()
         show["date"]   = show["date"].dt.strftime("%d %b %Y").fillna("")
-        show["Amount"] = show["amount_eur"].apply(lambda x: fmt(x, DC, rates))
-        show["vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
-        st.dataframe(show[["date","description","category","Amount","vs median"]],
-                     hide_index=True)
+        show["Amount"] = show["amount_eur"].apply(lambda x: to_display(x, DC, rates))
+        show["Vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
+        st.dataframe(
+            show[["date","description","category","Amount","Vs median"]],
+            hide_index=True,
+            column_config={
+                "Amount": st.column_config.NumberColumn("Amount", format=AMT_FMT),
+            },
+        )
 
     # ── Subscription / recurring detection ────────────────────────────────────
     subs = detect_subscriptions(expenses_df)
     if not subs.empty:
         from db import add_recurring
-        st.divider()
-        st.subheader("🔁 These look like subscriptions")
+        st.subheader(":material/repeat: These look like subscriptions")
         st.caption("Regular monthly charges detected — add them as recurring "
                    "templates to get due-day reminders.")
         for idx, row in enumerate(subs.head(6).itertuples()):
             # itertuples gives named access to the subscription rows
-            s1, s2, s3 = st.columns([3, 1.4, 1.4])
-            with s1:
+            with st.container(horizontal=True):
                 st.markdown(f"**{row.description}** · {row.months_seen} months "
                             f"· every ~{row.avg_gap_days:.0f} days")
-            with s2:
                 st.write(fmt(float(row.amount_eur), DC, rates))
-            with s3:
                 if user_id is None:
-                    st.caption("")
                     continue
-                if st.button("➕ Add", key=f"sub_{idx}_{row.last_date}", width="stretch"):
+                if st.button("Add", icon=":material/add:",
+                             key=f"sub_{idx}_{row.last_date}", width="stretch"):
                     add_recurring(user_id, {
                         "category": row.category, "subcategory": "",
                         "description": str(row.description),
@@ -431,12 +436,12 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                         "active": True,
                     })
                     q.bump_db_version()
-                    st.toast(f"✅ Added '{row.description}' to Recurring", icon="🔁")
+                    st.toast(f"Added '{row.description}' to Recurring",
+                             icon=":material/repeat:")
                     st.rerun()
 
     # ── Month-over-month table ────────────────────────────────────────────────
-    st.divider()
-    st.subheader("📅 Month-over-month by category")
+    st.subheader(":material/calendar_month: Month-over-month by category")
     if not expenses_df.empty:
         rows = []
         for cat in expenses_df["category"].unique():
@@ -444,12 +449,19 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
             m = month_over_month(cat_df, "amount_eur", year, month)
             rows.append({
                 "Category": cat,
-                "This month": fmt(m["current"], DC, rates),
-                "Last month": fmt(m["previous"], DC, rates),
+                "This month": to_display(m["current"], DC, rates),
+                "Last month": to_display(m["previous"], DC, rates),
                 "Change": f"{'▲' if m['trend']=='up' else '▼' if m['trend']=='down' else '—'} "
                           f"{abs(m['change_pct']):.0f}%",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True)
+            st.dataframe(
+                pd.DataFrame(rows),
+                hide_index=True,
+                column_config={
+                    "This month": st.column_config.NumberColumn("This month", format=AMT_FMT),
+                    "Last month": st.column_config.NumberColumn("Last month", format=AMT_FMT),
+                },
+            )
     else:
-        st.info("No expense data yet.")
+        st.info("No expense data yet.", icon=":material/table_chart:")

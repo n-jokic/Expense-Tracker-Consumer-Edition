@@ -36,10 +36,15 @@ rates    = st.session_state.rates
 settings = st.session_state.settings
 display_name = st.session_state.display_name
 
-st.title("⚙️ Settings")
+st.title(":material/settings: Settings")
 
 tab_cur, tab_bud, tab_notif, tab_acct, tab_data, tab_sync = st.tabs(
-    ["💱 Currency", "💰 Budget", "📧 Notifications", "🔐 Account", "📦 Data", "🔗 Sync"]
+    [":material/currency_exchange: Currency",
+     ":material/savings: Budget",
+     ":material/notifications: Notifications",
+     ":material/manage_accounts: Account",
+     ":material/database: Data",
+     ":material/sync: Sync"]
 )
 
 # ── Confirmation dialogs (defined BEFORE their call sites — the page script
@@ -49,35 +54,31 @@ tab_cur, tab_bud, tab_notif, tab_acct, tab_data, tab_sync = st.tabs(
 def budget_delete_dialog(uid: int, bid: int, category: str, subcategory: str):
     label = category + (f" — {subcategory}" if subcategory else "")
     st.write(f"Delete the **{label}** budget row? This cannot be undone.")
-    c1, c2 = st.columns(2)
-    with c1:
+    with st.container(horizontal=True, horizontal_alignment="distribute"):
         if st.button("Cancel", width="stretch"):
             st.rerun()
-    with c2:
         if st.button("Delete row", type="primary", width="stretch"):
             delete_budget(uid, bid)
             q.bump_db_version()
-            st.toast("Budget row deleted.", icon="🗑️")
+            st.toast("Budget row deleted.", icon=":material/delete:")
             st.rerun()
 
 
 @st.dialog("Revoke device?")
 def revoke_device_dialog(uid: int, device_id: str, name: str):
     st.write(f"Revoke access for **{name}**? The phone will need to pair again.")
-    c1, c2 = st.columns(2)
-    with c1:
+    with st.container(horizontal=True, horizontal_alignment="distribute"):
         if st.button("Cancel", width="stretch"):
             st.rerun()
-    with c2:
         if st.button("Revoke", type="primary", width="stretch"):
             revoke_device(uid, device_id)
-            st.toast("Device revoked.", icon="🔒")
+            st.toast("Device revoked.", icon=":material/lock:")
             st.rerun()
 
 
 # ── Currency tab ──────────────────────────────────────────────────────────────
 with tab_cur:
-    st.subheader("💱 Currency & exchange rates")
+    st.subheader(":material/currency_exchange: Currency & exchange rates")
     st.caption("Amounts are stored in EUR; these rates convert them for display. "
                "They refresh automatically on login when older than 3 days.")
     with st.form("cur_form"):
@@ -93,7 +94,7 @@ with tab_cur:
                 f"1 EUR = ? {c} ({get_currency_symbol(c)})",
                 value=float(rates.get(c, 1.0)), step=0.01, format="%.4f",
                 min_value=0.0001)
-        if st.form_submit_button("💾 Save", type="primary"):
+        if st.form_submit_button("Save", type="primary", icon=":material/save:"):
             bad = [c for c, v in new_rates.items()
                    if not (v > 0 and v == v)]  # zero, negative, or NaN
             if bad:
@@ -104,32 +105,30 @@ with tab_cur:
                 st.success("✅ Saved — rates updated for every page.")
                 st.rerun()
 
-    st.divider()
     last = settings.get("rates_updated_at")
     if last is not None:
         try:
             last_str = pd.Timestamp(last).strftime("%d %b %Y %H:%M")
         except Exception:
             last_str = str(last)
-        st.caption(f"🕐 Rates last updated from the live API: **{last_str}**")
+        st.caption(f":material/schedule: Rates last updated from the live API: **{last_str}**")
     else:
-        st.caption("🕐 Rates never fetched from the live API — using built-in defaults.")
+        st.caption(":material/schedule: Rates never fetched from the live API — using built-in defaults.")
 
-    c_ref, _ = st.columns([1, 2])
-    with c_ref:
-        if st.button("🔄 Refresh rates now", key="refresh_rates_btn"):
-            new_settings, ok = refresh_rates_if_due(user_id, st.session_state.settings, force=True)
-            if ok:
-                got = new_settings.get("currency_rates") or {}
-                st.success(f"✅ Rates refreshed! 1 EUR = {float(got.get('RSD', 0)):,.2f} din")
-                st.rerun()
-            else:
-                st.error("😕 Couldn't reach the rate service — keeping your last known rates. "
-                         "Check your internet connection and try again.")
+    if st.button("Refresh rates now", icon=":material/refresh:", width="content",
+                 key="refresh_rates_btn"):
+        new_settings, ok = refresh_rates_if_due(user_id, st.session_state.settings, force=True)
+        if ok:
+            got = new_settings.get("currency_rates") or {}
+            st.success(f"✅ Rates refreshed! 1 EUR = {float(got.get('RSD', 0)):,.2f} din")
+            st.rerun()
+        else:
+            st.error("😕 Couldn't reach the rate service — keeping your last known rates. "
+                     "Check your internet connection and try again.")
 
 # ── Budget tab ────────────────────────────────────────────────────────────────
 with tab_bud:
-    st.subheader("💰 Overall monthly budget")
+    st.subheader(":material/savings: Overall monthly budget")
     cur_eur = float(settings.get("monthly_budget", 0.0))
     with st.form("overall_bud_form"):
         ob_amt = st.number_input(
@@ -139,28 +138,28 @@ with tab_bud:
             value=to_display(cur_eur, DC, rates))
         ob_eur = to_eur(ob_amt, DC, rates)
         st.caption(f"≈ {fmt(ob_eur, 'EUR', {'EUR': 1.0})} — stored as the EUR base value.")
-        if st.form_submit_button("💾 Save budget", type="primary"):
+        if st.form_submit_button("Save budget", type="primary", icon=":material/save:"):
             q.save_settings(user_id, {"monthly_budget": round(ob_eur, 4)})
             st.success(f"✅ Budget set to {fmt(ob_eur, DC, rates)}")
             st.rerun()
 
-    st.divider()
     st.subheader("Category budgets")
     bcat = st.selectbox("Category", CAT_LIST, key="bud_cat")
     bcur = st.selectbox("Enter in", list(SUPPORTED_CURRENCIES.keys()), key="bud_cur")
-    with st.form("cat_bud_form", clear_on_submit=False):
-        bc1, bc2, bc3 = st.columns(3)
+    with st.form("cat_bud_form"):
+        bc1, bc2, bc3, bc4 = st.columns(4)
         with bc1:
-            by = st.number_input("Year",  value=date.today().year,  step=1, format="%d")
+            by = st.number_input("Year", value=date.today().year, step=1, format="%d")
+        with bc2:
             bm = st.selectbox("Month", range(1,13),
                               format_func=lambda x: calendar.month_name[x])
-        with bc2:
+        with bc3:
             bsub = st.selectbox("Subcategory",
                                 ["(entire category)"] + CATEGORIES[bcat])
-        with bc3:
+        with bc4:
             ba = st.number_input(f"Budget ({get_currency_symbol(bcur)})", min_value=0.0,
                                  max_value=MAX_SAVINGS_TARGET, step=10.0, format="%.2f")
-        if st.form_submit_button("💾 Save", type="primary"):
+        if st.form_submit_button("Save", type="primary", icon=":material/save:"):
             be = to_eur(ba, bcur, rates)
             add_budget(user_id, {
                 "year": int(by), "month": int(bm), "category": bcat,
@@ -174,32 +173,44 @@ with tab_bud:
     dfb = q.budgets(user_id)
     if not dfb.empty:
         d = dfb.copy()
-        d["month"]  = d["month"].apply(lambda x: calendar.month_name[int(x)])
-        d["Budget"] = d["budgeted_eur"].apply(lambda x: fmt(x, DC, rates))
-        st.dataframe(d[["year","month","category","subcategory","Budget"]], hide_index=True)
-        with st.expander("🗑️ Delete a budget row"):
-            di = st.number_input("Row index (from table)", min_value=0,
-                                 max_value=max(0, len(dfb)-1), step=1)
-            if st.button("Delete", type="secondary", key="del_bud"):
-                row = dfb.iloc[di]
-                budget_delete_dialog(user_id, int(row["id"]), row["category"],
-                                     row["subcategory"])
+        d["month"] = d["month"].apply(lambda x: calendar.month_name[int(x)])
+        d["Budget"] = d["budgeted_eur"].apply(lambda x: to_display(x, DC, rates))
+        sym = get_currency_symbol(DC)
+        budget_fmt = f"%,.0f {sym}" if DC in ("RSD", "HUF", "HRK") else f"{sym}%,.2f"
+        sel = st.dataframe(
+            d[["year", "month", "category", "subcategory", "Budget"]],
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "Budget": st.column_config.NumberColumn("Budget", format=budget_fmt),
+            },
+        )
+        selected = sel.selection.rows
+        if selected:
+            with st.expander("Delete selected row", icon=":material/delete:"):
+                if st.button("Delete", type="secondary", key="del_bud"):
+                    row = dfb.iloc[selected[0]]
+                    budget_delete_dialog(user_id, int(row["id"]), row["category"],
+                                         row["subcategory"])
+        else:
+            with st.expander("Delete a budget row", icon=":material/delete:"):
+                st.caption("Select a row in the table above to delete it.")
 
     # ── Fun money ────────────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("🎈 Fun money")
+    st.subheader(":material/celebration: Fun money")
     st.caption("A monthly allowance for guilt-free spending (Entertainment, "
                "eating out, hobbies…). Tracked on the Dashboard and Insights.")
     with st.form("fun_form"):
-        f_amt = st.number_input("Monthly fun money (€)", min_value=0.0,
+        f_amt = st.number_input(f"Monthly fun money ({get_currency_symbol(DC)})", min_value=0.0,
                                 step=10.0, format="%.2f",
-                                value=float(settings.get("fun_money") or 0.0))
+                                value=to_display(float(settings.get("fun_money") or 0.0), DC, rates))
         f_cats = st.multiselect("Categories in the fun pool", CAT_LIST,
                                 default=[c for c in (settings.get("fun_categories")
                                                      or DEFAULT_FUN_CATEGORIES)
                                          if c in CAT_LIST])
-        if st.form_submit_button("💾 Save fun money", type="primary"):
-            q.save_settings(user_id, {"fun_money": float(f_amt), "fun_categories": f_cats})
+        if st.form_submit_button("Save fun money", type="primary", icon=":material/save:"):
+            q.save_settings(user_id, {"fun_money": float(to_eur(f_amt, DC, rates)), "fun_categories": f_cats})
             st.success("✅ Fun money saved!")
             st.rerun()
     bonus = float(settings.get("fun_bonus_amount") or 0.0)
@@ -207,9 +218,9 @@ with tab_bud:
     if bonus > 0:
         this_month = f"{date.today().year:04d}-{date.today().month:02d}"
         if bonus_month == this_month:
-            st.success(f"🎁 Milestone bonus active this month: +€{bonus:.0f} fun money!")
+            st.success(f"🎁 Milestone bonus active this month: +{fmt(bonus, DC, rates)} fun money!")
         else:
-            st.caption(f"🎁 Milestone bonus queued for {bonus_month}: +€{bonus:.0f} fun money.")
+            st.caption(f"🎁 Milestone bonus queued for {bonus_month}: +{fmt(bonus, DC, rates)} fun money.")
 
 # ── Notifications tab ─────────────────────────────────────────────────────────
 with tab_notif:
@@ -217,25 +228,24 @@ with tab_notif:
 
 # ── Account tab ───────────────────────────────────────────────────────────────
 with tab_acct:
-    st.subheader("🔐 Account")
+    st.subheader(":material/manage_accounts: Account")
 
     with st.form("display_name_form"):
         new_name = st.text_input("Display name", value=display_name)
-        if st.form_submit_button("💾 Update name"):
+        if st.form_submit_button("Update name", type="primary", icon=":material/save:"):
             if new_name.strip():
                 update_user_display_name(user_id, new_name.strip())
                 st.session_state.display_name = new_name.strip()
                 st.success("✅ Name updated!")
                 st.rerun()
 
-    st.divider()
     st.subheader("Change password")
     with st.form("pw_form"):
         old_pw  = st.text_input("Current password", type="password")
         new_pw  = st.text_input("New password", type="password",
                                 placeholder="min. 8 chars, one number")
         conf_pw = st.text_input("Confirm new password", type="password")
-        if st.form_submit_button("🔒 Change password", type="primary"):
+        if st.form_submit_button("Change password", type="primary", icon=":material/lock:"):
             if new_pw != conf_pw:
                 safe_error("New passwords don't match.")
             else:
@@ -245,9 +255,8 @@ with tab_acct:
                 else:
                     safe_error(msg)
 
-    st.divider()
-    st.subheader("⚠️ Danger zone")
-    with st.expander("🗑️ Delete my account"):
+    st.subheader(":material/warning: Danger zone")
+    with st.expander("Delete my account", icon=":material/delete_forever:"):
         st.error("This will permanently delete **all** your data. This cannot be undone.")
         confirm = st.text_input("Type DELETE to confirm")
         if st.button("Delete account permanently", type="secondary"):
@@ -263,7 +272,7 @@ with tab_acct:
 
 # ── Data tab ──────────────────────────────────────────────────────────────────
 with tab_data:
-    st.subheader("📦 Export your data")
+    st.subheader(":material/download: Export your data")
     st.caption("Download your data as Excel files. Back these up to Google Drive "
                "or OneDrive regularly.")
 
@@ -316,25 +325,24 @@ with tab_data:
         return buf.getvalue()
 
     st.download_button(
-        ":material/download: Everything (zip)", data=_export_zip(),
+        "Everything (zip)", icon=":material/download:", data=_export_zip(),
         file_name="expense_tracker_export.zip", mime="application/zip",
         key="dl_all", width="stretch",
     )
-    st.caption("")
 
     data_map = {k: v for k, v in exports.items() if v is not None and not v.empty}
     cols = st.columns(3)
     for i, (key, df_d) in enumerate(data_map.items()):
         with cols[i % 3]:
             st.download_button(
-                f"⬇️ {key}", data=to_excel(_jsonify(df_d)),
+                key.replace("_", " ").capitalize(), icon=":material/download:",
+                data=to_excel(_jsonify(df_d)),
                 file_name=f"{key}_export.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"dl_{key}", width="stretch",
             )
 
-    st.divider()
-    st.subheader("💾 Database backup")
+    st.subheader(":material/backup: Database backup")
     st.caption("A backup is saved automatically once per day. You can also create one now.")
     marker = os.path.join(BACKUP_DIR, ".last_backup")
     try:
@@ -342,7 +350,7 @@ with tab_data:
             st.caption(f"Last automatic backup: **{f.read().strip()}**")
     except OSError:
         pass
-    if st.button(":material/download: Back up database now"):
+    if st.button("Back up database now", icon=":material/download:"):
         path = backup_db(force=True)
         if path:
             st.success(f"✅ Backup saved to `{path}`")
@@ -352,7 +360,7 @@ with tab_data:
 
 # ── Sync tab (phone pairing + conflicts) ─────────────────────────────────────
 with tab_sync:
-    st.subheader("🔗 Sync & phone pairing")
+    st.subheader(":material/sync: Sync & phone pairing")
     st.caption("🧪 **Experimental.** Pair a phone app with this server using a "
                "one-time code. The sync API runs on port 8502 (`python api.py`).")
 
@@ -379,17 +387,16 @@ with tab_sync:
     if pair_code:
         st.success(f"Pairing code: **`{pair_code}`** — valid for 10 minutes. "
                    "Enter it in the phone app (or the /api/pair endpoint).")
-        if st.button("Clear code"):
+        if st.button("Clear code", icon=":material/close:", width="stretch"):
             st.session_state.pop("pair_code", None)
             st.rerun()
 
-    st.divider()
-    st.subheader("⚠️ Sync conflicts")
+    st.subheader(":material/sync_problem: Sync conflicts")
     st.caption("When a record was edited on both the server and a device since "
                "the last sync, it lands here for manual resolution.")
     conflicts = get_sync_conflicts(user_id, resolved=False)
     if not conflicts:
-        st.info("No unresolved sync conflicts. 🎉")
+        st.info("No unresolved sync conflicts.", icon=":material/check_circle:")
     for c in conflicts:
         with st.container(border=True):
             st.markdown(f"**{c['table_name']}** · record `{c['record_id']}` · "
@@ -409,7 +416,7 @@ with tab_sync:
                     if ok:
                         resolve_sync_conflict(user_id, c["id"])
                         q.bump_db_version()
-                        st.toast("Device value applied and conflict resolved.", icon="✅")
+                        st.toast("Device value applied and conflict resolved.", icon=":material/check:")
                         st.rerun()
                     else:
                         st.error("Could not apply the device value (record missing?).")
@@ -417,5 +424,5 @@ with tab_sync:
                 if st.button("Keep server value", key=f"ksrv_{c['id']}", width="stretch"):
                     resolve_sync_conflict(user_id, c["id"])
                     q.bump_db_version()
-                    st.toast("Conflict resolved — server value kept.", icon="✅")
+                    st.toast("Conflict resolved — server value kept.", icon=":material/check:")
                     st.rerun()

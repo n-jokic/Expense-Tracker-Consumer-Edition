@@ -26,13 +26,16 @@ rates    = st.session_state.rates
 settings = st.session_state.settings
 today    = date.today()
 
-st.title("📈 Portfolio")
+st.title(":material/trending_up: Portfolio")
 st.caption("Track stocks & ETFs — free daily prices, refreshed on login (or manually).")
 help_expander("How portfolio tracking works",
               "Add a holding with its symbol, quantity and what you paid. Prices come from "
               "free public market data (Yahoo Finance with a Stooq fallback) once per day "
               "on login. If the network is down, the last known prices are kept. Value "
               "snapshots are stored daily so the value-over-time chart grows by itself.")
+
+if (msg := st.session_state.pop("pf_flash", None)):
+    st.success(msg, icon=":material/check_circle:")
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
 df_hold = q.holdings(user_id)
@@ -43,7 +46,7 @@ if not df_hold.empty:
             if "last_price_date" in df_hold.columns else []
         st.caption("Prices last updated: " + (", ".join(sorted(set(last_dates))) if last_dates else "never"))
     with rc2:
-        if st.button("🔄 Refresh prices", width="stretch", key="pf_refresh"):
+        if st.button("Refresh prices", icon=":material/refresh:", width="stretch", key="pf_refresh"):
             with st.spinner("Fetching prices..."):
                 n, ok = refresh_prices_if_due(user_id, force=True)
             if ok:
@@ -54,8 +57,8 @@ if not df_hold.empty:
                 st.error("😕 Couldn't fetch prices — keeping the last known values.")
 
 # ── Add / edit holdings ───────────────────────────────────────────────────────
-with st.form("hold_form", clear_on_submit=False):
-    st.markdown("**➕ Add holding**")
+with st.form("hold_form", clear_on_submit=True):
+    st.markdown("**:material/add: Add holding**")
     c1, c2 = st.columns(2)
     with c1:
         h_symbol = st.text_input("Symbol", placeholder="e.g. AAPL, VWCE.DE, MSFT")
@@ -67,7 +70,7 @@ with st.form("hold_form", clear_on_submit=False):
                                    min_value=0.0, max_value=MAX_SAVINGS_TARGET,
                                    step=100.0, format="%.2f")
         st.caption("Include fees — this is your cost basis.")
-    if st.form_submit_button("💾 Save holding", type="primary"):
+    if st.form_submit_button("Save holding", type="primary", width="stretch", icon=":material/save:"):
         if h_symbol.strip():
             sym = h_symbol.strip().upper()
             cost_eur = to_eur(h_cost, h_cur, rates)
@@ -82,7 +85,10 @@ with st.form("hold_form", clear_on_submit=False):
                 "last_price_date": _dt.datetime.now(_dt.timezone.utc) if price else None,
             })
             q.bump_db_version()
-            st.success(f"✅ **{sym}** added" + (f" (price {price:,.2f})" if price else " (price will be fetched on refresh)"))
+            st.session_state["pf_flash"] = (
+                f"**{sym}** added"
+                + (f" (price {price:,.2f})" if price else " (price will be fetched on refresh)")
+            )
             st.rerun()
         else:
             st.error("Please enter a symbol.")
@@ -90,7 +96,7 @@ with st.form("hold_form", clear_on_submit=False):
 # ── Portfolio view ────────────────────────────────────────────────────────────
 df_hold = q.holdings(user_id)
 if df_hold.empty:
-    st.info("No holdings yet — add one above 👆")
+    st.info("No holdings yet — add one above")
     st.stop()
 
 # Compute per-holding EUR values using current rates
@@ -111,19 +117,11 @@ for _, h in df_hold.iterrows():
 view = pd.DataFrame(rows)
 m = portfolio_metrics(view.rename(columns={"price_eur": "last_price_eur"}).to_dict("records"))
 
-st.divider()
-k1, k2, k3, k4 = st.columns(4)
-for col, lbl, val, cls in [
-    (k1, "Market value",  m["value"],    "pos"),
-    (k2, "Invested",      m["invested"], "neu"),
-    (k3, "Gain / loss",   m["gain"],     "pos" if m["gain"] >= 0 else "neg"),
-    (k4, "Gain %",        None,          "pos" if m["gain"] >= 0 else "neg"),
-]:
-    with col:
-        v = f"{m['gain_pct']:+.1f}%" if lbl == "Gain %" else fmt(val, DC, rates)
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-lbl">{lbl}</div>'
-            f'<div class="kpi-val {cls}">{v}</div></div>', unsafe_allow_html=True)
+with st.container(horizontal=True):
+    st.metric("Market value", fmt(m["value"], DC, rates), border=True)
+    st.metric("Invested", fmt(m["invested"], DC, rates), border=True)
+    st.metric("Gain / loss", fmt(m["gain"], DC, rates), border=True)
+    st.metric("Gain %", f"{m['gain_pct']:+.1f}%", border=True)
 
 # Allocation pie
 r1, r2 = st.columns(2)
@@ -138,7 +136,7 @@ with r1:
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, width="stretch")
     else:
-        st.info("No live prices yet — refresh above.")
+        st.caption("No live prices yet — refresh above.")
 
 with r2:
     st.subheader("Value over time")
@@ -183,20 +181,31 @@ with r2:
 
 # Holdings table
 st.subheader("Holdings")
+csym = get_currency_symbol(DC)
 tbl = []
 for _, r in view.iterrows():
     gain = r["value_eur"] - r["cost_eur"]
+    gain_pct = (gain / r["cost_eur"]) * 100 if r["cost_eur"] > 0 else None
     tbl.append({
         "Symbol": r["symbol"],
         "Name": r["name"] or r["symbol"],
         "Qty": f"{r['quantity']:,.4f}",
-        "Price": f"{r['last_price']:,.2f} {get_currency_symbol(r['currency'])}" if r["last_price"] else "—",
-        "Value": fmt(r["value_eur"], DC, rates),
+        "Price": r["last_price"] or None,
+        "Value": to_display(r["value_eur"], DC, rates),
         "Invested": fmt(r["cost_eur"], DC, rates),
-        "Gain": fmt(gain, DC, rates),
-        "Gain %": f"{((gain / r['cost_eur']) * 100):+.1f}%" if r["cost_eur"] > 0 else "—",
+        "Gain": to_display(gain, DC, rates),
+        "Gain %": gain_pct,
     })
-st.dataframe(pd.DataFrame(tbl), hide_index=True)
+st.dataframe(
+    pd.DataFrame(tbl),
+    column_config={
+        "Price": st.column_config.NumberColumn("Price", format="%.2f"),
+        "Value": st.column_config.NumberColumn("Value", format=f"{csym}%.2f"),
+        "Gain": st.column_config.NumberColumn("Gain", format=f"{csym}%.2f"),
+        "Gain %": st.column_config.NumberColumn("Gain %", format="%+.1f%%"),
+    },
+    hide_index=True,
+)
 
 
 @st.dialog("Remove holding?")
@@ -218,7 +227,7 @@ def remove_holding_dialog(uid, holding_id, symbol, quantity):
 
 
 # Manage holdings
-with st.expander("✏️ Manage holdings"):
+with st.expander("Manage holdings", icon=":material/edit:"):
     for _, r in view.iterrows():
         mc1, mc2, mc3 = st.columns([3, 1.4, 1])
         with mc1:
@@ -229,13 +238,10 @@ with st.expander("✏️ Manage holdings"):
                                  step=0.01, format="%.4f",
                                  key=f"hold_q_{r['id']}", label_visibility="collapsed")
         with mc3:
-            if st.button("💾", key=f"hold_s_{r['id']}", width="stretch",
-                         help="Save quantity"):
+            if st.button("Save", icon=":material/save:", key=f"hold_s_{r['id']}", width="stretch"):
                 update_holding(user_id, r["id"], {"quantity": float(nq)})
                 q.bump_db_version()
                 st.rerun()
-        st.caption("")
-        if st.button(":material/delete: Remove holding", key=f"hold_d_{r['id']}",
+        if st.button("Remove holding", icon=":material/delete:", key=f"hold_d_{r['id']}",
                      type="secondary", width="stretch"):
             remove_holding_dialog(user_id, r["id"], r["symbol"], float(r["quantity"]))
-        st.divider()

@@ -516,11 +516,11 @@ def to_excel(df) -> bytes:
 # ── Error helpers ─────────────────────────────────────────────────────────────
 
 def safe_error(msg: str):
-    st.error(f"😕 {msg}\n\nIf this keeps happening, try refreshing the page.")
+    st.error(msg, icon=":material/error:")
 
 
 def safe_warning(msg: str):
-    st.warning(f"⚠️ {msg}")
+    st.warning(msg, icon=":material/warning:")
 
 
 def try_or_error(fn, fallback, friendly_msg: str):
@@ -532,7 +532,7 @@ def try_or_error(fn, fallback, friendly_msg: str):
 
 
 def help_expander(title: str, content: str):
-    with st.expander(f"ℹ️ {title}"):
+    with st.expander(title, icon=":material/help:"):
         st.markdown(content)
 
 

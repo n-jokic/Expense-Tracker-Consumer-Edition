@@ -10,7 +10,7 @@ import streamlit as st
 import queries as q
 from forecasting import forecast_next_month
 from utils import (
-    compute_salary_cycle, fmt, pbar, safe_warning,
+    compute_salary_cycle, fmt, safe_warning, get_currency_symbol, to_display,
 )
 
 user_id = st.session_state.user_id
@@ -18,7 +18,10 @@ DC      = st.session_state.dc
 rates   = st.session_state.rates
 settings = st.session_state.settings
 
-st.title("📈 Spending forecast")
+SYM     = get_currency_symbol(DC)
+AMT_FMT = f"%.0f {SYM}" if DC in ("RSD", "HUF", "HRK") else f"{SYM}%.2f"
+
+st.title(":material/query_stats: Spending forecast")
 st.caption("Based on your salary cycle: detected from your last income entry.")
 
 today   = date.today()
@@ -43,17 +46,23 @@ else:
         latest_salary = salary_rows.sort_values("date").iloc[-1]
         period_start, period_end = compute_salary_cycle(today, SALARY_DAY,
                                                         latest_salary["date"].date())
-    st.success(f"✅ Cycle start: **{period_start.strftime('%d %b %Y')}**")
+    st.success(f"Cycle start: **{period_start.strftime('%d %b %Y')}**",
+               icon=":material/check_circle:")
 
 days_in_period = (period_end - period_start).days + 1
 days_elapsed   = max((today - period_start).days + 1, 1)
 days_remaining = max((period_end - today).days, 0)
 
-st.info(f"📅 **{period_start.strftime('%d %b')} → {period_end.strftime('%d %b %Y')}** "
-        f"({days_in_period} days · {days_elapsed} in · {days_remaining} left)")
+st.caption(f":material/calendar_month: **{period_start.strftime('%d %b')} → {period_end.strftime('%d %b %Y')}** "
+           f"({days_in_period} days · {days_elapsed} in · {days_remaining} left)")
 
 dfe = q.expenses(user_id)
 dfb = q.budgets(user_id)
+
+if dfe.empty:
+    st.info("Log expenses to see a forecast", icon=":material/add_chart:")
+    st.stop()
+
 period_start_ts = pd.Timestamp(period_start)
 period_end_ts   = pd.Timestamp(period_end)
 
@@ -69,8 +78,7 @@ method = st.segmented_control(
     key="forecast_method",
 )
 
-st.divider()
-st.subheader("💰 Total spending forecast")
+st.subheader(":material/payments: Total spending forecast")
 
 total_spent = float(period_exp["amount_eur"].sum()) if not period_exp.empty else 0.0
 
@@ -86,7 +94,7 @@ if method == "ML model":
         projected = float(ml_result["total"])
         daily_avg = projected / days_in_period if days_in_period > 0 else 0.0
         st.caption(
-            f"🧠 ETS model over {ml_result['history_months']} months of history · "
+            f":material/psychology: ETS model over {ml_result['history_months']} months of history · "
             f"80% range: **{fmt(ml_result['lower'], DC, rates)} – {fmt(ml_result['upper'], DC, rates)}**"
         )
 elif method == "7-day average":
@@ -111,45 +119,48 @@ elif not dfb.empty:
 over_under = projected - total_budget
 on_track   = total_budget == 0 or projected <= total_budget
 
-fc1, fc2, fc3, fc4 = st.columns(4)
-for col, lbl, val, cls in [
-    (fc1, "Spent so far",    total_spent,  "neg"),
-    (fc2, "Daily average",   daily_avg,    "neu"),
-    (fc3, "Projected total", projected,    "pos" if on_track else "neg"),
-    (fc4, "Monthly budget",  total_budget, "neu"),
-]:
-    with col:
-        st.markdown(
-            f'<div class="kpi">'
-            f'<div class="kpi-lbl">{lbl}</div>'
-            f'<div class="kpi-val {cls}">{fmt(val, DC, rates)}</div>'
-            f'<div class="kpi-sub">{fmt(val, "EUR" if DC != "EUR" else "RSD", rates)}</div>'
-            f'</div>', unsafe_allow_html=True
-        )
+alt_ccy = "EUR" if DC != "EUR" else "RSD"
+with st.container(horizontal=True):
+    st.metric("Spent so far", fmt(total_spent, DC, rates),
+              delta=fmt(total_spent, alt_ccy, rates), border=True)
+    st.metric("Daily average", fmt(daily_avg, DC, rates),
+              delta=fmt(daily_avg, alt_ccy, rates), border=True)
+    st.metric("Projected total", fmt(projected, DC, rates),
+              delta=fmt(projected, alt_ccy, rates), border=True)
+    st.metric("Monthly budget", fmt(total_budget, DC, rates),
+              delta=fmt(total_budget, alt_ccy, rates), border=True)
 
-st.write("")
 if total_budget == 0:
-    safe_warning("No budget set. Go to ⚙️ Settings → Budget to set one.")
+    st.warning("No budget set. Go to Settings → Budget to set one.",
+               icon=":material/warning:")
 elif on_track:
-    st.success(f"✅ On track! Projected: **{fmt(projected, DC, rates)}** — "
-               f"**{fmt(total_budget - projected, DC, rates)} under budget**.")
+    st.success(f"On track! Projected: **{fmt(projected, DC, rates)}** — "
+               f"**{fmt(total_budget - projected, DC, rates)} under budget**.",
+               icon=":material/check_circle:")
 else:
-    st.error(f"⚠️ Overspend risk. Projected: **{fmt(projected, DC, rates)}** — "
+    st.error(f"Overspend risk. Projected: **{fmt(projected, DC, rates)}** — "
              f"**{fmt(over_under, DC, rates)} over budget**. "
-             f"Target: **{fmt((total_budget - total_spent) / max(days_remaining, 1), DC, rates)}/day**.")
+             f"Target: **{fmt((total_budget - total_spent) / max(days_remaining, 1), DC, rates)}/day**.",
+             icon=":material/error:")
 
 if total_budget > 0:
     pct_spent = min(total_spent / total_budget * 100, 100)
-    bar_color = "#00B050" if on_track else "#E94560"
-    st.markdown(f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({pct_spent:.1f}%)")
-    st.markdown(pbar(pct_spent, bar_color), unsafe_allow_html=True)
+    st.progress(
+        pct_spent / 100,
+        text=f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({pct_spent:.1f}%)",
+    )
 
 # Per-category ML forecast table
 if ml_result and not ml_result["fallback"] and ml_result["by_category"]:
-    st.divider()
-    st.subheader("🧠 Predicted next month by category")
+    st.subheader(":material/psychology: Predicted next month by category")
     cats = pd.DataFrame([
-        {"Category": c, "Forecast": fmt(v, DC, rates)}
+        {"Category": c, "Forecast": to_display(v, DC, rates)}
         for c, v in sorted(ml_result["by_category"].items(), key=lambda x: -x[1])
     ])
-    st.dataframe(cats, hide_index=True)
+    st.dataframe(
+        cats,
+        hide_index=True,
+        column_config={
+            "Forecast": st.column_config.NumberColumn("Forecast", format=AMT_FMT),
+        },
+    )

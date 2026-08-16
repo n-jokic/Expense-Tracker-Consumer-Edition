@@ -20,35 +20,24 @@ def render_onboarding():
     step = st.session_state.get("onboarding_step", 0)
 
     if step == 0:
-        st.markdown(f"""
-        <div style="text-align:center;padding:40px 0 20px;">
-            <div style="font-size:4rem;">👋</div>
-            <h1>Welcome, {display_name}!</h1>
-            <p style="color:#666;font-size:1.1rem;max-width:500px;margin:0 auto;">
-                Let's get you set up. It only takes 2 minutes.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        with st.container(horizontal_alignment="center"):
+            st.markdown(f"# Welcome, {display_name}!")
+            st.caption("Let's get you set up. It only takes 2 minutes.")
 
         c1, c2, c3 = st.columns(3)
         for col, icon, title, desc in [
-            (c1, "📊", "Track Expenses", "Log every purchase — it takes seconds."),
-            (c2, "🎯", "Set Budgets",    "Define spending limits per category."),
-            (c3, "💡", "Get Insights",   "See where your money is going automatically."),
+            (c1, ":material/receipt_long:", "Track expenses", "Log every purchase — it takes seconds."),
+            (c2, ":material/savings:",      "Set budgets",    "Define spending limits per category."),
+            (c3, ":material/insights:",     "Get insights",   "See where your money is going automatically."),
         ]:
             with col:
-                st.markdown(f"""
-                <div class="kpi">
-                    <div style="font-size:2rem;">{icon}</div>
-                    <div class="kpi-val">{title}</div>
-                    <div class="kpi-sub">{desc}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                with st.container(border=True):
+                    st.markdown(icon)
+                    st.markdown(f"**{title}**")
+                    st.caption(desc)
 
-        st.write("")
-        _, btn_col, _ = st.columns([2, 1, 2])
-        with btn_col:
-            if st.button("Let's get started →", type="primary", width="stretch"):
+        with st.container(horizontal_alignment="center"):
+            if st.button("Let's get started →", type="primary"):
                 st.session_state.onboarding_step = 1
                 st.rerun()
 
@@ -111,9 +100,9 @@ def render_onboarding():
 
             c_save, c_skip = st.columns(2)
             with c_save:
-                saved = st.form_submit_button("Save & Finish ✅", type="primary", width="stretch")
+                saved = st.form_submit_button("Save & Finish", type="primary", icon=":material/check:", width="stretch")
             with c_skip:
-                skipped = st.form_submit_button("Skip for now →", width="stretch")
+                skipped = st.form_submit_button("Skip for now", width="stretch")
 
         if saved:
             if desc.strip():

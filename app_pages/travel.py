@@ -12,7 +12,7 @@ import streamlit as st
 import queries as q
 from utils import (
     CATEGORIES, CAT_LIST, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
-    travel_spent, fmt, pbar, get_currency_symbol,
+    travel_spent, fmt, get_currency_symbol,
     help_expander,
 )
 
@@ -23,17 +23,20 @@ settings = st.session_state.settings
 today    = date.today()
 year     = today.year
 
-st.title("🎒 Travel budget")
+st.title(":material/flight: Travel budget")
 st.caption("A yearly allowance for trips — flights, hotels and everything vacation.")
 help_expander("How the travel budget works",
               "Set a yearly amount and choose which expense categories count as travel. "
               "The page checks whether you're spending faster than the year is passing, "
               "and shows your Vacation / Travel savings goal next to it.")
 
+if (msg := st.session_state.pop("travel_flash", None)):
+    st.success(msg, icon=":material/check_circle:")
+
 # ── Setup ─────────────────────────────────────────────────────────────────────
-with st.expander("⚙️ Travel budget settings"):
-    with st.form("travel_setup"):
-        t_amt = st.number_input("Yearly travel budget (€)", min_value=0.0,
+with st.expander("Travel budget settings", icon=":material/settings:"):
+    with st.form("travel_setup", clear_on_submit=True):
+        t_amt = st.number_input(f"Yearly travel budget ({get_currency_symbol('EUR')})", min_value=0.0,
                                 step=100.0, format="%.2f",
                                 value=float(settings.get("travel_budget") or 0.0))
         all_pairs = ([f"{c} › (all)" for c in CAT_LIST] +
@@ -44,12 +47,12 @@ with st.expander("⚙️ Travel budget settings"):
         t_cats = st.multiselect("Categories that count as travel",
                                 all_pairs,
                                 default=[p for p in current_display if p in all_pairs])
-        if st.form_submit_button("💾 Save", type="primary"):
+        if st.form_submit_button("Save", type="primary", width="stretch", icon=":material/save:"):
             q.save_settings(user_id, {
                 "travel_budget": float(t_amt),
                 "travel_categories": [p.replace(" › (all)", " › ") for p in t_cats],
             })
-            st.success("✅ Travel budget saved!")
+            st.session_state["travel_flash"] = "Travel budget saved."
             st.rerun()
 
 budget = float(settings.get("travel_budget") or 0.0)
@@ -59,28 +62,19 @@ pairs  = settings.get("travel_categories") or DEFAULT_TRAVEL_CATEGORIES
 dfe = q.expenses(user_id)
 spent = travel_spent(dfe, pairs, year)
 
-st.divider()
-k1, k2, k3 = st.columns(3)
 days_in_year = 366 if calendar.isleap(year) else 365
 year_pct = today.timetuple().tm_yday / days_in_year * 100
 budget_pct = (spent / budget * 100) if budget > 0 else 0.0
 
-for col, lbl, val, cls in [
-    (k1, f"Spent in {year}", spent, "neg"),
-    (k2, "Budget", budget, "neu"),
-    (k3, "Remaining", max(budget - spent, 0.0), "pos" if spent <= budget else "neg"),
-]:
-    with col:
-        st.markdown(
-            f'<div class="kpi"><div class="kpi-lbl">{lbl}</div>'
-            f'<div class="kpi-val {cls}">{fmt(val, DC, rates)}</div></div>',
-            unsafe_allow_html=True)
+with st.container(horizontal=True):
+    st.metric(f"Spent in {year}", fmt(spent, DC, rates), border=True)
+    st.metric("Budget", fmt(budget, DC, rates), border=True)
+    st.metric("Remaining", fmt(max(budget - spent, 0.0), DC, rates), border=True)
 
 if budget > 0:
     st.markdown(f"**{budget_pct:.0f}%** of the travel budget used — "
                 f"**{year_pct:.0f}%** of the year has passed.")
-    color = "#E94560" if spent > budget else ("#F4A261" if budget_pct > year_pct else "#00B050")
-    st.markdown(pbar(min(budget_pct, 100), color), unsafe_allow_html=True)
+    st.progress(min(budget_pct, 100) / 100, text=f"{budget_pct:.0f}% used")
 
     if spent > budget:
         st.error(f"✈️ Travel budget exceeded by {fmt(spent - budget, DC, rates)} this year.")
@@ -90,10 +84,9 @@ if budget > 0:
     else:
         st.success(f"✅ On pace! {fmt(budget - spent, DC, rates)} left for the rest of the year.")
 else:
-    st.info("Set a yearly travel budget in the settings above 👆")
+    st.info("Set a yearly travel budget in the settings above")
 
 # ── Breakdown + savings goal ──────────────────────────────────────────────────
-st.divider()
 c1, c2 = st.columns(2)
 with c1:
     st.subheader(f"Travel spending by month ({year})")
@@ -124,13 +117,14 @@ with c1:
                               paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
             st.plotly_chart(fig, width="stretch")
         else:
-            st.info("No travel spending logged this year yet.")
+            st.caption("No travel spending logged this year yet.")
     else:
-        st.info("No expenses yet.")
+        st.caption("No expenses yet.")
 
 with c2:
-    st.subheader("💰 Vacation savings goal")
+    st.subheader("Vacation savings goal")
     dfs = q.savings(user_id)
+    no_goal_msg = "Create a 'Vacation / Travel' savings goal to save for trips."
     if not dfs.empty:
         rows = dfs[dfs["goal_name"].isin(["Vacation / Travel", "Vacation"])]
         if not rows.empty:
@@ -138,6 +132,6 @@ with c2:
             st.metric("Saved towards vacation", fmt(bal, DC, rates))
             st.caption("Deposit into the 'Vacation / Travel' savings goal to grow this.")
         else:
-            st.info("Create a 'Vacation / Travel' savings goal to save for trips.")
+            st.caption(no_goal_msg)
     else:
-        st.info("Create a 'Vacation / Travel' savings goal to save for trips.")
+        st.caption(no_goal_msg)

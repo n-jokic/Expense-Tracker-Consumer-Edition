@@ -353,10 +353,10 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
 
 
 def render_bank_import_page(user_id: int, rates: dict):
-    st.title("🏦 Import Bank Statement")
+    st.title("Bank import")
     st.caption("Import expenses directly from your bank's CSV export — we'll auto-categorise them for you.")
 
-    with st.expander("ℹ️ Supported formats & how to export"):
+    with st.expander("Supported formats & how to export", icon=":material/info:"):
         st.markdown("""
         | Bank | How to export |
         |---|---|
@@ -396,13 +396,13 @@ def render_bank_import_page(user_id: int, rates: dict):
             return
 
     if raw is not None:
-        st.subheader("📋 Preview")
+        st.subheader("Preview")
         st.dataframe(raw.head(5), hide_index=True)
         bank_fmt  = detect_bank_format(raw)
         st.caption(f"Detected format: **{bank_fmt.capitalize()}**")
         normalised = normalize_bank_csv(raw, bank_fmt)
     else:
-        st.subheader("📋 Preview")
+        st.subheader("Preview")
         st.dataframe(normalised.head(5), hide_index=True)
         st.caption("Detected format: **PDF statement**")
 
@@ -517,7 +517,7 @@ def render_bank_import_page(user_id: int, rates: dict):
                    " — these rows will be skipped unless you set the currency "
                    "to a supported one.")
 
-    st.subheader(f"✏️ Review & edit ({len(expenses_only)} rows)")
+    st.subheader(f"Review & edit ({len(expenses_only)} rows)")
     st.caption("Correct categories and untick any row you don't want to import.")
 
     review = expenses_only[["date","description","amount","currency","amount_eur",
@@ -551,8 +551,8 @@ def render_bank_import_page(user_id: int, rates: dict):
 
     n_include = int(edited["include"].sum()) if not edited.empty else 0
 
-    st.divider()
-    if st.button(f"✅ Import {n_include} expenses", type="primary", width="stretch"):
+    if st.button(f"Import {n_include} expenses", type="primary", width="stretch",
+                 icon=":material/check:"):
         existing = q.expenses(user_id)
         existing_keys = set()
         if not existing.empty:
@@ -578,7 +578,8 @@ def render_bank_import_page(user_id: int, rates: dict):
 
         if imported > 0:
             q.bump_db_version()
-            st.success(f"✅ Successfully imported **{imported}** expenses!")
+            st.success(f"Successfully imported **{imported}** expenses!",
+                       icon=":material/check:")
             if skipped:
                 st.caption(f"{skipped} row(s) skipped (invalid amounts or duplicates).")
             if failed:

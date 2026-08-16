@@ -27,13 +27,19 @@ rates    = st.session_state.rates
 settings = st.session_state.settings
 today    = date.today()
 
-st.title("🛍️ Big purchases")
+st.title(":material/shopping_cart: Big purchases")
 st.caption("Decide what's worth it: how many work-hours it costs vs how much you'll actually use it.")
 help_expander("How the matrix works",
               "Each item is placed on a 4-square matrix: the x-axis is how much you expect "
               "to use it (hours/month) and the y-axis is how many hours of work it costs "
               "(price ÷ your hourly rate). High use + low work = quick win; low use + high work "
               "= reconsider. Lines are drawn at the median of your items.")
+
+if (flash := st.session_state.pop("bp_flash", None)):
+    if flash[0] == "success":
+        st.success(flash[1], icon=":material/check_circle:")
+    else:
+        st.toast(flash[1], icon=":material/check_circle:")
 
 hourly_rate = float(settings.get("hourly_rate") or 0.0)
 rate_source = "manual"
@@ -63,13 +69,12 @@ with hr1:
         st.caption("💼 Auto-calculated from your salary settings "
                    "(salary ÷ 160 hours/month). Save a value above to override.")
 with hr2:
-    st.write("")
-    if st.button("💾 Save rate", width="stretch", key="bp_save_rate"):
+    if st.button("Save rate", icon=":material/save:", width="stretch", key="bp_save_rate"):
         q.save_settings(user_id, {"hourly_rate": float(new_rate)})
         st.rerun()
 
 # ── Add form ──────────────────────────────────────────────────────────────────
-with st.form("bp_form", clear_on_submit=False):
+with st.form("bp_form", clear_on_submit=True):
     c1, c2 = st.columns(2)
     with c1:
         bp_name = st.text_input("Item name", placeholder="e.g. New laptop")
@@ -84,7 +89,7 @@ with st.form("bp_form", clear_on_submit=False):
         bp_imp  = st.slider("Importance", 1, 5, 3,
                             help="1 = nice to have · 5 = life-changing")
     bp_notes = st.text_input("Notes (optional)")
-    if st.form_submit_button("➕ Add to wishlist", type="primary"):
+    if st.form_submit_button("Add to wishlist", type="primary", width="stretch", icon=":material/add:"):
         if bp_name.strip():
             pe = to_eur(bp_price, bp_cur, rates)
             add_big_purchase(user_id, {
@@ -94,7 +99,7 @@ with st.form("bp_form", clear_on_submit=False):
                 "status": "wishlist", "notes": bp_notes,
             })
             q.bump_db_version()
-            st.success(f"✅ **{bp_name}** added to your wishlist!")
+            st.session_state["bp_flash"] = ("success", f"**{bp_name}** added to your wishlist.")
             st.rerun()
         else:
             st.error("Please give the item a name.")
@@ -102,14 +107,14 @@ with st.form("bp_form", clear_on_submit=False):
 # ── Matrix & list ─────────────────────────────────────────────────────────────
 dfb = q.big_purchases(user_id)
 if dfb.empty:
-    st.info("No big purchases yet — add one above 👆")
+    st.info("No big purchases yet — add one above")
     st.stop()
 
 pending = dfb[dfb["status"] != "bought"] if not dfb.empty else pd.DataFrame()
 
 if hourly_rate > 0 and not pending.empty:
     st.divider()
-    st.subheader("🧭 Priority matrix")
+    st.subheader("Priority matrix")
 
     work = pending["price_eur"] / hourly_rate
     med_work  = float(work.median())
@@ -171,7 +176,7 @@ def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
                 "recurring": False, "notes": str(notes) or "Big purchase",
             })
             q.bump_db_version()
-            st.toast(f"✅ Logged **{name}** as an expense!", icon="🛍️")
+            st.session_state["bp_flash"] = ("toast", f"Logged **{name}** as an expense.")
             st.rerun()
 
 
@@ -228,7 +233,7 @@ def edit_purchase_dialog(uid: int, row):
 
 # ── Item list ─────────────────────────────────────────────────────────────────
 st.divider()
-st.subheader("📝 Wishlist items")
+st.subheader("Wishlist items")
 for _, row in dfb.iterrows():
     if hourly_rate > 0 and row["price_eur"] > 0:
         wh = float(row["price_eur"]) / hourly_rate
@@ -240,12 +245,9 @@ for _, row in dfb.iterrows():
 
     l1, l2, l3, l4 = st.columns([3.2, 1.6, 1.6, 1.4])
     with l1:
-        st.markdown(
-            f"{status_icon} **{row['name']}**  \n"
-            f"<span style='color:#888;font-size:12px;'>{row['category']} · "
-            f"importance {int(row['importance'])}/5 · "
-            f"use {float(row['usage_hours']):,.1f} h/mo{work_str}</span>",
-            unsafe_allow_html=True)
+        st.markdown(f"{status_icon} **{row['name']}**")
+        st.caption(f"{row['category']} · importance {int(row['importance'])}/5 · "
+                   f"use {float(row['usage_hours']):,.1f} h/mo{work_str}")
     with l2:
         st.write(fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates))
 
@@ -261,18 +263,17 @@ for _, row in dfb.iterrows():
         )
     with l4:
         if row["status"] != "bought":
-            if st.button("✅ Bought → log expense", key=f"bp_buy_{row['id']}", width="stretch"):
+            if st.button("Bought → log expense", icon=":material/check_circle:", key=f"bp_buy_{row['id']}", width="stretch"):
                 confirm_purchase_dialog(
                     user_id, str(row["id"]), str(row["name"]), str(row["category"]),
                     float(row["price"]), str(row["currency"]), float(row["price_eur"]),
                     str(row.get("notes", "")),
                 )
-        if st.button(":material/edit: Edit", key=f"bp_edit_{row['id']}", width="stretch",
+        if st.button("Edit", icon=":material/edit:", key=f"bp_edit_{row['id']}", width="stretch",
                      help="Edit this item"):
             edit_purchase_dialog(user_id, row)
-        if st.button(":material/delete: Delete", key=f"bp_del_{row['id']}", width="stretch",
+        if st.button("Delete", icon=":material/delete:", key=f"bp_del_{row['id']}", width="stretch",
                      help="Delete this item"):
             delete_big_purchase(user_id, row["id"])
             q.bump_db_version()
             st.rerun()
-    st.divider()

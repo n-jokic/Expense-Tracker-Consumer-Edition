@@ -517,7 +517,7 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
 # ── Settings UI ───────────────────────────────────────────────────────────────
 
 def render_notification_settings(user_id: int, settings: dict):
-    st.subheader("📧 Email Notifications")
+    st.subheader(":material/email: Email notifications")
     st.caption("Get budget alerts and bill reminders by email.")
 
     email_on = st.toggle("Enable email notifications",
@@ -555,9 +555,9 @@ def render_notification_settings(user_id: int, settings: dict):
                                    value=bool(settings.get("weekly_summary", False)))
             c_save, c_test = st.columns(2)
             with c_save:
-                saved = st.form_submit_button("💾 Save", type="primary", width="stretch")
+                saved = st.form_submit_button("Save", type="primary", icon=":material/save:", width="stretch")
             with c_test:
-                test  = st.form_submit_button("📤 Send test email", width="stretch")
+                test  = st.form_submit_button("Send test email", icon=":material/send:", width="stretch")
 
         if saved:
             updates = {
@@ -572,7 +572,7 @@ def render_notification_settings(user_id: int, settings: dict):
             if smtp_pass:
                 updates["smtp_password_enc"] = _encrypt(smtp_pass)
             q.save_settings(user_id, updates)
-            st.success("✅ Notification settings saved!")
+            st.success("Notification settings saved!", icon=":material/check:")
             st.rerun()
 
         if test:
@@ -593,7 +593,7 @@ def render_notification_settings(user_id: int, settings: dict):
                 else:
                     st.error(f"Failed to send: {msg}")
     else:
-        if st.button("💾 Save (disabled)", width="stretch"):
+        if st.button("Save (disabled)", icon=":material/save:", width="stretch"):
             q.save_settings(user_id, {"email_alerts": False})
             st.success("Email notifications disabled.")
             st.rerun()

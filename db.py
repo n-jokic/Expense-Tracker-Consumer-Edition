@@ -445,7 +445,7 @@ def _migrate_taxonomy(engine):
     """Idempotent taxonomy rewrite: only rows whose category/subcategory pair
     IS an old name are rewritten, so re-runs naturally match nothing."""
     from sqlalchemy import inspect, text
-    from utils import TAXONOMY_MIGRATION, CATEGORY_RENAMES, remap_category_subcategory
+    from utils import TAXONOMY_MIGRATION, CATEGORY_RENAMES
 
     insp = inspect(engine)
     tables = set(insp.get_table_names())

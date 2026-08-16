@@ -14,7 +14,7 @@ from db import add_savings, update_savings, soft_delete_savings, restore_savings
 from insights import savings_projection
 from utils import (
     SAVINGS_GOALS, SUPPORTED_CURRENCIES, MAX_AMOUNT, MAX_SAVINGS_TARGET, CHART_COLORS,
-    fmt, pbar, to_display, to_eur, get_currency_symbol,
+    fmt, to_display, to_eur, get_currency_symbol,
     help_expander, to_excel,
 )
 
@@ -24,7 +24,7 @@ rates   = st.session_state.rates
 SYM     = get_currency_symbol(DC)
 today   = date.today()
 
-st.title("🎯 Savings goals")
+st.title(":material/savings: Savings goals")
 st.caption("Log each deposit (or withdrawal — use a negative amount). "
            "Compound interest is calculated monthly on your running balance.")
 help_expander("How compound interest works",
@@ -43,8 +43,9 @@ oc, _ = st.columns([1, 3])
 with oc:
     cur = st.selectbox("Save in", list(SUPPORTED_CURRENCIES.keys()), key="sav_cur")
 sym = get_currency_symbol(cur)
+st.caption("Currency applies immediately.")
 
-with st.form("sav_form", clear_on_submit=False):
+with st.form("sav_form", clear_on_submit=True):
     c1, c2 = st.columns(2)
     with c1:
         sd      = st.date_input("Date", value=today)
@@ -62,7 +63,7 @@ with st.form("sav_form", clear_on_submit=False):
                                max_value=100.0, step=0.01, format="%.2f",
                                help="e.g. 4.50 for 4.5% p.a., compounded monthly")
     notes = st.text_input("Notes")
-    saved = st.form_submit_button("✅ Save entry", width="stretch", type="primary")
+    saved = st.form_submit_button("Save entry", icon=":material/save:", width="stretch", type="primary")
 
 if saved:
     goal_name = (new_goal.strip() if gn_sel == "➕ New goal..." else gn_sel)
@@ -111,7 +112,7 @@ def edit_savings_dialog(uid: int, row):
                                 min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
                                 value=float(row["deposited"]), key="sav_edit_dep")
-        e_tgt = st.number_input("Target (EUR)", min_value=0.0,
+        e_tgt = st.number_input(f"Target ({get_currency_symbol('EUR')})", min_value=0.0,
                                 max_value=MAX_SAVINGS_TARGET, step=100.0, format="%.2f",
                                 value=float(row["target_eur"]), key="sav_edit_tgt")
     e_ir = st.number_input("Annual interest rate (%)", min_value=0.0,
@@ -162,22 +163,12 @@ if not dfs.empty:
             portfolio_value += float(h["quantity"] or 0.0) * price_eur
 
     st.divider()
-    k1, k2, k3, k4, k5 = st.columns(5)
-    for col, lbl, val, cls in [
-        (k1, "Total balance",   total_balance,   "pos"),
-        (k2, "Saved this year", saved_year,      "pos"),
-        (k3, "Interest earned", interest_total,  "pos"),
-        (k4, "Portfolio",       portfolio_value, "pos"),
-        (k5, "Active goals",    None,            "neu"),
-    ]:
-        with col:
-            v = f"{dfs['goal_name'].nunique()}" if lbl == "Active goals" else fmt(val, DC, rates)
-            st.markdown(
-                f'<div class="kpi">'
-                f'<div class="kpi-lbl">{lbl}</div>'
-                f'<div class="kpi-val {cls}">{v}</div>'
-                f'</div>', unsafe_allow_html=True
-            )
+    with st.container(horizontal=True):
+        st.metric("Total balance", fmt(total_balance, DC, rates), border=True)
+        st.metric("Saved this year", fmt(saved_year, DC, rates), border=True)
+        st.metric("Interest earned", fmt(interest_total, DC, rates), border=True)
+        st.metric("Portfolio", fmt(portfolio_value, DC, rates), border=True)
+        st.metric("Active goals", dfs["goal_name"].nunique(), border=True)
 
     # ── Goal progress ────────────────────────────────────────────────────────
     st.divider()
@@ -191,13 +182,12 @@ if not dfs.empty:
         tr    = rows[rows["target_eur"] > 0]
         tgtv  = float(tr["target_eur"].iloc[-1]) if not tr.empty else 0
         pct   = min(bal / tgtv * 100, 100) if tgtv > 0 else 0
-        col   = "#00B050" if pct >= 75 else ("#F4A261" if pct >= 40 else "#E94560")
         avg_dep = float(rows["deposited_eur"].tail(3).mean()) if not rows.empty else 0.0
 
         gc1, gc2 = st.columns([4, 1])
         with gc1:
             st.markdown(f"**{g}**")
-            st.markdown(pbar(pct, col), unsafe_allow_html=True)
+            st.progress(pct / 100, text=f"{pct:.0f}% of target")
             proj = savings_projection(dfs, g)
             proj_str = ""
             if proj["months_to_goal"] and proj["months_to_goal"] > 0 and proj["projected_date"]:
@@ -211,8 +201,8 @@ if not dfs.empty:
                 + proj_str
             )
         with gc2:
-            st.metric("", f"{pct:.1f}%" if tgtv > 0 else "—")
-        st.write("")
+            st.metric("Progress", f"{pct:.1f}%" if tgtv > 0 else "—",
+                      label_visibility="collapsed")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -235,7 +225,7 @@ if not dfs.empty:
         st.plotly_chart(fig2, width="stretch")
 
     # ── Goal projections ─────────────────────────────────────────────────────
-    st.subheader("📈 Goal projections")
+    st.subheader("Goal projections")
     proj_rows = []
     for g in dfs["goal_name"].unique():
         proj = savings_projection(dfs, g)
@@ -256,19 +246,19 @@ if not dfs.empty:
         st.info("Set a target for a goal to see its projection (today → target date).")
 
     # ── Manage entries ───────────────────────────────────────────────────────
-    with st.expander("🗑️ Delete a savings entry"):
+    with st.expander("Delete a savings entry", icon=":material/delete:"):
         del_ids = dfs["id"].tolist()
         del_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"
                       for _, r in dfs.iterrows()]
         sel_idx = st.selectbox("Select entry", range(len(del_labels)),
                                format_func=lambda i: del_labels[i], key="sav_del_sel")
-        if st.button("🗑️ Move to trash", type="secondary", key="sav_del_btn", width="stretch"):
+        if st.button("Move to trash", icon=":material/delete:", type="secondary", key="sav_del_btn", width="stretch"):
             soft_delete_savings(user_id, del_ids[sel_idx])
             q.bump_db_version()
             st.toast("Savings entry moved to trash.", icon="🗑️")
             st.rerun()
 
-    with st.expander("✏️ Edit a savings entry"):
+    with st.expander("Edit a savings entry", icon=":material/edit:"):
         edit_ids = dfs["id"].tolist()
         edit_labels = [f"{r['date'].strftime('%d %b %Y') if pd.notna(r['date']) else '—'} — {r['goal_name']} {fmt(r['deposited_eur'], DC, rates)}"
                        for _, r in dfs.iterrows()]
@@ -280,21 +270,21 @@ if not dfs.empty:
     df_deleted = q.savings(user_id, include_deleted=True)
     df_deleted = df_deleted[df_deleted["is_deleted"] == True]
     if not df_deleted.empty:
-        with st.expander(f"🗑️ Recently deleted savings ({len(df_deleted)})"):
+        with st.expander(f"Recently deleted savings ({len(df_deleted)})", icon=":material/delete:"):
             for _, row in df_deleted.iterrows():
                 rc1, rc2, rc3 = st.columns([3, 2, 1])
                 with rc1: st.write(f"{row['goal_name']} — {row['date'].strftime('%d %b %Y') if pd.notna(row['date']) else '—'}")
                 with rc2: st.write(fmt(row["deposited_eur"], DC, rates))
                 with rc3:
-                    if st.button("↩️ Restore", key=f"rst_sav_{row['id']}", width="stretch"):
+                    if st.button("Restore", icon=":material/undo:", key=f"rst_sav_{row['id']}", width="stretch"):
                         restore_savings(user_id, row["id"])
                         q.bump_db_version()
                         st.toast("Savings entry restored!", icon="↩️")
                         st.rerun()
 
-    with st.expander("📥 Export"):
-        st.download_button("⬇️ Download savings.xlsx", data=to_excel(dfs),
+    with st.expander("Export", icon=":material/download:"):
+        st.download_button("Download savings.xlsx", icon=":material/download:", data=to_excel(dfs),
                            file_name="savings.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
-    st.info("No savings yet — log your first deposit above 👆")
+    st.info("No savings yet — log your first deposit above")

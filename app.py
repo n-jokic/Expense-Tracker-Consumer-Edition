@@ -28,7 +28,7 @@ from market_data import maybe_refresh_in_background
 # ── Page config & boot ────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="💰 Expense Tracker",
-    page_icon="💰",
+    page_icon=":material/account_balance_wallet:",
     layout="wide",
     initial_sidebar_state="auto",
 )
@@ -75,28 +75,27 @@ if new_ms:
 
 # ── Shared sidebar ────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"## 👋 {display_name}")
+    st.markdown(f"## {display_name}")
 
-    st.markdown("**Display currency**")
     cur_list  = list(SUPPORTED_CURRENCIES.keys())
     dc_default = settings.get("default_currency", "EUR")
     dc_idx    = cur_list.index(dc_default) if dc_default in cur_list else 0
-    DC = st.selectbox("Currency", cur_list, index=dc_idx, key="dc_sidebar")
+    DC = st.selectbox("Display currency", cur_list, index=dc_idx, key="dc_sidebar")
     st.session_state.dc = DC
 
     with st.form("rate_form"):
         rsd_val = st.number_input("Exchange rate (1 EUR = ? din)",
                                   value=float(rates.get("RSD", 117.0)),
                                   step=1.0, format="%.2f")
-        saved_rate = st.form_submit_button("💱 Update rate")
+        saved_rate = st.form_submit_button(
+            "Update rate", icon=":material/currency_exchange:", width="stretch",
+        )
     if saved_rate:
         new_rates = dict(st.session_state.settings.get("currency_rates") or {})
         new_rates["RSD"] = float(rsd_val)
         q.save_settings(user_id, {"currency_rates": new_rates})
         st.rerun()
-    st.caption(f"1 EUR = {rates['RSD']:.2f} din · other rates in ⚙️ Settings")
-
-    st.divider()
+    st.caption(f"1 EUR = {rates['RSD']:.2f} din · other rates in Settings")
 
     # Gamification
     render_gamification_sidebar(
@@ -105,10 +104,8 @@ with st.sidebar:
         settings=settings, loans_df=q.loans(user_id),
     )
 
-    st.divider()
-
     # Phone access panel (experimental)
-    st.markdown("**📱 Phone access** 🧪")
+    st.markdown("**Phone access**")
     port = get_server_port()
     urls, hostname = get_lan_urls(port)
     if urls:
@@ -116,22 +113,20 @@ with st.sidebar:
         qr_bytes = qr_png(urls[0])
         st.image(qr_bytes, width=220)
         st.download_button(
-            "⬇️ Download QR code", data=qr_bytes,
+            "Download QR code", data=qr_bytes,
             file_name="expense_tracker_qr.png", mime="image/png",
-            key="dl_qr", width="stretch",
+            key="dl_qr", icon=":material/download:", width="stretch",
         )
         st.caption("Scan with your phone camera — same Wi-Fi network.")
         if hostname:
             scheme = "https" if TLS_ENABLED else "http"
             st.caption(f"or {scheme}://{hostname}:{port}")
-        st.caption("🧪 Phone access & sync are **experimental** — "
+        st.caption("Phone access & sync are **experimental** — "
                    "see Settings → Sync for pairing.")
     else:
         st.caption("Start the server with `run_server.bat` and allow Private network access in the firewall prompt.")
 
-    st.divider()
-
-    if st.button("🚪 Logout", width="stretch"):
+    if st.button("Logout", icon=":material/logout:", width="stretch"):
         logout()
         st.rerun()
 

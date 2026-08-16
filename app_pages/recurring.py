@@ -21,13 +21,16 @@ user_id = st.session_state.user_id
 DC      = st.session_state.dc
 rates   = st.session_state.rates
 
-st.title("🔄 Recurring expenses")
+st.title(":material/autorenew: Recurring expenses")
 st.caption("One-click logging for monthly fixed costs — the actual amount may differ from the expected.")
 help_expander("What are recurring expenses?",
               "These are fixed monthly costs like rent, subscriptions, or utilities. "
               "Add them here once with an optional due day and start month — then tap 'Log now' "
               "each month and adjust the amount if the real bill differs from the expected one. "
               "Editing a template later never rewrites expenses already logged.")
+
+if (msg := st.session_state.pop("rec_flash", None)):
+    st.success(msg, icon=":material/check_circle:")
 
 dfe   = q.expenses(user_id)
 today = date.today()
@@ -92,12 +95,13 @@ def edit_template_dialog(uid: int, row):
             st.rerun()
 
 
-with st.expander("➕ Add new template"):
+with st.expander("Add new template", icon=":material/add:"):
     oc, _ = st.columns([1, 3])
     with oc:
         rc = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="rec_cur")
     rcat = st.selectbox("Category", CAT_LIST, key="rec_cat")
-    with st.form("rec_form", clear_on_submit=False):
+    st.caption("Currency and category apply immediately.")
+    with st.form("rec_form", clear_on_submit=True):
         rsym = get_currency_symbol(rc)
         ra1, ra2 = st.columns(2)
         with ra1:
@@ -114,7 +118,7 @@ with st.expander("➕ Add new template"):
         rstart = st.date_input("Starts in (month)", value=today, format="YYYY/MM/DD",
                                help="The template only appears in the monthly checklist "
                                     "and reminders from this month onward (the day is ignored).")
-        if st.form_submit_button("💾 Save template", type="primary"):
+        if st.form_submit_button("Save template", type="primary", width="stretch", icon=":material/save:"):
             re_eur = to_eur(ramt, rc, rates)
             add_recurring(user_id, {
                 "category": rcat,
@@ -126,7 +130,7 @@ with st.expander("➕ Add new template"):
                 "notes": rnotes, "active": True,
             })
             q.bump_db_version()
-            st.success(f"✅ {rdesc} saved as template!")
+            st.session_state["rec_flash"] = f"**{rdesc}** saved as a template."
             st.rerun()
 
 dfr    = q.recurring(user_id)
@@ -135,7 +139,7 @@ active = dfr[dfr["active"] == True] if not dfr.empty else pd.DataFrame()
 active = filter_started_templates(active, today.year, today.month)
 
 if active.empty:
-    st.info("No active templates yet. Add one above, or tick '🔄 Recurring' when logging an expense.")
+    st.info("No active templates yet. Add one above, or tick 'Recurring' when logging an expense.")
 else:
     st.subheader(f"Monthly checklist — {calendar.month_name[today.month]} {today.year}")
 
@@ -159,15 +163,12 @@ else:
 
         with rc1:
             ic = "✅" if done else "⏳"
-            st.markdown(
-                f"{ic} **{row['description']}**  \n"
-                f"<span style='color:#888;font-size:12px;'>"
-                f"{row['category']}{' › '+row['subcategory'] if row['subcategory'] else ''}"
-                f"</span>", unsafe_allow_html=True
-            )
+            st.markdown(f"{ic} **{row['description']}**")
+            st.caption(f"{row['category']}{' › ' + row['subcategory'] if row['subcategory'] else ''}")
 
         with rc2:
-            st.write(fmt(float(row["amount_eur"]), DC, rates))
+            st.metric("Expected", fmt(float(row["amount_eur"]), DC, rates),
+                      label_visibility="collapsed")
 
         with rc3:
             # NB: the due/overdue state is only meaningful while the bill is
@@ -204,7 +205,7 @@ else:
                                              value=float(row["amount"]),
                                              min_value=0.01, max_value=MAX_AMOUNT,
                                              step=0.50, format="%.2f", key=f"lr_a_{rid}")
-                    if st.button("✅ Log it", key=f"lr_c_{rid}", type="primary", width="stretch"):
+                    if st.button("Log it", icon=":material/check:", key=f"lr_c_{rid}", type="primary", width="stretch"):
                         ae = to_eur(p_amt, cur2, rates)
                         add_expense(user_id, {
                             "date": p_date, "category": row["category"],
@@ -224,10 +225,9 @@ else:
                             extra = f" ({'+' if diff > 0 else ''}{diff:,.2f} {cur2} vs expected)"
                         st.toast(f"✅ Logged {row['description']}: {p_amt:,.2f} {cur2}{extra}")
                         st.rerun()
-            if st.button(":material/edit: Edit", key=f"ed_{rid}", width="stretch"):
+            if st.button("Edit", icon=":material/edit:", key=f"ed_{rid}", width="stretch"):
                 edit_template_dialog(user_id, row)
-            if st.button("Remove", key=f"dr_{rid}", type="secondary", width="stretch"):
+            if st.button("Remove", icon=":material/delete:", key=f"dr_{rid}", type="secondary", width="stretch"):
                 update_recurring(user_id, row["id"], {"active": False})
                 q.bump_db_version()
                 st.rerun()
-        st.divider()

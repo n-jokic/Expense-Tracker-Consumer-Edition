@@ -21,19 +21,18 @@ DC      = st.session_state.dc
 rates   = st.session_state.rates
 SYM     = get_currency_symbol(DC)
 
-st.title("📅 Log expense")
 help_expander("How to log an expense",
               "Choose a category first — the subcategory list will update automatically. "
               "Add a short description so you can search for it later. "
-              "Tick '🔄 Recurring' to also save it as a monthly template. "
-              "On your phone, use '📷 Scan a receipt' to photograph the bill — "
+              "Tick 'Recurring' to also save it as a monthly template. "
+              "On your phone, use 'Scan a receipt' to photograph the bill — "
               "the app reads it (OCR), guesses the amount/merchant/category, "
               "and you accept, edit, or reject the result.")
 
 # ── Receipt scan (OCR on the server; phone just sends the photo) ─────────────
-with st.expander("📷 Scan a receipt (OCR)"):
+with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
     cam_img = st.camera_input("Take a photo of the receipt", key="receipt_cam")
-    up_img  = st.file_uploader("…or upload a photo", type=["png","jpg","jpeg"],
+    up_img  = st.file_uploader("Or upload a photo", type=["png","jpg","jpeg"],
                                key="receipt_up")
     image_bytes = None
     if cam_img is not None:
@@ -45,12 +44,12 @@ with st.expander("📷 Scan a receipt (OCR)"):
         result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
         if not result["ok"]:
             if result.get("reason") == "ocr_not_installed":
-                st.warning("📷 Tesseract isn't installed on the server PC yet. "
+                st.warning("Tesseract isn't installed on the server PC yet. "
                            "Install it once with "
                            "`winget install UB-Mannheim.TesseractOCR` — the app "
                            "detects it automatically (no PATH setup or restart needed).")
             else:
-                st.warning("📷 OCR couldn't read that image — try a sharper, "
+                st.warning("OCR couldn't read that image — try a sharper, "
                            "straighter photo, or enter the expense manually below.")
         else:
             st.success("Text recognised — check the details, then save (or fix anything wrong).")
@@ -83,9 +82,10 @@ with st.expander("📷 Scan a receipt (OCR)"):
                                f"(confidence {result['confidence']:.0%}).")
                 c_save, c_rej = st.columns(2)
                 with c_save:
-                    r_save = st.form_submit_button("✅ Save expense", type="primary", width="stretch")
+                    r_save = st.form_submit_button("Save expense", type="primary", width="stretch",
+                                                   icon=":material/save:")
                 with c_rej:
-                    r_rej = st.form_submit_button("🗑️ Reject", width="stretch")
+                    r_rej = st.form_submit_button("Reject", width="stretch", icon=":material/delete:")
 
             if r_save:
                 if not (r_desc.strip() and float(r_amt) > 0):
@@ -115,11 +115,12 @@ with st.expander("📷 Scan a receipt (OCR)"):
                         "suggest_subcategory_accepted": (final_sub == suggested_sub) if suggested_sub else None,
                     })
                     q.bump_db_version()
-                    st.success(f"✅ **{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}")
+                    st.success(f"**{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}",
+                               icon=":material/check:")
                     st.balloons()
                     st.rerun()
             if r_rej:
-                st.toast("Receipt discarded — nothing was saved.", icon="🗑️")
+                st.toast("Receipt discarded — nothing was saved.", icon=":material/delete:")
                 st.rerun()
 
 oc1, oc2 = st.columns([3, 1])
@@ -129,7 +130,7 @@ with oc2:
     cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="exp_cur_outer")
 sym = get_currency_symbol(cur)
 
-with st.form("exp_form", clear_on_submit=False):
+with st.form("exp_form", clear_on_submit=True):
     f1, f2 = st.columns(2)
     with f1:
         exp_date = st.date_input("Date", value=date.today())
@@ -137,10 +138,11 @@ with st.form("exp_form", clear_on_submit=False):
     with f2:
         amount  = st.number_input(f"Amount ({sym})", min_value=0.01,
                                   max_value=MAX_AMOUNT, step=0.50, format="%.2f")
-        is_rec  = st.checkbox("🔄 Also save as recurring template")
+        is_rec  = st.checkbox("Also save as recurring template")
     desc  = st.text_input("Description *", placeholder="e.g. Lidl weekly shop")
     notes = st.text_input("Notes (optional)")
-    saved = st.form_submit_button("✅ Save expense", width="stretch", type="primary")
+    saved = st.form_submit_button("Save expense", width="stretch", type="primary",
+                                  icon=":material/save:")
 
 if saved:
     if not desc.strip():
@@ -165,11 +167,10 @@ if saved:
             "notes": notes,
         })
         q.bump_db_version()
-        st.success(f"✅ **{desc}** — {fmt_dual(amount, cur, ae)}")
+        st.success(f"**{desc}** — {fmt_dual(amount, cur, ae)}", icon=":material/check:")
         st.balloons()
 
 # ── Expense history ───────────────────────────────────────────────────────────
-st.divider()
 st.subheader("Expense history")
 df_exp = q.expenses(user_id)
 
@@ -179,7 +180,7 @@ if not df_exp.empty:
         st.session_state["exp_hist_page"] = 0
 
     sc1, sc2, sc3 = st.columns([3, 2, 2])
-    with sc1: srch = st.text_input("🔍 Search", placeholder="Search description...", key="exp_srch",
+    with sc1: srch = st.text_input("Search", placeholder="Search description...", key="exp_srch",
                                    on_change=_reset_hist_page)
     with sc2: catf = st.multiselect("Category filter", CAT_LIST, key="exp_catf",
                                     on_change=_reset_hist_page)
@@ -215,7 +216,7 @@ if not df_exp.empty:
     with nv2:
         if total:
             st.caption(f"Showing {start + 1}–{end} of {total} — "
-                       "edit cells below, tick 🗑️ to trash.")
+                       "edit cells below, tick Trash to trash.")
         else:
             st.caption("Showing 0 of 0 — no matching rows.")
     with nv3:
@@ -259,15 +260,17 @@ if not df_exp.empty:
             "currency": st.column_config.SelectboxColumn("Currency",
                                                          options=list(SUPPORTED_CURRENCIES.keys())),
             "notes": st.column_config.TextColumn("Notes"),
-            "trash": st.column_config.CheckboxColumn("🗑️ Trash", default=False),
+            "trash": st.column_config.CheckboxColumn("Trash", default=False),
         },
     )
 
     c_save, c_trash = st.columns(2)
     with c_save:
-        save_changes = st.button("💾 Save changes", type="primary", width="stretch")
+        save_changes = st.button("Save changes", type="primary", width="stretch",
+                                 icon=":material/save:")
     with c_trash:
-        trash_selected = st.button("🗑️ Move ticked rows to trash", type="secondary", width="stretch")
+        trash_selected = st.button("Move ticked rows to trash", type="secondary",
+                                   width="stretch", icon=":material/delete:")
 
     if save_changes:
         changed = 0
@@ -299,12 +302,12 @@ if not df_exp.empty:
             changed += 1
         if changed:
             q.bump_db_version()
-            st.toast(f"✅ {changed} row(s) updated", icon="✅")
+            st.toast(f"{changed} row(s) updated", icon=":material/check:")
             st.rerun()
         elif rejected:
             safe_error(f"{rejected} row(s) not saved — amount/description must not be empty.")
         else:
-            st.info("No changes detected.")
+            st.caption("No changes detected.")
 
     if trash_selected:
         removed = 0
@@ -314,30 +317,32 @@ if not df_exp.empty:
                 removed += 1
         if removed:
             q.bump_db_version()
-            st.toast(f"{removed} row(s) moved to trash — you can restore them below.", icon="🗑️")
+            st.toast(f"{removed} row(s) moved to trash — you can restore them below.", icon=":material/delete:")
             st.rerun()
         else:
-            st.info("Tick the 🗑️ checkbox on the rows you want to trash.")
+            st.caption("Tick the Trash checkbox on the rows you want to trash.")
 
     # Restore deleted
     df_deleted = q.expenses(user_id, include_deleted=True)
     df_deleted = df_deleted[df_deleted["is_deleted"] == True]
     if not df_deleted.empty:
-        with st.expander(f"🗑️ Recently deleted ({len(df_deleted)})"):
+        with st.expander(f"Recently deleted ({len(df_deleted)})", icon=":material/delete:"):
             for _, row in df_deleted.iterrows():
                 rc1, rc2, rc3 = st.columns([3, 2, 1])
                 with rc1: st.write(f"{row['description']} — {row['category']}")
                 with rc2: st.write(fmt_row(row["amount_eur"], row["amount"], row["currency"], DC, rates))
                 with rc3:
-                    if st.button("↩️ Restore", key=f"rst_{row['id']}", width="stretch"):
+                    if st.button("Restore", key=f"rst_{row['id']}", width="stretch",
+                                 icon=":material/undo:"):
                         restore_expense(user_id, row["id"])
                         q.bump_db_version()
-                        st.toast("Expense restored!", icon="↩️")
+                        st.toast("Expense restored!", icon=":material/undo:")
                         st.rerun()
 
-    with st.expander("📥 Export"):
-        st.download_button("⬇️ Download expenses.xlsx", data=to_excel(df_exp),
+    with st.expander("Export", icon=":material/download:"):
+        st.download_button("Download expenses.xlsx", data=to_excel(df_exp),
                            file_name="expenses.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           icon=":material/download:")
 else:
-    st.info("No expenses yet — add your first one above 👆")
+    st.caption("No expenses yet — add your first one above.")

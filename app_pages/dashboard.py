@@ -22,8 +22,6 @@ DC      = st.session_state.dc
 rates   = st.session_state.rates
 SYM     = get_currency_symbol(DC)
 
-st.title("📊 Dashboard")
-
 dfe = q.expenses(user_id)
 dfi = q.income(user_id)
 dfs = q.savings(user_id)
@@ -50,9 +48,8 @@ if personal_view:
             st.page_link("app_pages/log_income.py", label="Log income",
                          icon=":material/payments:", width="stretch")
         with qa3:
-            st.page_link("app_pages/settings.py", label="Add budget",
-                         icon=":material/tune:", help="Budgets live in Settings",
-                         width="stretch")
+            st.page_link("app_pages/settings.py", label="Open settings",
+                         icon=":material/tune:", width="stretch")
         st.caption("Budgets live in Settings — add or edit them there.")
 
     # Upcoming bills: active recurring templates with a due day within the
@@ -114,11 +111,21 @@ if personal_view:
             rec["date"] = rec["date"].dt.strftime("%d %b %Y").fillna("")
             rec["Amount"] = rec.apply(lambda r: fmt_row(r["amount_eur"], r["amount"],
                                                         r["currency"], DC, rates), axis=1)
-            st.dataframe(rec[["date", "description", "category", "Amount"]],
-                         hide_index=True, width="stretch")
+            st.dataframe(
+                rec[["date", "description", "category", "Amount"]].rename(
+                    columns={"date": "Date", "description": "Description",
+                             "category": "Category"}),
+                hide_index=True, width="stretch",
+                column_config={
+                    "Date": st.column_config.TextColumn("Date"),
+                    "Description": st.column_config.TextColumn("Description"),
+                    "Category": st.column_config.TextColumn("Category"),
+                    "Amount": st.column_config.TextColumn("Amount"),
+                },
+            )
 
 if personal_view and dfe.empty and dfi.empty:
-    st.info("No data yet — start logging expenses or income 👈")
+    st.info("No data yet — start logging expenses or income.")
     st.stop()
 
 ayrs = sorted(set(
@@ -153,8 +160,7 @@ def prev_flt(df):
 def _delta(cur, prev):
     if prev and prev > 0:
         pct = (cur - prev) / prev * 100
-        arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
-        return f"{arrow} {abs(pct):.0f}% vs prev"
+        return f"{abs(pct):.0f}% vs prev"
     return ""
 
 exp   = flt(dfe)
@@ -172,46 +178,23 @@ sr = (sd / ie * 100) if ie > 0 else 0.0
 pie = float(prev_inc["actual_eur"].sum()) if not prev_inc.empty else 0.0
 pee = float(prev_exp["amount_eur"].sum()) if not prev_exp.empty else 0.0
 
-st.divider()
 if personal_view:
-    k1, k2, k3, k4, k5 = st.columns(5)
-    for col, lbl, eur, cls, dlt in [
-        (k1, "Income",       ie,   "pos", _delta(ie, pie)),
-        (k2, "Expenses",     ee,   "neg", _delta(ee, pee)),
-        (k3, "Saved",        sd,   "pos", ""),
-        (k4, "Net Balance",  ne,   "pos" if ne >= 0 else "neg", ""),
-        (k5, "Savings Rate", None, "pos" if sr >= 15 else "neg", ""),
-    ]:
-        with col:
-            v   = f"{sr:.1f}%" if lbl == "Savings Rate" else fmt(eur, DC, rates)
-            sub = "" if lbl == "Savings Rate" else (
-                f'<div class="kpi-sub">{fmt(eur, "EUR" if DC != "EUR" else "RSD", rates)}</div>'
-            )
-            dlt_html = f'<div class="kpi-sub">{dlt}</div>' if dlt else ""
-            st.markdown(
-                f'<div class="kpi">'
-                f'<div class="kpi-lbl">{lbl}</div>'
-                f'<div class="kpi-val {cls}">{v}</div>{sub}{dlt_html}'
-                f'</div>', unsafe_allow_html=True
-            )
+    with st.container(horizontal=True):
+        st.metric("Income", fmt(ie, DC, rates), delta=_delta(ie, pie) or None, border=True)
+        st.metric("Expenses", fmt(ee, DC, rates), delta=_delta(ee, pee) or None,
+                  delta_color="inverse", border=True)
+        st.metric("Saved", fmt(sd, DC, rates), border=True)
+        st.metric("Net balance", fmt(ne, DC, rates), border=True)
+        st.metric("Savings rate", f"{sr:.1f}%", border=True)
 else:
     # Household spending summary — no personal net balance or savings KPIs.
     hh_members = q.household_members(hh_id)
     hh_top     = (exp.groupby("category")["amount_eur"].sum().idxmax()
                   if not exp.empty else None)
-    h1, h2, h3 = st.columns(3)
-    for col, lbl, v, cls in [
-        (h1, "Household spending", fmt(ee, DC, rates), "neg"),
-        (h2, "Members",            str(len(hh_members)), "pos"),
-        (h3, "Top category",       hh_top or "—", "pos"),
-    ]:
-        with col:
-            st.markdown(
-                f'<div class="kpi">'
-                f'<div class="kpi-lbl">{lbl}</div>'
-                f'<div class="kpi-val {cls}">{v}</div>'
-                f'</div>', unsafe_allow_html=True
-            )
+    with st.container(horizontal=True):
+        st.metric("Household spending", fmt(ee, DC, rates), border=True)
+        st.metric("Members", str(len(hh_members)), border=True)
+        st.metric("Top category", hh_top or "—", border=True)
     st.caption("Personal income, savings, budgets, loans and fun money are hidden "
                "in household view — switch to Personal mode to see them.")
 
@@ -234,9 +217,8 @@ if personal_view and not rec_df.empty:
                 except (ValueError, TypeError):
                     pass
             yearly += float(r["amount_eur"]) * months
-        st.caption("")
-        st.metric("🔁 Fixed costs / year (recurring bills)",
-                  f"{fmt(yearly, DC, rates)} · {len(rec_active)} bills")
+        st.metric("Fixed costs / year (recurring bills)",
+                  f"{fmt(yearly, DC, rates)} · {len(rec_active)} bills", border=True)
 
 # Debt KPIs (loans) — personal
 from finance import loan_schedule
@@ -259,13 +241,12 @@ if personal_view and not df_loans.empty:
         if sched["payoff_date"]:
             free_dates.append(sched["payoff_date"])
     if total_debt > 0 or free_dates:
-        st.caption("")
         d1, d2 = st.columns(2)
         with d1:
-            st.metric("💳 Total debt", fmt(total_debt, DC, rates))
+            st.metric("Total debt", fmt(total_debt, DC, rates), border=True)
         with d2:
             free = max(free_dates).strftime("%b %Y") if free_dates else "—"
-            st.metric("Debt-free by", free)
+            st.metric("Debt-free by", free, border=True)
 
 st.divider()
 
@@ -281,23 +262,23 @@ if personal_view and not dfb.empty and not exp.empty:
         act_val = float(ca.get(c, 0))
         if bud_val > 0 and act_val > bud_val * NEAR_LIMIT_THRESHOLD:
             if act_val > bud_val:
-                alts.append(("🔴", "error", c, act_val, bud_val,
+                alts.append(("error", c, act_val, bud_val,
                               f"Over by {fmt(act_val - bud_val, DC, rates)}"))
             else:
-                alts.append(("🟡", "warning", c, act_val, bud_val,
+                alts.append(("warning", c, act_val, bud_val,
                               f"{act_val / bud_val * 100:.0f}% used"))
     if alts:
-        st.subheader("⚠️ Budget alerts")
-        for icon, lvl, c, a, b, msg in alts:
+        st.subheader("Budget alerts")
+        for lvl, c, a, b, msg in alts:
             fn = st.error if lvl == "error" else st.warning
-            fn(f"{icon} **{c}** — spent {fmt(a, DC, rates)} of {fmt(b, DC, rates)} budget. {msg}")
-        st.divider()
+            fn(f"**{c}** — spent {fmt(a, DC, rates)} of {fmt(b, DC, rates)} budget. {msg}",
+               icon=":material/error:" if lvl == "error" else ":material/warning:")
 
 # Budget progress bars for the selected month (personal)
 if personal_view and sm > 0 and not dfb.empty and not exp.empty:
     bf3 = dfb[(dfb["year"] == sy) & (dfb["month"] == sm)]
     if not bf3.empty:
-        st.subheader(f"📊 Budget progress — {calendar.month_name[sm]}")
+        st.subheader(f"Budget progress — {calendar.month_name[sm]}")
         cb3 = effective_category_budgets(bf3)
         ca3 = exp.groupby("category")["amount_eur"].sum()
         for c in ca3.index:
@@ -308,7 +289,6 @@ if personal_view and sm > 0 and not dfb.empty and not exp.empty:
             pct = min(a / b, 1.0)
             st.markdown(f"**{c}** — {fmt(a, DC, rates)} of {fmt(b, DC, rates)} ({pct*100:.0f}%)")
             st.progress(pct)
-        st.divider()
 
 # Fun money (current calendar month, regardless of the selected period) — personal
 settings_dash = st.session_state.settings
@@ -322,12 +302,11 @@ if personal_view and fun_allowance > 0:
         bonus = float(settings_dash.get("fun_bonus_amount") or 0.0)
     allowance = fun_allowance + bonus
     fpct = min(fun_month / allowance, 1.0) if allowance > 0 else 0.0
-    st.subheader("🎈 Fun money")
+    st.subheader("Fun money")
     bonus_str = f" · incl. +€{bonus:.0f} milestone bonus" if bonus > 0 else ""
     st.markdown(f"**{fmt(fun_month, DC, rates)}** of {fmt(allowance, DC, rates)} "
                 f"({fpct*100:.0f}%{bonus_str})")
     st.progress(fpct)
-    st.divider()
 
 # Charts row 1
 r1a, r1b = st.columns(2)
@@ -343,7 +322,7 @@ with r1a:
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, width="stretch")
     else:
-        st.info("No expenses for this period.")
+        st.caption("No expenses for this period.")
 
 with r1b:
     if personal_view:
@@ -382,7 +361,7 @@ with r1b:
                               xaxis_tickangle=-30, yaxis_title=SYM)
             st.plotly_chart(fig, width="stretch")
     else:
-        st.info("Budget vs actual is personal — switch to Personal mode to see it.")
+        st.caption("Budget vs actual is personal — switch to Personal mode to see it.")
 
 # Monthly trends (personal — mixes income/savings with expenses)
 if personal_view:
@@ -457,7 +436,7 @@ if personal_view:
                               paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig, width="stretch")
         else:
-            st.info("No savings data for this year.")
+            st.caption("No savings data for this year.")
 
 # Top 10
 if not exp.empty:
@@ -467,4 +446,16 @@ if not exp.empty:
     ].copy()
     tp["date"]   = tp["date"].dt.strftime("%d %b %Y").fillna("")
     tp["Amount"] = tp.apply(lambda r: fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates), axis=1)
-    st.dataframe(tp[["date","category","subcategory","description","Amount"]], hide_index=True)
+    st.dataframe(
+        tp[["date","category","subcategory","description","Amount"]].rename(
+            columns={"date": "Date", "category": "Category",
+                     "subcategory": "Subcategory", "description": "Description"}),
+        hide_index=True, width="stretch",
+        column_config={
+            "Date": st.column_config.TextColumn("Date"),
+            "Category": st.column_config.TextColumn("Category"),
+            "Subcategory": st.column_config.TextColumn("Subcategory"),
+            "Description": st.column_config.TextColumn("Description"),
+            "Amount": st.column_config.TextColumn("Amount"),
+        },
+    )
