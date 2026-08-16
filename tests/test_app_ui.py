@@ -129,3 +129,29 @@ def test_expense_history_pagination_controls(ui_user):
     labels = [el.label for el in at.main if el.type == "selectbox"]
     assert any("Rows per page" in (lbl or "") for lbl in labels), \
         "page-size selector missing"
+
+
+def test_dashboard_with_start_month_template_no_crash(ui_user):
+    """Regression: a recurring template with a start_month used to shadow the
+    page-level `sm` month-filter variable with a string and crash the
+    dashboard with TypeError ('>' not supported between 'str' and 'int')."""
+    from db import add_recurring
+    add_recurring(ui_user, {
+        "category": "Entertainment", "subcategory": "Streaming Services",
+        "description": "Netflix", "amount": 12.99, "currency": "EUR",
+        "amount_eur": 12.99, "due_day": 5, "start_month": "2025-01",
+        "notes": "", "active": True,
+    })
+    add_expense(ui_user, {
+        "date": date(2025, 6, 1), "category": "Other",
+        "subcategory": "Miscellaneous", "description": "anything",
+        "amount": 1.0, "currency": "EUR", "amount_eur": 1.0,
+        "recurring": False, "notes": "",
+    })
+    at = _authenticated(ui_user)
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "dashboard.py"))
+    at.run()
+    assert not at.exception, f"dashboard crashed: {at.exception}"
+    labels = [str(getattr(el, "label", "") or "") for el in at.main]
+    assert any("Fixed costs" in lbl for lbl in labels), \
+        "fixed-costs metric missing from dashboard"

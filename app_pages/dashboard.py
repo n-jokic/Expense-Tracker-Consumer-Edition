@@ -213,11 +213,11 @@ if personal_view and not rec_df.empty:
     if not rec_active.empty:
         yearly = 0.0
         for _, r in rec_active.iterrows():
-            sm = str(r.get("start_month") or "").strip()
+            start_m = str(r.get("start_month") or "").strip()  # NB: not `sm` — that's the month filter below
             months = 12
-            if sm:
+            if start_m:
                 try:
-                    y, m = int(sm.split("-")[0]), int(sm.split("-")[1])
+                    y, m = int(start_m.split("-")[0]), int(start_m.split("-")[1])
                     if y == date.today().year:
                         months = max(0, 13 - m)
                     elif y > date.today().year:

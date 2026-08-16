@@ -1,7 +1,7 @@
 # ── Expense Tracker — run the server and make it reachable from your phone ──
 # Usage:  .\run_server.ps1   (or right-click → "Run with PowerShell")
-# HTTPS is the default (self-signed cert). To run plain HTTP instead, set:
-#   $env:EXPENSE_TRACKER_NO_TLS = "1"
+# Plain HTTP by default (local/LAN use). To enable HTTPS with a self-signed
+# certificate instead, set:  $env:EXPENSE_TRACKER_TLS = "1"
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -10,12 +10,11 @@ Write-Host ""
 Write-Host " ============================================================"
 Write-Host "   Expense Tracker"
 Write-Host " ============================================================"
-Write-Host "   The app opens at https://localhost:8501"
+Write-Host "   The app opens at http://localhost:8501"
 Write-Host "   On your phone (same Wi-Fi), scan the QR code in the"
 Write-Host "   sidebar or open the Network URL shown when the app starts."
-Write-Host "   The first time your phone connects it will show a"
-Write-Host "   certificate warning - accept it once (self-signed cert)."
-Write-Host "   To run without HTTPS, set EXPENSE_TRACKER_NO_TLS=1."
+Write-Host "   (Optional) For HTTPS with a self-signed certificate, set"
+Write-Host "   EXPENSE_TRACKER_TLS=1 before running this script."
 Write-Host ""
 Write-Host "   FIRST RUN: if Windows Firewall asks, allow access on"
 Write-Host "   Private networks."
@@ -39,14 +38,9 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-# TLS: HTTPS by default with a self-signed certificate; opt out via
-# EXPENSE_TRACKER_NO_TLS=1 (the sync API below reads EXPENSE_TRACKER_TLS).
-$useTls = $true
-if ($env:EXPENSE_TRACKER_NO_TLS -eq "1") {
-    $useTls = $false
-} else {
-    $env:EXPENSE_TRACKER_TLS = "1"
-}
+# TLS is OPT-IN: set EXPENSE_TRACKER_TLS=1 to serve HTTPS with a self-signed
+# certificate (the sync API below reads the same variable).
+$useTls = ($env:EXPENSE_TRACKER_TLS -eq "1")
 
 if ($useTls) {
     # No-op when data\certs\cert.pem and key.pem already exist.

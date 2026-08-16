@@ -41,16 +41,14 @@ run_server.bat
 ```
 
 `run_server.bat` (or `run_server.ps1`) activates the venv, installs missing
-dependencies, generates a self-signed TLS certificate on first run
-(`data/certs/`), and starts the server on `0.0.0.0:8501` over **HTTPS**.
+dependencies, and starts the server on `0.0.0.0:8501` over plain **HTTP**.
 
-Open **https://localhost:8501** on the PC (your browser will ask you to accept
-the self-signed certificate the first time — that's expected).
+Open **http://localhost:8501** on the PC.
 
-> Prefer plaintext HTTP on a trusted, isolated network? Set
-> `EXPENSE_TRACKER_NO_TLS=1` before running the launcher. Everything else
-> (passwords, tokens, data) then travels unencrypted on your LAN, so only use
-> it when you know nobody else can reach the network.
+> Want HTTPS instead? Set `EXPENSE_TRACKER_TLS=1` before running the
+> launcher — it generates a self-signed certificate in `data/certs/` (once)
+> and serves the app and the sync API over HTTPS. Your browser/phone will
+> ask you to accept the self-signed certificate the first time.
 
 ## 📱 Using it from your phone
 
@@ -60,14 +58,11 @@ the self-signed certificate the first time — that's expected).
    with the phone camera (Android: Google Lens; iOS: camera app) and the app
    opens in the phone's browser.
 4. You can also type the address shown when the server starts, e.g.
-   `https://192.168.1.23:8501` or `https://DESKTOP-NAME:8501`.
+   `http://192.168.1.23:8501` or `http://DESKTOP-NAME:8501`.
 
-**First run only:** the phone will warn about the self-signed certificate —
-accept it once ("Continue"/"Trust"); the connection is then encrypted, but the
-certificate is not signed by a public CA, so this trust prompt is expected.
-Also, if Windows Firewall asks, allow access on **Private networks**. If no
-prompt appears and the phone can't connect, allow the port manually (run as
-Administrator):
+**First run only:** if Windows Firewall asks, allow access on **Private
+networks**. If no prompt appears and the phone can't connect, allow the port
+manually (run as Administrator):
 
 ```bat
 netsh advfirewall firewall add rule name="Expense Tracker 8501" dir=in action=allow protocol=TCP localport=8501 profile=private
@@ -86,7 +81,7 @@ Three options, in order of simplicity:
 
 1. **Tailscale (recommended, free).** Install Tailscale on the PC and on the
    phone; both join your private encrypted network. From anywhere, open the
-   app at the PC's tailnet address (e.g. `https://pc-name:8501`) — exactly like
+   app at the PC's tailnet address (e.g. `http://pc-name:8501`) — exactly like
    being on the home Wi-Fi. Nothing is exposed to the public internet.
 2. **Cloudflare Tunnel (browser only, free).** Run `run_tunnel.bat` after
    installing `cloudflared` — you get a public `https://…trycloudflare.com`
@@ -505,9 +500,12 @@ silently interpreted as a 1:1 conversion.
 
 - Passwords are bcrypt-hashed; SMTP passwords are encrypted (Fernet) with a key
   in `data/.secret_key` or the `encryption_key` Streamlit secret.
-- LAN traffic is encrypted by default: the launchers generate a self-signed
-  certificate and serve the app and the sync API over HTTPS. (The certificate
-  is self-signed, so trust it once on each device.)
+- LAN traffic is plain HTTP by default (suitable for a trusted home network).
+  For encrypted traffic, set `EXPENSE_TRACKER_TLS=1` — the launchers generate
+  a self-signed certificate and serve the app and the sync API over HTTPS.
+  (The certificate is self-signed, so trust it once on each device; when you
+  later host publicly, terminate TLS with a real certificate at the reverse
+  proxy instead.)
 - SMTP STARTTLS verifies the mail server's certificate and hostname by default.
 - Device tokens are stored hashed (SHA-256), expire after 90 days without use,
   and pairing codes are single-use, 10-minute, rate-limited (5 tries / 10 min).
@@ -528,8 +526,7 @@ silently interpreted as a 1:1 conversion.
 | `ALLOW_REGISTRATION` | `false` hides the create-account tab | `true` (app) / `false` (Docker) |
 | `DATABASE_URL` | SQLAlchemy URL (e.g. PostgreSQL) | SQLite `data/expense_tracker.db` |
 | `DB_PATH` / `BACKUP_DIR` | SQLite file / backup location overrides (used by tests) | `data/…` |
-| `EXPENSE_TRACKER_TLS` | `1` advertises `https://` LAN URLs | set by the launchers |
-| `EXPENSE_TRACKER_NO_TLS` | `1` opts the launchers out of HTTPS | unset |
+| `EXPENSE_TRACKER_TLS` | `1` serves the app/API over HTTPS (self-signed cert) and advertises `https://` LAN URLs | unset (plain HTTP) |
 | `STREAMLIT_SERVER_PORT` | Streamlit port | 8501 |
 
 ## Project structure
