@@ -363,8 +363,18 @@ typed confirmation), data export/backup, and phone sync.
   🐿️ Squirrel Mode (3 saving months in a row), 🔁 Sub Detective (spotted 3+
   subscriptions), and the meta-badge 🧭 Achievement Hunter (earn any 10).
 - **Milestones unlock fun-money rewards**: rewards are granted once, are
-  persisted, and add a bonus to next month's fun-money allowance.
-- A **budget-adherence streak** counts consecutive months under budget.
+  persisted, and add a bonus to next month's fun-money allowance. Bonuses are
+  tracked **per month** — a bonus queued for one month is never lost when a
+  new milestone is earned for the following one.
+- A **budget-adherence streak** counts consecutive months under budget
+  (the in-progress month never counts).
+- Badge semantics worth knowing: **Squirrel Mode** requires consecutive
+  net-positive saving months with no gaps (a skipped month breaks the
+  streak); **Penny Pincher** compares last month against the 6 complete
+  months before it; **Goal reached** is judged on each goal's current
+  balance vs target (withdrawing below target after reaching it retires the
+  badge); refunds never count as "micro" spending; **Hustler** credits any
+  month with 3+ income sources.
 
 ### Notifications & email alerts
 
@@ -389,6 +399,8 @@ typed confirmation), data export/backup, and phone sync.
   savings, term deposits, budgets, recurring, big purchases, loans, holdings,
   holding-price history, audit log, settings, household metadata, devices,
   milestones, and sync conflicts — plus individual per-table downloads.
+  Credentials are never exported: the settings sheet excludes your SMTP
+  password/user and alert email address.
 - **Spreadsheet safety**: cells starting with `=`, `+`, `-`, or `@` are
   exported as inert text, so user-entered descriptions can't execute as
   formulas when the file is opened.
