@@ -24,6 +24,8 @@ PAGES = [
     "log_income.py",
     "savings.py",
     "portfolio.py",
+    "budgets.py",
+    "rewards.py",
     "recurring.py",
     "loans.py",
     "big_purchases.py",

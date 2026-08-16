@@ -135,7 +135,8 @@ def build_bill_reminder_email(display_name: str, bill_name: str,
 
 
 def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame,
-                                rates: dict, DC: str) -> str:
+                                rates: dict, DC: str,
+                                ai_paragraph: str | None = None) -> str:
     total_eur = (float(week_expenses_df["amount_eur"].sum())
                  if not week_expenses_df.empty else 0.0)
     top3 = ""
@@ -155,6 +156,14 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
     motivation = ("Great job keeping spending low this week! 🌟"
                   if total_eur < 100 else
                   "Every euro tracked is a step toward your financial goals. 💪")
+    # The AI paragraph is model output: treated as untrusted text and
+    # HTML-escaped before embedding.
+    ai_block = ""
+    if ai_paragraph:
+        ai_block = f"""
+    <div style="background:#f0f4f8;border-left:4px solid #0F3460;border-radius:8px;padding:12px 16px;margin:16px 0;">
+      <p style="color:#333;margin:0;">{_esc(ai_paragraph)}</p>
+    </div>"""
     body = f"""
     <p>Hi {_esc(display_name)},</p>
     <p>Here's your weekly spending summary:</p>
@@ -164,6 +173,7 @@ def build_weekly_summary_email(display_name: str, week_expenses_df: pd.DataFrame
     </div>
     {'<h3>Top categories:</h3>' + top3 if top3 else ''}
     <p style="color:#555;">{motivation}</p>
+    {ai_block}
     """
     return _html_wrap("📊 Your Weekly Summary", body)
 
@@ -494,13 +504,36 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
     window = (expenses_df[(expenses_df["date"] >= pd.Timestamp(today - timedelta(days=7)))
                           & (expenses_df["date"] <= pd.Timestamp(today))]  # future-dated rows don't count
               if not expenses_df.empty else pd.DataFrame())
+    # AI paragraph stats: this week vs the previous 7 days, top categories.
+    total_eur = float(window["amount_eur"].sum()) if not window.empty else 0.0
+    prev_window = (expenses_df[(expenses_df["date"] >= pd.Timestamp(today - timedelta(days=14)))
+                               & (expenses_df["date"] < pd.Timestamp(today - timedelta(days=6)))]
+                   if not expenses_df.empty else pd.DataFrame())
+    prev_eur = float(prev_window["amount_eur"].sum()) if not prev_window.empty else 0.0
+    top_cats = []
+    if not window.empty:
+        cats = window.groupby("category")["amount_eur"].sum().nlargest(3)
+        top_cats = [f"{cat} ({amt:.2f} EUR)" for cat, amt in cats.items()]
+    ai_paragraph = None
+    try:
+        from llm import generate_summary
+        ai_paragraph = generate_summary(
+            {"total_eur": round(total_eur, 2),
+             "prev_week_eur": round(prev_eur, 2),
+             "top_categories": top_cats},
+            settings)
+    except Exception as e:
+        # The LLM is strictly optional — the email must always go out.
+        log.warning("weekly summary AI paragraph unavailable: %s", e)
+
     from utils import get_rates
     rates = get_rates(settings)
     # NB: the settings key is `default_currency` — reading `display_currency`
     # here used to make every weekly summary fall back to EUR.
     dc = settings.get("default_currency") or "EUR"
     html = build_weekly_summary_email(
-        st.session_state.get("display_name", ""), window, rates, dc)
+        st.session_state.get("display_name", ""), window, rates, dc,
+        ai_paragraph=ai_paragraph)
 
     def _on_delivered(ok: bool, err: str):
         if ok:
@@ -601,3 +634,85 @@ def render_notification_settings(user_id: int, settings: dict):
             q.save_settings(user_id, {"email_alerts": False})
             st.success("Email notifications disabled.")
             st.rerun()
+
+    # ── Optional AI assistant (weekly email paragraph + Insights narrative) ──
+    st.subheader(":material/smart_toy: AI assistant (optional)")
+    st.caption("A lightweight local Gemma model (< 4 GB VRAM, via llama.cpp) or "
+               "an external API key writes the weekly summary paragraph and the "
+               "Insights narrative. Without it, everything falls back to the "
+               "built-in templates — see the README for model downloads and setup.")
+    from llm import DEFAULT_API_BASE, DEFAULT_API_MODEL
+    cur_provider = str(settings.get("ai_provider") or "none")
+    with st.form("ai_form"):
+        ai_provider = st.selectbox(
+            "Provider",
+            ["none", "local", "api"],
+            index=["none", "local", "api"].index(cur_provider)
+            if cur_provider in ("local", "api") else 0,
+            format_func={"none": "Off",
+                         "local": "Local Gemma model (llama.cpp)",
+                         "api": "External API (OpenRouter / any OpenAI-compatible)"}.get,
+            key="ai_provider_select")
+        ai_model_path = ai_gpu = ai_base = ai_model = ai_key = None
+        if ai_provider == "local":
+            ai_model_path = st.text_input(
+                "GGUF model file path",
+                value=str(settings.get("ai_local_model") or ""),
+                placeholder=r"C:\models\gemma-3-1b-it-Q4_K_M.gguf",
+                help="Download from HuggingFace (see README); Gemma 3 1B Q4 "
+                     "is ~0.9 GB.")
+            ai_gpu = st.number_input(
+                "GPU layers (-1 = all to GPU, 0 = CPU)",
+                value=int(settings.get("ai_local_gpu_layers") or -1),
+                min_value=-1, max_value=999, step=1)
+        elif ai_provider == "api":
+            ai_base = st.text_input("API base URL",
+                                    value=str(settings.get("ai_api_base")
+                                              or DEFAULT_API_BASE))
+            ai_model = st.text_input("Model name",
+                                     value=str(settings.get("ai_api_model")
+                                               or DEFAULT_API_MODEL))
+            ai_key = st.text_input("API key", type="password",
+                                   placeholder="Leave blank to keep the existing key")
+        c_save, c_test = st.columns(2)
+        with c_save:
+            ai_saved = st.form_submit_button("Save AI settings", type="primary",
+                                             icon=":material/save:", width="stretch")
+        with c_test:
+            ai_test = st.form_submit_button("Test summary",
+                                            icon=":material/smart_toy:", width="stretch")
+
+    if ai_saved:
+        updates = {"ai_provider": ai_provider}
+        if ai_provider == "local":
+            updates.update({"ai_local_model": (ai_model_path or "").strip(),
+                            "ai_local_gpu_layers": int(ai_gpu)})
+        elif ai_provider == "api":
+            updates.update({"ai_api_base": (ai_base or DEFAULT_API_BASE).strip(),
+                            "ai_api_model": (ai_model or "").strip()})
+            if ai_key:
+                updates["ai_api_key_enc"] = _encrypt(ai_key)
+        q.save_settings(user_id, updates)
+        st.success("AI settings saved.", icon=":material/check:")
+        st.rerun()
+
+    if ai_test:
+        from llm import generate_summary
+        merged = dict(settings)
+        merged["ai_provider"] = ai_provider
+        if ai_provider == "local" and ai_model_path is not None:
+            merged.update({"ai_local_model": ai_model_path.strip(),
+                           "ai_local_gpu_layers": int(ai_gpu)})
+        elif ai_provider == "api" and ai_key:
+            merged["ai_api_key_enc"] = _encrypt(ai_key)
+        with st.spinner("Generating (this can take a few seconds on CPU)…"):
+            out = generate_summary(
+                {"total_eur": 123.45, "prev_week_eur": 98.20,
+                 "top_categories": ["Groceries (52.10 EUR)",
+                                    "Transport (18.00 EUR)"]},
+                merged)
+        if out:
+            st.success(out, icon=":material/smart_toy:")
+        else:
+            st.warning("No summary generated — check the provider, the model "
+                       "path, or the API key, then try again.")

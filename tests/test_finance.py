@@ -52,6 +52,40 @@ def test_schedule_partial_payment_accrues_interest():
     assert s["total_interest_paid"] == pytest.approx(12.0, abs=0.01)
 
 
+def test_schedule_burst_payments_before_first_due_accrue_interest():
+    # Regression (real user data): a loan started today with several payments
+    # logged on the start date — all BEFORE the first due date — used to
+    # apply every payment while booking ZERO interest ("Interest paid: 0.00"
+    # despite 17 payments). A month's interest must be booked at the moment
+    # a payment is applied, even before its due date.
+    s = loan_schedule(1000, 6, 36, date(2026, 8, 16), 1,
+                      [(date(2026, 8,16), 30.42)] * 17,
+                      asof=date(2026, 8, 16))
+    assert s["total_interest_paid"] > 0
+    # One month's interest on the pre-payment balance, then all 17 payments.
+    assert s["remaining_balance"] == pytest.approx(1000 * 1.005 - 17 * 30.42,
+                                                   abs=0.01)
+    assert s["months_paid"] == 1
+
+
+def test_schedule_early_payment_booked_exactly_once_across_snapshots():
+    # Payment on Jan 20 for a Jan 25 due date: interest is booked at
+    # application time (pre-due snapshot) and must NOT be booked a second
+    # time once the due date passes (post-due snapshot) — both snapshots
+    # agree.
+    start = date(2026, 1, 10)
+    payments = [(date(2026, 1, 20), 100.0)]
+    before_due = loan_schedule(1200, 12, 12, start, 25, payments,
+                               asof=date(2026, 1, 21))
+    after_due = loan_schedule(1200, 12, 12, start, 25, payments,
+                              asof=date(2026, 1, 26))
+    expected = 1200 * 1.01 - 100
+    assert before_due["total_interest_paid"] == pytest.approx(12.0, abs=0.01)
+    assert before_due["remaining_balance"] == pytest.approx(expected, abs=0.01)
+    assert after_due["total_interest_paid"] == pytest.approx(12.0, abs=0.01)
+    assert after_due["remaining_balance"] == pytest.approx(expected, abs=0.01)
+
+
 def test_schedule_payment_day_clamped_in_february():
     # 31st payment day: February due dates clamp to 28
     s = loan_schedule(1200, 0, 12, date(2025, 1, 31), 31,
@@ -135,11 +169,12 @@ def test_payment_in_first_due_month_counts():
 
 def test_payment_before_due_day_reduces_balance_immediately():
     """Regression: a payment logged this month, BEFORE the payment day has
-    passed, must reduce the balance right away (no interest yet)."""
+    passed, must reduce the balance right away. The payment month is counted
+    (its interest — here 0 — is booked at application time)."""
     s = loan_schedule(10000, 0, 12, date(2026, 1, 1), 25,
                       [(date(2026, 1, 5), 1000.0)], asof=date(2026, 1, 10))
     assert s["remaining_balance"] == 9000.0
-    assert s["months_paid"] == 0
+    assert s["months_paid"] == 1
     assert s["total_interest_paid"] == 0.0
 
 
@@ -148,7 +183,7 @@ def test_payment_before_first_due_reduces_balance():
     s = loan_schedule(10000, 0, 12, date(2026, 1, 20), 1,
                       [(date(2026, 1, 25), 1000.0)], asof=date(2026, 1, 26))
     assert s["remaining_balance"] == 9000.0
-    assert s["months_paid"] == 0
+    assert s["months_paid"] == 1
 
 
 def test_early_payoff_in_current_month_uses_due_date():

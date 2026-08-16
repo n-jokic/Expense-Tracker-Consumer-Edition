@@ -611,6 +611,13 @@ class UserSettings(Base):
     gh_last_backup_at = Column(DateTime, nullable=True)
     gh_last_status    = Column(String, nullable=True)        # "ok" | "error"
     gh_last_error     = Column(String, nullable=True)
+    # Optional AI assistant (weekly email paragraph + Insights narrative)
+    ai_provider          = Column(String, default="none")     # none | local | api
+    ai_local_model       = Column(String, nullable=True)      # GGUF file path
+    ai_local_gpu_layers  = Column(Integer, default=-1)        # -1 = all to GPU
+    ai_api_base          = Column(String, nullable=True)      # OpenAI-compatible
+    ai_api_model         = Column(String, nullable=True)
+    ai_api_key_enc       = Column(String, nullable=True)      # Fernet-encrypted
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────
@@ -674,6 +681,12 @@ def _migrate(engine):
         "gh_last_backup_at": "TIMESTAMP",
         "gh_last_status": "VARCHAR",
         "gh_last_error": "VARCHAR",
+        "ai_provider": "VARCHAR DEFAULT 'none'",
+        "ai_local_model": "VARCHAR",
+        "ai_local_gpu_layers": "INTEGER DEFAULT -1",
+        "ai_api_base": "VARCHAR",
+        "ai_api_model": "VARCHAR",
+        "ai_api_key_enc": "VARCHAR",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -1733,6 +1746,8 @@ _SETTINGS_DEFAULTS = {
     "gh_backup_enabled": False, "gh_repo": None, "gh_token_enc": None,
     "gh_retention_days": 14, "gh_last_backup_at": None,
     "gh_last_status": None, "gh_last_error": None,
+    "ai_provider": "none", "ai_local_model": None, "ai_local_gpu_layers": -1,
+    "ai_api_base": None, "ai_api_model": None, "ai_api_key_enc": None,
 }
 
 def get_settings(user_id):

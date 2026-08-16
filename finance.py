@@ -51,7 +51,11 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     """Simulate a loan month by month against its ACTUAL payment history.
 
     payments: list of (date, amount_eur). Interest accrues on the running
-    balance each month; missed or partial payments extend the payoff date.
+    balance each month; a month's interest is booked when its due date has
+    passed OR when a payment is applied to it — whichever comes first — so a
+    payment logged before its due date still carries that month's interest
+    (previously such payments reduced the balance with zero interest ever
+    booked). Missed or partial payments extend the payoff date.
 
     Returns: monthly_payment, remaining_balance, remaining_months, payoff_date,
     total_interest_paid, total_interest_remaining, months_paid, total_cost.
@@ -84,19 +88,20 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
 
     # Simulate through the CURRENT calendar month (relative to the first due)
     # so a payment logged this month reduces the balance immediately — even
-    # before that month's payment day has arrived. Interest only accrues once
-    # a month's due date has actually passed; payments in future months are
-    # never applied.
+    # before that month's payment day has arrived. A month's interest is
+    # booked once: when its due date has passed, or at the moment a payment
+    # is applied to it (payments in future months are never applied).
     cur_k = (asof.year - first_due.year) * 12 + (asof.month - first_due.month)
     k = 0
     while bal > 0.005 and k <= max(cur_k, 0) and k < 1200:
         due = _next_due(start_date, payment_day, k)
-        if due <= asof:
+        bucket_pay = by_due.get(due, 0.0)
+        if due <= asof or bucket_pay > 0.005:
             interest_due = bal * r
             interest_paid += interest_due
             bal += interest_due
             months_paid += 1
-        bal -= by_due.get(due, 0.0)
+        bal -= bucket_pay
         if bal <= 0.005:
             bal = 0.0
             payoff = due

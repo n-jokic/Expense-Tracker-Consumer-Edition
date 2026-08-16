@@ -522,3 +522,6 @@ def render_gamification_sidebar(expenses_df: pd.DataFrame, income_df: pd.DataFra
     hint = _next_milestone_hint(expenses_df, ids)
     if hint:
         st.caption(f"💡 {hint}")
+
+    # The full wall (badges, fun money, streaks) lives on its own page.
+    st.caption("🎁 Badge wall, fun money & streaks: **Play → Rewards & badges**")

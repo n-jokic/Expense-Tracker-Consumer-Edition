@@ -159,6 +159,37 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     month   = today.month
     cards   = []
 
+    # ── Optional AI narrative (silent without a configured provider) ──────────
+    try:
+        from llm import generate_narrative
+        _stats = {"spent_eur": 0.0, "prev_spent_eur": 0.0, "change_pct": 0.0}
+        if not expenses_df.empty:
+            _mom = month_over_month(expenses_df, "amount_eur", year, month)
+            _stats = {"spent_eur": round(_mom["current"], 2),
+                      "prev_spent_eur": round(_mom["previous"], 2),
+                      "change_pct": round(_mom["change_pct"], 1)}
+        _top = top_category_this_month(expenses_df, year, month)
+        if _top:
+            _stats["top_category"] = f"{_top[0]} ({_top[1]:.2f} EUR)"
+        _unusual = unusual_expenses(expenses_df, multiplier=2.5)
+        _unusual = (_unusual[(_unusual["date"].dt.year == year)
+                             & (_unusual["date"].dt.month == month)]
+                    if not _unusual.empty else pd.DataFrame())
+        if not _unusual.empty:
+            _stats["unusual"] = [
+                f"{r['description']} ({r['amount_eur']:.2f} EUR)"
+                for _, r in _unusual.head(3).iterrows()]
+        _bud = float(settings.get("monthly_budget") or 0.0)
+        if _bud > 0:
+            _stats["budget_remaining"] = round(_bud - _stats["spent_eur"], 2)
+        narrative = generate_narrative(_stats, settings)
+        if narrative:
+            with st.container(border=True):
+                st.markdown("**:material/smart_toy: In short**")
+                st.markdown(narrative)
+    except Exception:
+        pass  # the narrative is decorative — it must never break the page
+
     # ── Insight 1: Month-over-month spending ──────────────────────────────────
     if not expenses_df.empty:
         mom = month_over_month(expenses_df, "amount_eur", year, month)

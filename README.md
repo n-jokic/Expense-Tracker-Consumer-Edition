@@ -19,14 +19,15 @@ the same database, so there is nothing to sync and no conflicts.
 4. [Feature guide](#feature-guide)
 5. [AI assistant access (OpenClaw / MCP)](#-ai-assistant-access-openclaw--mcp)
 6. [Backing up to GitHub (free)](#-backing-up-to-github-free)
-7. [How the ML models work](#-how-the-ml-models-work)
-8. [Currency model](#currency-model)
-9. [Security notes](#security-notes)
-10. [Configuration](#configuration)
-11. [Project structure](#project-structure)
-12. [Running tests](#running-tests)
-13. [Hosting (VPS / server)](#hosting-later-vps--server)
-14. [Roadmap](#roadmap)
+7. [AI assistant (local Gemma / API key)](#-ai-assistant-local-gemma--api-key)
+8. [How the ML models work](#-how-the-ml-models-work)
+9. [Currency model](#currency-model)
+10. [Security notes](#security-notes)
+11. [Configuration](#configuration)
+12. [Project structure](#project-structure)
+13. [Running tests](#running-tests)
+14. [Hosting (VPS / server)](#hosting-later-vps--server)
+15. [Roadmap](#roadmap)
 
 ---
 
@@ -241,15 +242,18 @@ require confirmation dialogs. Every change is written to the **audit log**.
 
 ### Plan — budgets & commitments
 
-**Budgets** (Settings → Budget)
+**Budgets** (Plan → **Budgets** — its own page, no longer buried in Settings)
 
 - **Overall monthly budget** entered in your display currency with a live EUR
-  preview (stored as the EUR base value).
+  preview (stored as the EUR base value), plus a live progress bar of this
+  month's actual spending against it.
 - **Category budgets** with optional subcategory granularity. Each scope
   (year, month, category, subcategory) is unique — saving the same scope again
   updates it. When subcategory budgets exist they are authoritative for that
   category; otherwise the whole-category budget applies. Overlapping rows are
   never summed together.
+- The page shows **per-category progress bars for the current month** next to
+  the add form and the full row table.
 - Budgets feed the dashboard progress bars, in-app toasts, and optional email
   alerts.
 
@@ -278,8 +282,11 @@ require confirmation dialogs. Every change is written to the **audit log**.
   day still count), accrues interest monthly, and reports remaining balance,
   remaining months, payoff date, interest paid/remaining, and total cost.
   Missed or partial payments extend the payoff date. A logged payment reduces
-  the principal **immediately** — even before that month's payment day arrives
-  — while interest accrues only once a due date has passed.
+  the principal **immediately** — even before that month's payment day arrives.
+  A month's interest is booked when its due date passes **or when a payment is
+  applied to it** (whichever comes first), so paying early — or logging several
+  payments before the first due — still accrues interest instead of treating
+  the loan as interest-free.
 - The first due date is the first payment day **on or after** the start date
   (no phantom first month), and the remaining-payment count rounds up so a
   €149 balance at €100/month correctly needs 2 payments.
@@ -334,6 +341,8 @@ require confirmation dialogs. Every change is written to the **audit log**.
   projection, raise/bonus highlights, subscription detection, anomaly scan,
   spending-pattern clustering, and budget suggestions (all explained in the ML
   section below).
+- With an AI provider configured, an optional **"In short"** narrative
+  summarizes the month in plain language on top of the cards.
 
 ### Household & Data
 
@@ -352,11 +361,23 @@ require confirmation dialogs. Every change is written to the **audit log**.
 **Audit log** — every create/update/delete across the app is recorded with a
 timestamp, table, record id, and details; exportable to Excel.
 
-**Settings** also contains: currency & rates, budgets, fun money, travel,
-notifications, account (display name, password change, account deletion with
-typed confirmation), data export/backup, and phone sync.
+**Settings** also contains: currency & rates, travel, notifications (SMTP +
+optional AI assistant), account (display name, password change, account
+deletion with typed confirmation), data export/backup (incl. GitHub), and
+phone sync. Budgets and fun money live on their own pages (see above).
 
 ### Gamification & fun money
+
+**Rewards & badges** (Play → **Rewards** — its own page)
+
+- **Fun money**: allowance and the fun-category pool are edited right on the
+  page (no more digging through Settings), with this month's spend progress and
+  active/queued milestone bonuses.
+- **Badge wall**: the full 40-badge catalog as a grid — earned badges show
+  their unlock date and reward, locked ones show the requirement and a cheap
+  progress hint where computable (e.g. "23/50 expenses", "5/7 streak days").
+- **Streaks**: current and best logging streak, plus the next-badge hint.
+- **Recent unlocks**: the newest badges with their dates.
 
 - **Streaks and badges**: logging streaks (7/30 days), first expense/income,
   first budget, first salary, budget keeper (full month under budget), saving
@@ -395,7 +416,8 @@ typed confirmation), data export/backup, and phone sync.
   25th" fallback.
 - **Loan reminders**: same logic for loan payments.
 - **Weekly summary**: every Monday (never skipped), a spending summary in your
-  display currency.
+  display currency — with an optional AI-written paragraph when an AI provider
+  is configured (see the next section).
 - Alerts are sent from a background thread (the UI never blocks on SMTP), and
   a "sent" marker is persisted **only after the mail server confirms
   delivery** — failed sends are retried on a later run instead of being
@@ -478,6 +500,45 @@ Settings can't be read), point the CLI at the repo with `GH_REPO` and
 > ⚠️ The **key is not on GitHub**. Also back up `data/.secret_key` separately
 > (password manager, USB stick, or paper) — without it, neither the GitHub
 > backups nor the local database can ever be opened.
+
+### 🤖 AI assistant (local Gemma / API key)
+
+An **optional** lightweight LLM writes the weekly-summary email paragraph and
+the Insights "In short" narrative. Without it, the app uses its built-in
+templates — nothing else changes. Configure it in
+**Settings → Notifications → AI assistant**.
+
+**Local Gemma (recommended — private, free, runs in < 4 GB VRAM)**
+
+1. Install llama-cpp-python (optional dependency):
+   `pip install llama-cpp-python` — CPU wheels install directly; if you want
+   GPU acceleration, use the CUDA wheels from the project's GitHub releases.
+2. Download a GGUF model from HuggingFace (`bartowski`):
+   - **Gemma 3 1B Q4_K_M** (~0.9 GB — the default recommendation):
+     `bartowski/google_gemma-3-1b-it-GGUF` → `google_gemma-3-1b-it-Q4_K_M.gguf`
+   - alternative **Gemma 2 2B Q4_K_M** (~1.6 GB):
+     `bartowski/google_gemma-2-2b-it-GGUF`
+3. In the app: Settings → Notifications → AI assistant → provider **Local
+   Gemma model** → paste the full `.gguf` path. **GPU layers**: `-1` puts
+   everything on the GPU (2 GB VRAM is plenty for the 1B model); `0` runs on
+   CPU (a few seconds per summary).
+4. Press **Test summary** to verify.
+
+**External API key**
+
+Any **OpenAI-compatible** endpoint works (OpenRouter, Groq, Together, …):
+pick provider **External API**, set the base URL (default
+`https://openrouter.ai/api/v1`), the model name (default
+`google/gemma-3-12b-it`), and the API key. The key is stored Fernet-encrypted,
+never exported, and never logged.
+
+Notes:
+
+- Generation uses a strict prompt over **numeric aggregates only** (no raw
+  user text), and model output is HTML-escaped before it goes into the email.
+- Every failure — missing model, API error, timeout — silently falls back to
+  the built-in template, so email sending is never blocked or broken by the
+  LLM.
 
 ### Phone sync API (experimental — offline PWA groundwork)
 
@@ -683,8 +744,8 @@ silently interpreted as a 1:1 conversion.
   the GitHub token are all unreadable. (`DATABASE_URL`/PostgreSQL hosts are
   out of scope: encrypt the volume instead.)
 - Passwords are never stored in plaintext: logins are bcrypt-hashed, the SMTP
-  password and the GitHub backup token are Fernet-encrypted with the same
-  master key.
+  password, the GitHub backup token, and the AI API key are Fernet-encrypted
+  with the same master key (and none of them are ever included in exports).
 - **Backups are ciphertext** — local `data/backups/` files and GitHub uploads
   contain no readable data, and the key is never included.
 - LAN traffic is plain HTTP by default (suitable for a trusted home network).
@@ -741,13 +802,14 @@ bank_import.py          # CSV import + review + dedupe
 sync_core.py            # sync protocol: schemas, cursor, atomic apply, snapshot
 api.py                  # FastAPI sync API (port 8502), pairing, rate limits
 crypto.py               # master key: SQLCipher DB key + Fernet field encryption
+llm.py                  # optional LLM: local Gemma (llama.cpp) or API key
 mcp_server.py           # MCP server for OpenClaw / AI assistants (stdio or HTTP)
 github_backup.py        # encrypted backups to GitHub + restore CLI
 make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
-app_pages/*.py          # the 15 UI pages
-tests/                  # 330+ pytest regression/AppTest suites
+app_pages/*.py          # the 17 UI pages (incl. Budgets, Rewards & badges)
+tests/                  # 355 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -757,16 +819,18 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (330+ tests) covers the currency engine, loan amortization edge
-cases, backups, notifications, bank import, forecast/anomaly/categorizer
+The suite (355 tests) covers the currency engine, loan amortization edge
+cases (including interest booked when payments are applied before their due
+date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
 editing (including the "edits never rewrite history" guarantees), the sync
 protocol and API (pairing, throttling, cursors, conflicts), formula-injection
 safety, cache invalidation, gamification achievements, database encryption
 (creation, plaintext→ciphertext migration, wrong keys, encrypted backups),
 GitHub backups (chunking, checksums, retention, error paths — with mocked
-HTTP), the MCP tools, plus Streamlit AppTest smoke tests that run every page.
-Tests use a throwaway database and never touch `data/expense_tracker.db`.
+HTTP), the MCP tools, the optional LLM layer (mocked providers, escaping,
+fallbacks), plus Streamlit AppTest smoke tests that run every page. Tests use
+a throwaway database and never touch `data/expense_tracker.db`.
 
 ## Hosting later (VPS / server)
 
@@ -799,7 +863,13 @@ Cloudflare Tunnel) and disable open registration as above.
 - **OCR upgrade (optional)** — benchmark Tesseract against the small
   `latin_PP-OCRv5_mobile_rec` model (supports Serbian and other Latin-script
   languages); PP-Structure for table-heavy PDFs only where parsing fails.
+- **LLM ideas (the engine is in place)** — anomaly explanations in words,
+  OCR/bank-import merchant & category normalization when the trained
+  classifier is unsure, an "ask your data" chat over your own tables, an
+  annual financial-narrative email, and an `narrative` field on the MCP
+  `get_insights` tool.
 
 Shipped recently: SQLCipher database encryption with automatic migration,
-encrypted GitHub backups with a restore CLI, and the OpenClaw/MCP assistant
-integration.
+encrypted GitHub backups with a restore CLI, the OpenClaw/MCP assistant
+integration, the optional local-Gemma/API assistant for weekly emails and
+Insights, and the dedicated Budgets and Rewards & badges pages.

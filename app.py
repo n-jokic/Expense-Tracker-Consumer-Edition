@@ -176,6 +176,7 @@ pg = st.navigation({
         st.Page("app_pages/bank_import_view.py", title="Bank import", icon=":material/account_balance_wallet:"),
     ],
     "Plan": [
+        st.Page("app_pages/budgets.py", title="Budgets", icon=":material/savings:"),
         st.Page("app_pages/recurring.py", title="Recurring", icon=":material/event_repeat:"),
         st.Page("app_pages/loans.py", title="Loans", icon=":material/account_balance:"),
         st.Page("app_pages/big_purchases.py", title="Big purchases", icon=":material/shopping_bag:"),
@@ -185,6 +186,10 @@ pg = st.navigation({
     "Understand": [
         st.Page("app_pages/forecast.py", title="Forecast", icon=":material/query_stats:"),
         st.Page("app_pages/insights_view.py", title="Insights", icon=":material/lightbulb:"),
+    ],
+    "Play": [
+        st.Page("app_pages/rewards.py", title="Rewards & badges",
+                icon=":material/workspace_premium:"),
     ],
     "Household & Data": [
         st.Page("app_pages/household.py", title="Household", icon=":material/groups:"),
