@@ -201,7 +201,8 @@ def edit_income_dialog(uid: int, row):
     esym     = get_currency_symbol(e_cur)
     e_actual = st.number_input(f"Actual amount ({esym})", min_value=0.01,
                                max_value=MAX_AMOUNT, step=10.0, format="%.2f",
-                               value=max(float(row["actual"]), 0.01), key="inc_edit_actual")
+                               value=0.01 if pd.isna(row["actual"]) else max(float(row["actual"]), 0.01),
+                               key="inc_edit_actual")
     e_budgeted = st.number_input(f"Budgeted amount ({esym}) — optional", min_value=0.0,
                                  max_value=MAX_AMOUNT, step=10.0, format="%.2f",
                                  value=float(row["budgeted"]) if pd.notna(row["budgeted"]) else 0.0,

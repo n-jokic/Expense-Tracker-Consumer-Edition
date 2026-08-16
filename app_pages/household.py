@@ -87,9 +87,23 @@ else:
         st.markdown("**Invite code**")
         st.code(hh_info["invite_code"])
         st.caption("Share this code — members join with it.")
+        if st.button("Regenerate invite code", icon=":material/refresh:",
+                     key="hh_regen_code"):
+            from db import regenerate_invite_code
+            new_code = regenerate_invite_code(user_id)
+            if new_code:
+                q.bump_db_version()
+                st.toast("Invite code rotated — the old one no longer works.",
+                         icon=":material/refresh:")
+                st.rerun()
 
     if st.button("Leave household", type="secondary", icon=":material/logout:"):
         _confirm_leave_household()
+
+    st.caption("Combined views show the expenses of CURRENT members: expenses "
+               "logged while someone was a member stay on their own account "
+               "when they leave, and only expenses logged while a member "
+               "appear here.")
 
     hh_exp = q.household_expenses(hh_id)
     if not hh_exp.empty:

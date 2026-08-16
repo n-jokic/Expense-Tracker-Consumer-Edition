@@ -311,6 +311,10 @@ with tab_data:
         "audit_log":      q.audit(user_id, limit=10000),
     }
     _s = dict(st.session_state.settings)
+    # Never export credentials: the settings sheet must not leak the SMTP
+    # password ciphertext, user, or the alert email address.
+    for _k in ("smtp_password_enc", "smtp_user", "alert_email", "smtp_host", "smtp_port"):
+        _s.pop(_k, None)
     exports["settings"] = pd.DataFrame(
         [{k: (json.dumps(v, default=str) if isinstance(v, (list, dict)) else v)
           for k, v in _s.items()}])

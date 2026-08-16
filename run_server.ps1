@@ -26,6 +26,14 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
     . ".venv\Scripts\Activate.ps1"
 }
 
+# Python must exist before ErrorActionPreference="Stop" turns a missing
+# command into a terminating error with no friendly message.
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Host "Python was not found on PATH. Install Python 3.12+ first." -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
 # Install dependencies if Streamlit is missing
 python -c "import streamlit" 2>$null
 if ($LASTEXITCODE -ne 0) {
@@ -52,8 +60,15 @@ if ($useTls) {
     }
 }
 
-# Optionally start the phone sync API (port 8502) in a separate window
-Start-Process python -ArgumentList "api.py" -WindowStyle Minimized
+# Optionally start the phone sync API (port 8502) in a separate window —
+# only when nothing is already listening there.
+$apiAlreadyUp = Get-NetTCPConnection -LocalPort 8502 -State Listen -ErrorAction SilentlyContinue
+if (-not $apiAlreadyUp) {
+    Start-Process python -ArgumentList "api.py" -WindowStyle Minimized
+} else {
+    Write-Host ""
+    Write-Host "   Sync API already running on port 8502 - skipping."
+}
 
 $streamlitArgs = @(
     "run", "app.py",

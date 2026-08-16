@@ -59,10 +59,12 @@ your browser automatically. The first time it runs from a new location it
 asks for the project folder once and remembers it. Rebuild after updates
 with `build_exe.bat` again.
 
-> Want HTTPS instead? Set `EXPENSE_TRACKER_TLS=1` before running the
-> launcher — it generates a self-signed certificate in `data/certs/` (once)
-> and serves the app and the sync API over HTTPS. Your browser/phone will
-> ask you to accept the self-signed certificate the first time.
+> The desktop launcher always serves **plain HTTP** on your home network.
+> Want HTTPS instead? Use `run_server.bat` / `run_server.ps1` with
+> `EXPENSE_TRACKER_TLS=1` set — the script generates a self-signed
+> certificate in `data/certs/` (once) and serves the app and the sync API
+> over HTTPS. Your browser/phone will ask you to accept the self-signed
+> certificate the first time.
 
 ## 📱 Using it from your phone
 
@@ -328,10 +330,14 @@ require confirmation dialogs. Every change is written to the **audit log**.
 **Household** (`app_pages/household.py`)
 
 - Create a household with a **shareable invite code** (always visible with a
-  copy block after creation), join via a code, and leave.
+  copy block after creation, plus a **Regenerate** button to revoke a leaked
+  code), join via a code, and leave.
 - The dashboard's household view combines expenses across members while
   keeping personal income/savings/budgets/loans separate — no misleading
-  mixed totals.
+  mixed totals. The combined view shows expenses of **current** members:
+  expenses logged while someone was a member stay on their own account when
+  they leave, and joining never reveals another member's pre-membership
+  history.
 
 **Audit log** — every create/update/delete across the app is recorded with a
 timestamp, table, record id, and details; exportable to Excel.

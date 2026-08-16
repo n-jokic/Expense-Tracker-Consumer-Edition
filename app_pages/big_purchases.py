@@ -3,6 +3,7 @@ Big purchases page: wishlist items with a 4-quadrant priority matrix
 (expected usage vs work-hours needed) and a "bought → expense" handoff.
 """
 
+import math
 from datetime import date
 
 import pandas as pd
@@ -41,7 +42,10 @@ if (flash := st.session_state.pop("bp_flash", None)):
     else:
         st.toast(flash[1], icon=":material/check_circle:")
 
-hourly_rate = float(settings.get("hourly_rate") or 0.0)
+_hr = float(settings.get("hourly_rate") or 0.0)
+# A stored NaN is truthy, so `or 0.0` alone doesn't normalise it — and a NaN
+# value would crash the number_input below.
+hourly_rate = _hr if math.isfinite(_hr) else 0.0
 rate_source = "manual"
 if hourly_rate <= 0:
     # Auto-derive the hourly rate from the salary settings (salary ÷ 160
@@ -207,7 +211,8 @@ def edit_purchase_dialog(uid: int, row):
         e_price = st.number_input(f"Price ({get_currency_symbol(e_cur)})",
                                   min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                   step=10.0, format="%.2f",
-                                  value=max(float(row["price"]), 0.01), key="bp_edit_price")
+                                  value=0.01 if pd.isna(row["price"]) else max(float(row["price"]), 0.01),
+                                  key="bp_edit_price")
         e_use = st.number_input("Expected use (hours / month)", min_value=0.0,
                                 step=1.0, format="%.1f",
                                 value=float(row["usage_hours"]), key="bp_edit_use")

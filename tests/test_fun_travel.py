@@ -150,3 +150,74 @@ def test_fun_keeper_milestone(ms_user):
     earned = get_earned_milestones(expenses, pd.DataFrame(), pd.DataFrame(),
                                    pd.DataFrame(), settings=settings)
     assert any(m["id"] == "fun_keeper" for m in earned)
+
+
+def test_fun_bonus_set_vs_add_across_months(ms_user):
+    """Regression: a bonus queued for an EARLIER month was added to the new
+    bonus, double-counting it in later months. A fresh award must SET the
+    amount when the queued month differs."""
+    from db import save_settings as _raw_save
+    today = date.today()
+    nxt_m = today.month + 1 if today.month < 12 else 1
+    nxt_y = today.year if today.month < 12 else today.year + 1
+    nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
+
+    # Simulate a bonus queued for a month that has since passed.
+    _raw_save(ms_user, {"fun_bonus_amount": 20.0,
+                        "fun_bonus_month": f"{today.year:04d}-{today.month:02d}"})
+
+    inc = pd.DataFrame({
+        "income_type": ["Salary", "Salary"],
+        "date": pd.to_datetime(["2025-01-01", "2025-04-01"]),
+        "actual_eur": [1000.0, 1200.0],
+    })
+    earned = get_earned_milestones(pd.DataFrame(), inc, pd.DataFrame(), pd.DataFrame())
+    award_new_milestones(ms_user, earned, get_settings(ms_user))
+    s = get_settings(ms_user)
+    assert s["fun_bonus_amount"] == 20.0          # set, not 40
+    assert s["fun_bonus_month"] == nxt_key
+
+    # A second award queued for the SAME month accumulates.
+    _raw_save(ms_user, {"fun_bonus_amount": 20.0, "fun_bonus_month": nxt_key})
+    # earn a different reward in the same run
+    big_inc = pd.DataFrame({
+        "income_type": ["Salary", "Salary"],
+        "date": pd.to_datetime(["2025-01-01", "2025-04-01"]),
+        "actual_eur": [1000.0, 1400.0],
+    })
+    # clear the earned marker so the same milestone can be re-awarded
+    from db import get_session, UserMilestone
+    with get_session() as sess:
+        sess.query(UserMilestone).filter(UserMilestone.user_id == ms_user).delete()
+    earned2 = get_earned_milestones(pd.DataFrame(), big_inc, pd.DataFrame(), pd.DataFrame())
+    award_new_milestones(ms_user, earned2, get_settings(ms_user))
+    s2 = get_settings(ms_user)
+    assert s2["fun_bonus_amount"] == 40.0          # same queue -> accumulate
+    assert s2["fun_bonus_month"] == nxt_key
+
+
+def test_fun_bonus_map_preserves_active_month_bonus(ms_user):
+    """Regression: a bonus still being DISPLAYED this month used to be
+    overwritten when a new milestone was earned (mid-month loss). With the
+    per-month map both months keep their bonuses."""
+    today = date.today()
+    nxt_m = today.month + 1 if today.month < 12 else 1
+    nxt_y = today.year if today.month < 12 else today.year + 1
+    nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
+    cur_key = f"{today.year:04d}-{today.month:02d}"
+
+    from db import save_settings as _raw_save
+    _raw_save(ms_user, {"fun_bonuses": {cur_key: 20.0},
+                        "fun_bonus_amount": 20.0, "fun_bonus_month": cur_key})
+
+    inc = pd.DataFrame({
+        "income_type": ["Salary", "Salary"],
+        "date": pd.to_datetime(["2025-01-01", "2025-04-01"]),
+        "actual_eur": [1000.0, 1200.0],
+    })
+    earned = get_earned_milestones(pd.DataFrame(), inc, pd.DataFrame(), pd.DataFrame())
+    award_new_milestones(ms_user, earned, get_settings(ms_user))
+    s = get_settings(ms_user)
+    bonuses = s.get("fun_bonuses") or {}
+    assert bonuses.get(cur_key) == 20.0   # this month's bonus survives
+    assert bonuses.get(nxt_key) == 20.0   # next month queued separately

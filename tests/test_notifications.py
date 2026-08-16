@@ -190,6 +190,58 @@ def test_weekly_email_uses_user_currency():
     assert "€100.00" not in html
 
 
+def test_email_builders_escape_user_text():
+    """Regression: user-controlled display names, categories and bill names
+    must be HTML-escaped in email bodies (markup injection)."""
+    import pandas as pd
+    payload = "<img src=x onerror=alert(1)>"
+    html = notifications.build_bill_reminder_email(payload, payload, "12.00", "due soon")
+    assert "<img src=x" not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    html2 = notifications.build_budget_alert_email(payload, payload, 50.0, 100.0, 1.0)
+    assert "<img src=x" not in html2
+    rows = pd.DataFrame({"category": [payload], "amount_eur": [100.0]})
+    html3 = notifications.build_weekly_summary_email(payload, rows,
+                                                     {"EUR": 1.0}, "EUR")
+    assert "<img src=x" not in html3
+
+
+def test_email_subject_strips_newlines(monkeypatch):
+    """Regression: subjects interpolate user text — CR/LF must be stripped so
+    a hostile bill name cannot inject email headers."""
+    from notifications import send_email
+    captured = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=10):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def ehlo(self):
+            pass
+
+        def starttls(self, context=None):
+            pass
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg_str):
+            captured["msg"] = msg_str
+
+    import smtplib
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    ok, _ = send_email("h", 587, "u", "p", "a@b.c",
+                       "Subject\r\nBcc: evil@x.com", "<html></html>")
+    assert ok
+    assert "\r\nBcc:" not in captured["msg"]
+
+
 def test_send_email_verifies_tls_certificates(monkeypatch):
     captured = {}
 

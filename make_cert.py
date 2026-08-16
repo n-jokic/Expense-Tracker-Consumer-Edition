@@ -116,6 +116,13 @@ def ensure_cert():
     with open(CERT_FILE, "wb") as f:
         f.write(cert_pem)
 
+    # Best-effort restrictive permissions for the private key (a no-op on
+    # most Windows setups, but correct where the FS honours it).
+    try:
+        os.chmod(KEY_FILE, 0o600)
+    except OSError:
+        pass
+
     return CERT_FILE, KEY_FILE
 
 

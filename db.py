@@ -362,8 +362,9 @@ class UserSettings(Base):
     # Fun money & travel budgets
     fun_money        = Column(Float, default=0.0)          # monthly allowance, EUR
     fun_categories   = Column(JSON, nullable=True)          # category names in the fun pool
-    fun_bonus_amount = Column(Float, default=0.0)          # reward bonus, EUR
+    fun_bonus_amount = Column(Float, default=0.0)          # reward bonus, EUR (legacy view)
     fun_bonus_month  = Column(String, nullable=True)        # "YYYY-MM" the bonus applies to
+    fun_bonuses      = Column(JSON, nullable=True)          # {"YYYY-MM": amount} per-month map
     travel_budget    = Column(Float, default=0.0)          # yearly allowance, EUR
     travel_categories = Column(JSON, nullable=True)         # "Category › Subcategory" pairs
     sent_markers     = Column(JSON, nullable=True)          # per-month alert dedupe markers
@@ -417,6 +418,7 @@ def _migrate(engine):
         "fun_categories": "JSON",
         "fun_bonus_amount": "FLOAT DEFAULT 0",
         "fun_bonus_month": "VARCHAR",
+        "fun_bonuses": "JSON",
         "travel_budget": "FLOAT DEFAULT 0",
         "travel_categories": "JSON",
         "sent_markers": "JSON",
@@ -1460,6 +1462,11 @@ def add_holding_price(holding_id, price, when=None, quantity=None, rate=None):
                                price=float(price),
                                quantity=qty or 0.0, rate=rt or 0.0,
                                value_eur=value or 0.0))
+        # Price snapshots are data too: audit them (background refreshes
+        # would otherwise leave an invisible write trail).
+        owner = s.query(Holding).filter(Holding.id == holding_id).first()
+        log_audit(s, owner.user_id if owner else 0, "UPDATE", "holding_prices",
+                  holding_id, {"price": float(price), "date": str(when)})
     return True
 
 
@@ -1469,7 +1476,7 @@ _SETTINGS_DEFAULTS = {
     "exchange_rate": 117.0, "default_currency": "EUR", "monthly_budget": 0.0,
     "currency_rates": None, "rates_updated_at": None,
     "fun_money": 0.0, "fun_categories": None,
-    "fun_bonus_amount": 0.0, "fun_bonus_month": None,
+    "fun_bonus_amount": 0.0, "fun_bonus_month": None, "fun_bonuses": None,
     "travel_budget": 0.0, "travel_categories": None,
     "sent_markers": None,
     "salary_amount": 0.0, "salary_currency": "EUR", "salary_day": 1,
@@ -1524,10 +1531,14 @@ def _random_invite_code(length=8):
 
 def create_household(user_id, name):
     with get_session() as s:
+        code = _random_invite_code()
         for _ in range(5):  # invite codes are unique; retry on collision
-            code = _random_invite_code()
             if not s.query(Household).filter(Household.invite_code == code).first():
                 break
+            code = _random_invite_code()
+        else:
+            # All retries collided (astronomically unlikely) — widen the space.
+            code = _random_invite_code(8)
         hh = Household(name=name, invite_code=code)
         s.add(hh)
         s.flush()
@@ -1536,6 +1547,29 @@ def create_household(user_id, name):
             user.household_id = hh.id
         log_audit(s, user_id, "CREATE", "households", hh.id, {"name": name})
         return hh.id, code
+
+
+def regenerate_invite_code(user_id):
+    """Rotate the household's invite code (revokes the old one). Returns the
+    new code or None when the user has no household."""
+    with get_session() as s:
+        u = s.query(User).filter(User.id == user_id).first()
+        if not u or not u.household_id:
+            return None
+        hh = s.query(Household).filter(Household.id == u.household_id).first()
+        if not hh:
+            return None
+        code = _random_invite_code()
+        for _ in range(5):
+            if not s.query(Household).filter(Household.invite_code == code).first():
+                break
+            code = _random_invite_code()
+        else:
+            code = _random_invite_code(8)
+        hh.invite_code = code
+        log_audit(s, user_id, "UPDATE", "households", hh.id,
+                  {"invite_code_rotated": True})
+        return code
 
 
 def join_household(user_id, invite_code):
@@ -1574,8 +1608,15 @@ def leave_household(user_id):
         u = s.query(User).filter(User.id == user_id).first()
         if not u:
             return False
+        hh_id = u.household_id
         u.household_id = None
         log_audit(s, user_id, "UPDATE", "users", user_id, {"left_household": True})
+        # A household whose last member left is orphaned (its invite code
+        # would still be valid) — remove it.
+        if hh_id is not None:
+            remaining = s.query(User).filter(User.household_id == hh_id).count()
+            if remaining == 0:
+                s.query(Household).filter(Household.id == hh_id).delete()
     return True
 
 
@@ -1664,6 +1705,8 @@ def update_user_display_name(user_id, display_name):
         u = s.query(User).filter(User.id == user_id).first()
         if u:
             u.display_name = display_name
+            log_audit(s, user_id, "UPDATE", "users", user_id,
+                      {"display_name": display_name})
             return True
     return False
 
@@ -1675,20 +1718,34 @@ def delete_user_account(user_id):
         if holding_ids:
             s.query(HoldingPrice).filter(HoldingPrice.holding_id.in_(holding_ids)).delete(
                 synchronize_session=False)
-        s.query(Holding).filter(Holding.user_id == user_id).delete()
-        s.query(Device).filter(Device.user_id == user_id).delete()
-        s.query(UserMilestone).filter(UserMilestone.user_id == user_id).delete()
-        s.query(SyncConflict).filter(SyncConflict.user_id == user_id).delete()
-        s.query(Loan).filter(Loan.user_id == user_id).delete()
-        s.query(BigPurchase).filter(BigPurchase.user_id == user_id).delete()
-        s.query(Expense).filter(Expense.user_id == user_id).delete()
-        s.query(Income).filter(Income.user_id == user_id).delete()
-        s.query(Savings).filter(Savings.user_id == user_id).delete()
-        s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id).delete()
-        s.query(Budget).filter(Budget.user_id == user_id).delete()
-        s.query(Recurring).filter(Recurring.user_id == user_id).delete()
-        s.query(UserSettings).filter(UserSettings.user_id == user_id).delete()
-        s.query(AuditLog).filter(AuditLog.user_id == user_id).delete()
+        s.query(Holding).filter(Holding.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Device).filter(Device.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(UserMilestone).filter(UserMilestone.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(SyncConflict).filter(SyncConflict.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Loan).filter(Loan.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(BigPurchase).filter(BigPurchase.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Expense).filter(Expense.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Income).filter(Income.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Savings).filter(Savings.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Budget).filter(Budget.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Recurring).filter(Recurring.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(AuditLog).filter(AuditLog.user_id == user_id).delete(
+            synchronize_session=False)
         # Remove a now-empty household (its invite code should not outlive
         # its last member).
         hh_id = None
@@ -1726,7 +1783,8 @@ def backup_db(force: bool = False):
     today = date.today()
     marker = os.path.join(BACKUP_DIR, ".last_backup")
     try:
-        last = open(marker, "r", encoding="utf-8").read().strip()
+        with open(marker, "r", encoding="utf-8") as f:
+            last = f.read().strip()
     except OSError:
         last = None
     if not force and last == today.isoformat():
@@ -1748,8 +1806,13 @@ def backup_db(force: bool = False):
         src.close()
     os.replace(tmp, dest)
 
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write(today.isoformat())
+    # The marker is bookkeeping only: a failed write must not turn a
+    # successful backup into an exception for the caller.
+    try:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(today.isoformat())
+    except OSError:
+        pass
 
     # Prune old backups
     try:

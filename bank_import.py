@@ -607,6 +607,7 @@ def render_bank_import_page(user_id: int, rates: dict):
         imported = 0
         skipped  = 0
         failed   = 0
+        failed_msgs = []
         for _, row in edited[edited["include"]].iterrows():
             try:
                 if _save_edited_row(user_id, row, rates, existing_keys) == "imported":
@@ -614,9 +615,8 @@ def render_bank_import_page(user_id: int, rates: dict):
                 else:
                     skipped += 1
             except Exception as e:
-                import logging
-                logging.getLogger("bank_import").warning("import row failed: %s", e)
                 failed += 1
+                failed_msgs.append(f"{row.get('description', '?')}: {e}")
 
         if imported > 0:
             q.bump_db_version()
@@ -625,7 +625,8 @@ def render_bank_import_page(user_id: int, rates: dict):
             if skipped:
                 st.caption(f"{skipped} row(s) skipped (invalid amounts or duplicates).")
             if failed:
-                st.warning(f"{failed} row(s) failed to save — see the server log for details.")
+                detail = f" ({failed_msgs[0]})" if failed_msgs else ""
+                st.warning(f"{failed} row(s) failed to save{detail}")
             st.balloons()
         else:
             st.error(f"No expenses could be imported ({skipped} skipped, {failed} failed). "

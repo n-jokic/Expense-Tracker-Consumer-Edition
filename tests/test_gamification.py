@@ -149,8 +149,9 @@ def test_penny_pincher_compares_to_recent_average():
     today = date.today()
     py, pm = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
     rows = []
-    # 6 months of history ending last month: five fat months, one lean month
-    for i in range(1, 7):
+    # The lean month (last month) is compared against the 6 COMPLETE months
+    # BEFORE it: build 7 months of history — 6 fat baseline months + 1 lean.
+    for i in range(1, 8):
         d = date(today.year, today.month, 1) - pd.DateOffset(months=i)
         n = 5
         amt = 50.0 if (d.year, d.month) == (py, pm) else 100.0

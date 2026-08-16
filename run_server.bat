@@ -48,8 +48,15 @@ if "%USE_TLS%"=="1" (
     )
 )
 
-rem Optionally start the phone sync API (port 8502)
-start "ExpenseTracker Sync API" /min python api.py
+rem Optionally start the phone sync API (port 8502) — only when nothing is
+rem already listening there (a second instance would die on the taken port).
+netstat -ano | findstr ":8502" >nul 2>nul
+if errorlevel 1 (
+    start "ExpenseTracker Sync API" /min python api.py
+) else (
+    echo.
+    echo    Sync API already running on port 8502 - skipping.
+)
 
 if "%USE_TLS%"=="1" (
     streamlit run app.py --server.address 0.0.0.0 --server.sslCertFile data\certs\cert.pem --server.sslKeyFile data\certs\key.pem --server.headless true

@@ -153,7 +153,9 @@ def _under_in_month(df: pd.DataFrame, year: int, month: int, limit: float) -> in
     m = _month_frame(df, year, month)
     if m.empty:
         return 0
-    return int((m["amount_eur"] < limit).sum())
+    # Refunds (negative amounts) are not spending — they must not count
+    # towards "micro spender" style small-expense badges.
+    return int(((m["amount_eur"] >= 0) & (m["amount_eur"] < limit)).sum())
 
 
 def _prev_month(today: date) -> tuple[int, int]:
@@ -163,19 +165,25 @@ def _prev_month(today: date) -> tuple[int, int]:
 
 
 def _penny_pincher(df: pd.DataFrame, today: date) -> bool:
-    """Previous full month with ≥5 expenses totalling ≤70% of the recent
-    (6-month) average monthly spend."""
+    """Previous full month with ≥5 expenses totalling ≤70% of the average
+    monthly spend over the 6 COMPLETE months BEFORE it (the evaluated month
+    and the in-progress current month never pollute their own baseline)."""
     if df.empty:
         return False
     py, pm = _prev_month(today)
     m = _month_frame(df, py, pm)
     if len(m) < 5:
         return False
-    first = date(today.year, today.month, 1) - pd.DateOffset(months=6)
-    hist = df[(df["date"] >= first) & (df["date"] <= pd.Timestamp(today))]
-    if len(hist) < 6:
+    eval_period = pd.Period(year=py, month=pm, freq="M")
+    start = eval_period - 6
+    end = eval_period - 1
+    per = df["date"].dt.to_period("M")
+    hist = df[(per >= start) & (per <= end)]
+    if hist.empty:
         return False
-    totals = hist.groupby(hist["date"].dt.to_period("M"))["amount_eur"].sum()
+    totals = hist.groupby(per[hist.index])["amount_eur"].sum()
+    if len(totals) < 6:
+        return False
     avg = float(totals.mean())
     if avg <= 0:
         return False
@@ -184,17 +192,27 @@ def _penny_pincher(df: pd.DataFrame, today: date) -> bool:
 
 def _saver_streak(df: pd.DataFrame, n: int = 3) -> bool:
     """n consecutive COMPLETE months (ending with the previous month) where
-    net deposits were positive. The in-progress current month never counts."""
+    net deposits were positive. Gaps break the streak: a month with no rows
+    counts as net zero, and the streak must reach all the way to the
+    previous month."""
     if df.empty:
         return False
-    net = df.groupby(df["date"].dt.to_period("M"))["deposited_eur"].sum().sort_index()
+    net = df.groupby(df["date"].dt.to_period("M"))["deposited_eur"].sum()
+    if net.empty:
+        return False
     cur_period = pd.Period(date.today(), freq="M")
     net = net[net.index != cur_period]
     if net.empty:
         return False
+    last = net.index.max()
+    if last != cur_period - 1:
+        return False  # the most recent recorded month is not the previous month
+    # Reindex over a CONTINUOUS month range: months without deposits are 0
+    # and therefore break the streak.
+    full = net.reindex(pd.period_range(net.index.min(), last, freq="M")).fillna(0.0)
     streak = 0
-    for p in reversed(net.index):
-        if float(net[p]) > 0:
+    for p in reversed(full.index):
+        if float(full[p]) > 0:
             streak += 1
         else:
             break
@@ -280,11 +298,16 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         if total_saved >= 10000:
             earned.append(MILESTONE_INDEX["saver_10000"])
 
-        # goal reached
+        # goal reached — judged on the LATEST state: the most recent entry's
+        # balance vs the most recent target (a peak-then-withdraw must not
+        # still count as reached).
         for goal in savings_df["goal_name"].unique():
-            rows   = savings_df[savings_df["goal_name"] == goal]
-            target = float(rows["target_eur"].max())
-            bal    = float(rows["balance_eur"].max())
+            rows = savings_df[savings_df["goal_name"] == goal].sort_values("date")
+            if rows.empty:
+                continue
+            latest = rows.iloc[-1]
+            target = float(latest["target_eur"] or 0.0)
+            bal    = float(latest["balance_eur"] or 0.0)
             if target > 0 and bal >= target:
                 earned.append(MILESTONE_INDEX["goal_reached"])
                 break
@@ -367,10 +390,16 @@ def get_earned_milestones(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 pass
 
     if not income_df.empty:
-        m_inc = _month_frame(income_df, today.year, today.month)
-        if not m_inc.empty and "source" in m_inc.columns and \
-                m_inc["source"].fillna("Other").nunique() >= 3:
-            earned.append(MILESTONE_INDEX["hustler"])
+        # "3+ sources in ONE month" — any month in history counts, not just
+        # the current one.
+        if "source" in income_df.columns and "date" in income_df.columns:
+            try:
+                any_month = (income_df.groupby(income_df["date"].dt.to_period("M"))["source"]
+                             .apply(lambda s: s.fillna("Other").nunique() >= 3))
+                if bool(any_month.any()):
+                    earned.append(MILESTONE_INDEX["hustler"])
+            except Exception:
+                pass
 
     if not savings_df.empty and _saver_streak(savings_df):
         earned.append(MILESTONE_INDEX["squirrel_mode"])
@@ -411,15 +440,15 @@ def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
         nxt_m = today.month + 1 if today.month < 12 else 1
         nxt_y = today.year if today.month < 12 else today.year + 1
         nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
-        # Accumulate only while queued for the SAME month. A bonus queued for
-        # an earlier month was already shown in that month's allowance —
-        # adding to it would count it twice.
-        if settings.get("fun_bonus_month") == nxt_key:
-            new_amount = float(settings.get("fun_bonus_amount") or 0.0) + bonus
-        else:
-            new_amount = bonus
+        # Bonuses are stored PER MONTH: a bonus queued for next month must
+        # never overwrite one still being displayed THIS month (the old
+        # single (amount, month) pair silently lost it mid-month).
+        bonuses = dict(settings.get("fun_bonuses") or {})
+        bonuses[nxt_key] = round(bonuses.get(nxt_key, 0.0) + bonus, 4)
         q.save_settings(user_id, {
-            "fun_bonus_amount": new_amount,
+            "fun_bonuses": bonuses,
+            # Legacy single-value view (older code paths / readers).
+            "fun_bonus_amount": bonuses[nxt_key],
             "fun_bonus_month": nxt_key,
         })
     return new_ms, bonus

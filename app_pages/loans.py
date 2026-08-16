@@ -112,7 +112,7 @@ def edit_loan_dialog(uid: int, row):
         e_principal = st.number_input(f"Principal ({get_currency_symbol(e_cur)})",
                                       min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                       step=100.0, format="%.2f",
-                                      value=max(float(row["principal"]), 0.01),
+                                      value=0.01 if pd.isna(row["principal"]) else max(float(row["principal"]), 0.01),
                                       key="loan_edit_principal")
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",

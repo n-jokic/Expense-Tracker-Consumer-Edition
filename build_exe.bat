@@ -20,7 +20,7 @@ if errorlevel 1 (
     )
 )
 
-python -m PyInstaller --onefile --noconsole --name ExpenseTracker ^
+python -m PyInstaller --onefile --noconsole --clean --name ExpenseTracker ^
     --distpath dist --workpath build --specpath build ^
     launcher.py
 if errorlevel 1 (

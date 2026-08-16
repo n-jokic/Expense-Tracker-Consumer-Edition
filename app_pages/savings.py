@@ -255,7 +255,8 @@ def edit_account_dialog(uid: int, row):
         e_amt = st.number_input(f"Amount ({get_currency_symbol(e_cur)})",
                                 min_value=0.01, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
-                                value=max(float(row["amount"]), 0.01), key="dlg_acc_amt")
+                                value=0.01 if pd.isna(row["amount"]) else max(float(row["amount"]), 0.01),
+                                key="dlg_acc_amt")
     with c2:
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",

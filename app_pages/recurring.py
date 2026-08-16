@@ -56,7 +56,8 @@ def edit_template_dialog(uid: int, row):
         index=list(SUPPORTED_CURRENCIES.keys()).index(cur3)
         if cur3 in SUPPORTED_CURRENCIES else 0)
     n_amt = st.number_input(f"Typical amount ({get_currency_symbol(n_cur)})",
-                            value=max(float(row["amount"]), 0.01), min_value=0.01,
+                            value=0.01 if pd.isna(row["amount"]) else max(float(row["amount"]), 0.01),
+                            min_value=0.01,
                             max_value=MAX_AMOUNT, step=0.50, format="%.2f")
     dd_val = int(row["due_day"]) if row["due_day"] is not None and not pd.isna(row["due_day"]) else 0
     n_due = st.number_input("Due day (0 = none)", min_value=0, max_value=31,
