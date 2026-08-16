@@ -110,7 +110,9 @@ def test_squirrel_mode_three_positive_months():
     today = date.today()
     rows = []
     for i in range(3):
-        d = date(today.year, today.month, 1) - pd.DateOffset(months=i)
+        # Complete months only: start from the PREVIOUS month (the in-progress
+        # current month never counts towards the streak).
+        d = date(today.year, today.month, 1) - pd.DateOffset(months=i + 1)
         rows.append({"date": pd.Timestamp(d), "goal_name": "Fund",
                      "deposited_eur": 50.0, "balance_eur": 50.0,
                      "target_eur": 1000.0, "interest_rate": 0.0,
@@ -119,6 +121,17 @@ def test_squirrel_mode_three_positive_months():
     assert "squirrel_mode" in _ids(EMPTY, savings=pd.DataFrame(rows))
     # one negative month breaks the streak
     rows[-1]["deposited_eur"] = -10.0
+    assert _saver_streak(pd.DataFrame(rows)) is False
+
+
+def test_saver_streak_ignores_current_month():
+    """Regression: a single deposit this month must NOT count as a complete
+    'net positive' month for squirrel_mode."""
+    today = date.today()
+    rows = [{"date": pd.Timestamp(today), "goal_name": "Fund",
+             "deposited_eur": 50.0, "balance_eur": 50.0,
+             "target_eur": 1000.0, "interest_rate": 0.0,
+             "deposited": 50.0, "currency": "EUR", "notes": ""}]
     assert _saver_streak(pd.DataFrame(rows)) is False
 
 

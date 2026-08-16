@@ -848,10 +848,10 @@ def get_savings(user_id, include_deleted=False):
         rows = q.order_by(Savings.date.asc()).all()
     df = _to_df(rows, _SAV_COLS)
     df = _parse_dates(df, ["date", "created_at", "deleted_at"])
-    return _recompute_savings_balances(df)
+    return _recompute_savings_balances(df, asof=date.today())
 
 
-def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
+def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> pd.DataFrame:
     """Rebuild each goal's running balance from its deposit history.
 
     Interest is compounded monthly on the elapsed months between consecutive
@@ -859,6 +859,11 @@ def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
     consistent even when rows are edited, deleted, or two deposits land in the
     same month. Withdrawals (negative deposits) are supported; the balance is
     clamped at 0.
+
+    With `asof` (default None = no tail accrual), each goal's LAST entry is
+    also compounded forward from its date to `asof` using its own interest
+    rate, so the displayed balance is the value TODAY — a goal with a single
+    deposit still earns interest over time.
     """
     if df.empty:
         return df
@@ -869,6 +874,7 @@ def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
         prev_rate = 0.0
         bal = 0.0
         first = True
+        last_idx = None
         for idx in rows.index:
             r = df.loc[idx]
             dep = float(r["deposited_eur"] or 0.0)
@@ -888,6 +894,16 @@ def _recompute_savings_balances(df: pd.DataFrame) -> pd.DataFrame:
             if not pd.isna(d):
                 prev_date = d
             prev_rate = float(r["interest_rate"] or 0.0)
+            last_idx = idx
+        # Tail accrual: roll the last entry forward to `asof` (today) so the
+        # balance reflects the current value, not the last deposit's date.
+        prev_d = prev_date.date() if isinstance(prev_date, pd.Timestamp) else prev_date
+        if (asof is not None and last_idx is not None and prev_d is not None
+                and prev_rate > 0 and asof > prev_d):
+            months = (asof.year - prev_d.year) * 12 + (asof.month - prev_d.month)
+            if months > 0:
+                bal = bal * ((1 + prev_rate / 100 / 12) ** months)
+                df.at[last_idx, "balance_eur"] = max(round(bal, 4), 0.0)
     return df
 
 
@@ -953,11 +969,34 @@ def restore_savings(user_id, savings_id):
 # ── Savings goal helpers (goal-wide edits) ────────────────────────────────────
 
 def rename_savings_goal(user_id, old_name, new_name):
-    """Rename a goal across its entries AND its term-deposit accounts."""
+    """Rename a goal across its entries AND its term-deposit accounts.
+
+    Returns the number of rows renamed, or 0 when the new name is empty,
+    unchanged, or already taken by another goal (renaming into an existing
+    goal would silently merge the two histories).
+    """
+    from sqlalchemy import func as _func
     new_name = (new_name or "").strip()
     if not new_name or new_name == old_name:
         return 0
     with get_session() as s:
+        clash = (s.query(Savings)
+                 .filter(Savings.user_id == user_id,
+                         Savings.goal_name != old_name,
+                         Savings.is_deleted == False,
+                         _func.lower(Savings.goal_name) == new_name.lower())
+                 .first())
+        if clash is None:
+            clash = (s.query(SavingsAccount)
+                     .filter(SavingsAccount.user_id == user_id,
+                             SavingsAccount.goal_name != old_name,
+                             SavingsAccount.is_deleted == False,
+                             _func.lower(SavingsAccount.goal_name) == new_name.lower())
+                     .first())
+        if clash is not None:
+            log_audit(s, user_id, "RENAME", "savings_goal",
+                      old_name, {"blocked": new_name, "reason": "name taken"})
+            return 0
         n = 0
         for model in (Savings, SavingsAccount):
             for obj in (s.query(model)
@@ -1024,7 +1063,8 @@ def get_savings_accounts(user_id, include_deleted=False):
         q = s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id)
         if not include_deleted:
             q = q.filter(SavingsAccount.is_deleted == False)
-        rows = q.order_by(SavingsAccount.maturity_date.asc()).all()
+        rows = (q.order_by(SavingsAccount.maturity_date.asc().nullslast(),
+                           SavingsAccount.created_at.asc()).all())
     df = _to_df(rows, _SAV_ACC_COLS)
     return _parse_dates(df, ["start_date", "maturity_date", "created_at", "deleted_at"])
 

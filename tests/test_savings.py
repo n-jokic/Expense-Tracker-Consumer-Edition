@@ -22,6 +22,22 @@ def test_first_deposit_is_the_balance():
     assert df.iloc[0]["balance_eur"] == 100.0
 
 
+def test_tail_accrual_to_asof():
+    """With an explicit `asof`, the last entry compounds forward from its
+    date to `asof` (single-deposit goals earn interest too)."""
+    from datetime import date
+    df = pd.DataFrame([{
+        "goal_name": "G", "date": "2025-01-01",
+        "deposited_eur": 100.0, "interest_rate": 12.0, "balance_eur": 0.0,
+    }])
+    df["date"] = pd.to_datetime(df["date"])
+    out = _recompute_savings_balances(df, asof=date(2025, 4, 1))
+    assert out.iloc[0]["balance_eur"] == pytest.approx(100.0 * 1.01 ** 3, abs=0.01)
+    # without asof the chain is unchanged (pure between-deposit semantics)
+    out0 = _recompute_savings_balances(df)
+    assert out0.iloc[0]["balance_eur"] == 100.0
+
+
 def test_interest_compounds_over_elapsed_months():
     # 100 deposit on Jan 1 at 12% p.a. (1%/month), +100 on Mar 1
     # -> 100*1.01^2 + 100 = 202.01

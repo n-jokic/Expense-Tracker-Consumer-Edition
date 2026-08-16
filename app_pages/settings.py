@@ -92,7 +92,8 @@ with tab_cur:
         for c in [c for c in SUPPORTED_CURRENCIES if c != "EUR"]:
             new_rates[c] = st.number_input(
                 f"1 EUR = ? {c} ({get_currency_symbol(c)})",
-                value=float(rates.get(c, 1.0)), step=0.01, format="%.4f",
+                value=max(float(rates.get(c, 1.0)), 0.0001),
+                step=0.01, format="%.4f",
                 min_value=0.0001)
         if st.form_submit_button("Save", type="primary", icon=":material/save:"):
             bad = [c for c, v in new_rates.items()
@@ -131,11 +132,16 @@ with tab_bud:
     st.subheader(":material/savings: Overall monthly budget")
     cur_eur = float(settings.get("monthly_budget", 0.0))
     with st.form("overall_bud_form"):
+        # The cap and the current value live in the DISPLAY currency, so the
+        # cap must be converted too — a fixed 10M cap in EUR would otherwise
+        # be smaller than the displayed value for weak currencies and crash
+        # the widget (StreamlitValueAboveMaxError).
+        ob_cap = to_display(MAX_SAVINGS_TARGET, DC, rates)
         ob_amt = st.number_input(
             f"Total monthly budget ({get_currency_symbol(DC)})",
-            min_value=0.0, max_value=MAX_SAVINGS_TARGET,
+            min_value=0.0, max_value=ob_cap,
             step=50.0, format="%.2f",
-            value=to_display(cur_eur, DC, rates))
+            value=min(to_display(cur_eur, DC, rates), ob_cap))
         ob_eur = to_eur(ob_amt, DC, rates)
         st.caption(f"≈ {fmt(ob_eur, 'EUR', {'EUR': 1.0})} — stored as the EUR base value.")
         if st.form_submit_button("Save budget", type="primary", icon=":material/save:"):
@@ -236,6 +242,8 @@ with tab_acct:
             if new_name.strip():
                 update_user_display_name(user_id, new_name.strip())
                 st.session_state.display_name = new_name.strip()
+                # Household member lists / combined views cache display names.
+                q.bump_db_version()
                 st.success("✅ Name updated!")
                 st.rerun()
 

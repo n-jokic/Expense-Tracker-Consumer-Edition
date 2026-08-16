@@ -52,8 +52,21 @@ def test_goal_wide_update_applies_to_all_entries_and_recomputes(test_user):
     df = get_savings(test_user)
     assert set(df["target_eur"]) == {5000.0}
     assert set(df["interest_rate"]) == {12.0}
-    # balance chain recomputed with the new rate: 1000 * 1.01^2
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(1020.10, abs=0.01)
+    # balance chain recomputed with the new rate AND tail-accrued to today:
+    # 1000 * 1.01^2 (Jan->Mar) * 1.01^months (Mar->today)
+    months = (date.today().year - 2025) * 12 + (date.today().month - 3)
+    expected = 1000.0 * (1.01 ** 2) * (1.01 ** max(months, 0))
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(expected, abs=0.01)
+
+
+def test_single_deposit_goal_accrues_to_today(test_user):
+    """Regression: a goal with a single deposit used to show no interest
+    until a second entry arrived — the tail now accrues to today."""
+    _entry(test_user, date(2024, 1, 1), "Solo", 1000.0, rate=12.0)
+    df = get_savings(test_user)
+    months = (date.today().year - 2024) * 12 + (date.today().month - 1)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(
+        1000.0 * (1.01 ** max(months, 0)), abs=0.01)
 
 
 def test_rename_savings_goal_renames_entries_and_accounts(test_user):
@@ -71,6 +84,17 @@ def test_rename_savings_goal_renames_entries_and_accounts(test_user):
     assert df.iloc[0]["goal_name"] == "New name"
     accs = get_savings_accounts(test_user)
     assert accs.iloc[0]["goal_name"] == "New name"
+
+
+def test_rename_savings_goal_rejects_existing_name(test_user):
+    """Regression: renaming a goal into another goal's name used to merge the
+    two histories silently."""
+    _entry(test_user, date(2025, 1, 1), "A", 500.0)
+    _entry(test_user, date(2025, 1, 1), "B", 500.0)
+    assert rename_savings_goal(test_user, "A", "B") == 0
+    assert set(get_savings(test_user)["goal_name"]) == {"A", "B"}
+    # case-insensitive clash is rejected too
+    assert rename_savings_goal(test_user, "A", "b") == 0
 
 
 def test_soft_delete_savings_goal_trashes_entries_and_accounts(test_user):

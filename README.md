@@ -176,9 +176,10 @@ The app is organised into five navigation groups: **Overview**, **Track**,
     term-deposit accounts.
 - **Monthly compound interest**: the balance chain is recomputed on every read
   from the deposit history, compounding at each entry's interest rate over the
-  elapsed months. This means the chain is always consistent — and editing or
-  deleting an entry intentionally updates the chain *from that entry forward*
-  (nothing else is rewritten).
+  elapsed months, and the latest entry is rolled forward to **today** at the
+  goal's latest rate — the displayed balance is always the current value.
+  Editing or deleting an entry intentionally updates the chain *from that entry
+  forward* (nothing else is rewritten).
 - **Term-deposit accounts**: open one or several accounts *under a goal* —
   each has its own amount, currency, **fixed annual interest rate**, start date
   and **maturity date**. The value compounds monthly; the card shows the

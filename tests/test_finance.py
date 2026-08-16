@@ -172,6 +172,31 @@ def test_current_month_payment_not_counted_twice_after_due_passes():
     assert after["months_paid"] == 1
 
 
+def test_payoff_date_after_current_month_payment():
+    """Regression: a payment applied to the not-yet-due current month must
+    not shift the payoff date one month early (the paid slot is consumed)."""
+    # 1000 at 0% over 10 months -> 100/month; pay 100 before the Jan 25 due:
+    # 9 remaining payments Feb..Oct -> payoff Oct 25.
+    s = loan_schedule(1000, 0, 10, date(2026, 1, 1), 25,
+                      [(date(2026, 1, 5), 100.0)], asof=date(2026, 1, 10))
+    assert s["remaining_balance"] == 900.0
+    assert s["remaining_months"] == 9
+    assert s["payoff_date"] == date(2026, 10, 25)
+    # no payment: same payoff (10 events Jan..Oct)
+    s0 = loan_schedule(1000, 0, 10, date(2026, 1, 1), 25, [], asof=date(2026, 1, 10))
+    assert s0["payoff_date"] == date(2026, 10, 25)
+
+
+def test_payoff_date_after_current_month_prepayment():
+    """A prepayment covering several monthly payments shortens the loan:
+    300 paid up front -> 7 remaining events Feb..Aug."""
+    s = loan_schedule(1000, 0, 10, date(2026, 1, 1), 25,
+                      [(date(2026, 1, 5), 300.0)], asof=date(2026, 1, 10))
+    assert s["remaining_balance"] == 700.0
+    assert s["remaining_months"] == 7
+    assert s["payoff_date"] == date(2026, 8, 25)
+
+
 def test_term_deposit_math():
     from finance import months_between, maturity_value, accrued_value
     assert months_between(date(2026, 1, 10), date(2026, 2, 9)) == 1

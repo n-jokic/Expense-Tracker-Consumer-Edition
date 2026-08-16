@@ -85,16 +85,19 @@ with st.sidebar:
 
     with st.form("rate_form"):
         rsd_val = st.number_input("Exchange rate (1 EUR = ? din)",
-                                  value=float(rates.get("RSD", 117.0)),
-                                  step=1.0, format="%.2f")
+                                  value=max(float(rates.get("RSD", 117.0)), 0.0001),
+                                  step=1.0, format="%.2f", min_value=0.0001)
         saved_rate = st.form_submit_button(
             "Update rate", icon=":material/currency_exchange:", width="stretch",
         )
     if saved_rate:
-        new_rates = dict(st.session_state.settings.get("currency_rates") or {})
-        new_rates["RSD"] = float(rsd_val)
-        q.save_settings(user_id, {"currency_rates": new_rates})
-        st.rerun()
+        if not (float(rsd_val) > 0 and float(rsd_val) == float(rsd_val)):
+            st.error("The exchange rate must be a positive number greater than 0.")
+        else:
+            new_rates = dict(st.session_state.settings.get("currency_rates") or {})
+            new_rates["RSD"] = float(rsd_val)
+            q.save_settings(user_id, {"currency_rates": new_rates})
+            st.rerun()
     st.caption(f"1 EUR = {rates['RSD']:.2f} din · other rates in Settings")
 
     # Gamification

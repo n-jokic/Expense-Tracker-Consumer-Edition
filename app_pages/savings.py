@@ -14,7 +14,7 @@ import streamlit as st
 import queries as q
 from db import (
     add_savings, update_savings, soft_delete_savings, restore_savings,
-    add_savings_account, update_savings_account,
+    add_savings_account, update_savings_account, get_savings_accounts,
     soft_delete_savings_account, restore_savings_account,
     rename_savings_goal, update_savings_goal, soft_delete_savings_goal,
 )
@@ -38,10 +38,12 @@ st.caption("Save towards goals, and lock money in term deposits that mature "
 help_expander("How savings works",
               "Every goal has a target, an interest rate and a chain of deposits "
               "(withdrawals are negative amounts). Interest is compounded monthly "
-              "on the whole months between deposits. You can also open **term "
-              "deposits** under a goal: money locked until a maturity date at a "
-              "fixed annual rate — its value grows monthly and can be withdrawn "
-              "into the goal when it matures.")
+              "on the whole months between deposits, and each goal's balance is "
+              "always rolled forward to today at its latest rate — so the number "
+              "you see is the current value. You can also open **term deposits** "
+              "under a goal: money locked until a maturity date at a fixed annual "
+              "rate — its value grows monthly and can be withdrawn into the goal "
+              "when it matures.")
 
 if (flash := st.session_state.pop("sav_flash", None)):
     if flash[0] == "success":
@@ -70,9 +72,7 @@ def goal_attrs(rows):
 
 
 dfs_all = q.savings(user_id)
-accs_all = q.savings_accounts(user_id)
 goals = sorted(set(dfs_all["goal_name"].dropna())) if not dfs_all.empty else []
-
 
 # ── Dialogs (defined before use) ──────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ def withdraw_dialog(uid: int, goal: str, bal_eur: float, tgt_eur: float,
     """Quick withdrawal from a goal (logged as a negative deposit)."""
     gsym = get_currency_symbol(gcur)
     available = to_display(bal_eur, gcur, rates)
-    st.markdown(f"**{goal}** — available: {fmt(bal_eur, DC, rates)}")
+    st.markdown(f"**{goal}** — available: {fmt(bal_eur, gcur, rates)}")
     if bal_eur < 0.01:
         st.info("Nothing to withdraw from this goal.")
         return
@@ -148,9 +148,14 @@ def edit_goal_dialog(uid: int, goal: str):
     e_name = st.text_input("Goal name", value=goal, key="dlg_goal_name")
     c1, c2 = st.columns(2)
     with c1:
+        # Target is entered in the DISPLAY currency: prefill the EUR value
+        # converted to display, and convert back to EUR on save.
         e_tgt = st.number_input(f"Target ({SYM})", min_value=0.0,
-                                max_value=MAX_SAVINGS_TARGET, step=100.0,
-                                format="%.2f", value=float(tgt), key="dlg_goal_tgt")
+                                max_value=to_display(MAX_SAVINGS_TARGET, DC, rates),
+                                step=100.0, format="%.2f",
+                                value=min(to_display(float(tgt), DC, rates),
+                                          to_display(MAX_SAVINGS_TARGET, DC, rates)),
+                                key="dlg_goal_tgt")
     with c2:
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",
@@ -163,7 +168,10 @@ def edit_goal_dialog(uid: int, goal: str):
             return
         tgt_eur = to_eur(float(e_tgt), DC, rates)
         if new_name != goal:
-            rename_savings_goal(uid, goal, new_name)
+            if not rename_savings_goal(uid, goal, new_name):
+                st.error(f"A goal named **{new_name}** already exists — "
+                         "renaming would merge the two goals.")
+                return
             goal = new_name
         update_savings_goal(uid, goal, {"target_eur": tgt_eur,
                                         "interest_rate": float(e_rate)})
@@ -205,12 +213,21 @@ def withdraw_account_dialog(uid: int, row):
     else:
         val = float(row["amount_eur"] or 0.0)   # no dates -> no interest accrued
     gcur = str(row["currency"] or "EUR")
+    payout_label = ("matured" if matured
+                    else ("accrued so far — early withdrawal" if has_dates
+                          else "no interest accrued"))
     st.markdown(f"**{row['name']}** ({row['goal_name']})")
     st.write(f"Logging **{fmt(val, DC, rates)}** into the goal on "
-             f"{payout_date.strftime('%d %b %Y')} "
-             f"({'matured' if matured else 'accrued so far — early withdrawal'}) and closing the account.")
+             f"{payout_date.strftime('%d %b %Y')} ({payout_label}) and closing the account.")
     if st.button("Withdraw and close", icon=":material/check:", type="primary",
                  width="stretch", key="dlg_acc_wd"):
+        # Re-read the account: guard against double-clicking Withdraw before
+        # the rerun (which would log the payout twice).
+        fresh_accs = get_savings_accounts(uid)
+        fresh_accs = fresh_accs[fresh_accs["id"] == str(row["id"])]
+        if fresh_accs.empty or fresh_accs.iloc[0]["status"] != "active":
+            st.session_state["sav_flash"] = ("toast", "This deposit was already withdrawn.")
+            st.rerun()
         tgt, rate, _ = goal_attrs(goal_rows(dfs_all, str(row["goal_name"])))
         add_savings(uid, {
             "date": payout_date, "goal_name": str(row["goal_name"]),
@@ -238,7 +255,7 @@ def edit_account_dialog(uid: int, row):
         e_amt = st.number_input(f"Amount ({get_currency_symbol(e_cur)})",
                                 min_value=0.01, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
-                                value=float(row["amount"]), key="dlg_acc_amt")
+                                value=max(float(row["amount"]), 0.01), key="dlg_acc_amt")
     with c2:
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",
@@ -249,10 +266,17 @@ def edit_account_dialog(uid: int, row):
         e_mat = st.date_input("Maturity date",
                               value=row["maturity_date"].date() if pd.notna(row["maturity_date"]) else today,
                               key="dlg_acc_mat")
-    e_goal = st.selectbox("Goal", goals,
-                          index=goals.index(str(row["goal_name"]))
-                          if str(row["goal_name"]) in goals else 0,
-                          key="dlg_acc_goal")
+    row_goal = str(row["goal_name"])
+    goal_missing = row_goal not in goals
+    if goal_missing:
+        st.warning(f"This account's goal **{row_goal}** has no savings entries. "
+                   "Choose a goal below or it stays under its current name.")
+        goal_opts = goals + [row_goal]
+        goal_idx = len(goal_opts) - 1
+    else:
+        goal_opts = goals
+        goal_idx = goals.index(row_goal)
+    e_goal = st.selectbox("Goal", goal_opts, index=goal_idx, key="dlg_acc_goal")
     if st.button("Save", icon=":material/save:", type="primary", width="stretch",
                  key="dlg_acc_save"):
         if e_mat <= e_start:
@@ -304,9 +328,14 @@ def edit_savings_dialog(uid: int, row):
                                 min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
                                 value=float(row["deposited"]), key="sav_edit_dep")
+        # Target is entered in the DISPLAY currency: prefill the stored EUR
+        # value converted to display, and convert back to EUR on save.
         e_tgt = st.number_input(f"Target ({SYM})", min_value=0.0,
-                                max_value=MAX_SAVINGS_TARGET, step=100.0, format="%.2f",
-                                value=float(row["target_eur"]), key="sav_edit_tgt")
+                                max_value=to_display(MAX_SAVINGS_TARGET, DC, rates),
+                                step=100.0, format="%.2f",
+                                value=min(to_display(float(row["target_eur"]), DC, rates),
+                                          to_display(MAX_SAVINGS_TARGET, DC, rates)),
+                                key="sav_edit_tgt")
     e_ir = st.number_input("Annual interest rate (%)", min_value=0.0,
                            max_value=100.0, step=0.01, format="%.2f",
                            value=float(row["interest_rate"]), key="sav_edit_ir")
@@ -323,7 +352,8 @@ def edit_savings_dialog(uid: int, row):
             update_savings(uid, str(row["id"]), {
                 "date": e_date, "deposited": float(e_dep),
                 "currency": e_cur, "deposited_eur": de,
-                "target_eur": float(e_tgt), "interest_rate": float(e_ir),
+                "target_eur": to_eur(float(e_tgt), DC, rates),
+                "interest_rate": float(e_ir),
                 "notes": e_notes,
             })
             q.bump_db_version()
@@ -376,27 +406,34 @@ if saved:
         st.error("Amount is 0 — nothing to save.")
     else:
         if gn_sel == "➕ New goal...":
-            te = to_eur(float(tgt), cur, rates)
+            # Target label is in the DISPLAY currency (SYM above).
+            te = to_eur(float(tgt), DC, rates)
             use_rate = float(ir)
+            current_bal = 0.0
         else:
             _rows = goal_rows(dfs_all, goal_name)
             te, use_rate, _ = goal_attrs(_rows)
+            current_bal = float(_rows.iloc[-1]["balance_eur"]) if not _rows.empty else 0.0
         de = to_eur(float(dep), cur, rates)
-        add_savings(user_id, {
-            "date": sd, "goal_name": goal_name, "target_eur": te,
-            "deposited": float(dep), "currency": cur,
-            "deposited_eur": de, "interest_rate": use_rate,
-            "balance_eur": 0.0, "notes": notes,
-        })
-        q.bump_db_version()
-        fresh = q.savings(user_id)
-        _nrows = goal_rows(fresh, goal_name)
-        nb = float(_nrows.iloc[-1]["balance_eur"]) if not _nrows.empty else de
-        action = "withdrawn from" if dep < 0 else "saved to"
-        st.success(f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
-                   f"balance: {fmt(nb, DC, rates)}")
-        dfs_all = fresh
-        goals = sorted(set(dfs_all["goal_name"].dropna()))
+        if de < 0 and abs(de) > current_bal + 1e-9:
+            st.error(f"Withdrawal exceeds the goal balance "
+                     f"({fmt(current_bal, DC, rates)}) — the balance cannot go negative.")
+        else:
+            add_savings(user_id, {
+                "date": sd, "goal_name": goal_name, "target_eur": te,
+                "deposited": float(dep), "currency": cur,
+                "deposited_eur": de, "interest_rate": use_rate,
+                "balance_eur": 0.0, "notes": notes,
+            })
+            q.bump_db_version()
+            fresh = q.savings(user_id)
+            _nrows = goal_rows(fresh, goal_name)
+            nb = float(_nrows.iloc[-1]["balance_eur"]) if not _nrows.empty else de
+            action = "withdrawn from" if dep < 0 else "saved to"
+            st.success(f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
+                       f"balance: {fmt(nb, DC, rates)}")
+            dfs_all = fresh
+            goals = sorted(set(dfs_all["goal_name"].dropna()))
 
 dfs = q.savings(user_id)
 accs = q.savings_accounts(user_id)
@@ -511,7 +548,7 @@ if not dfs.empty:
 
     if not goals:
         st.info("Create a goal above first — term deposits live under a goal.")
-    else:
+    if goals:
         with st.form("savacc_form", clear_on_submit=True):
             st.markdown("**:material/add: New term deposit**")
             c1, c2 = st.columns(2)
@@ -559,59 +596,61 @@ if not dfs.empty:
                     )
                     st.rerun()
 
-        if not accs.empty:
-            for _, row in accs.iterrows():
-                acc_id = str(row["id"])
-                has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
-                matured = (row["status"] == "active" and has_dates
-                           and row["maturity_date"].date() <= today)
-                if has_dates:
-                    end = (row["maturity_date"].date()
-                           if row["maturity_date"].date() < today else today)
-                    cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                            row["start_date"].date(), end)
-                    mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                             row["start_date"].date(), row["maturity_date"].date())
-                else:
-                    cur_val = float(row["amount_eur"] or 0.0)
-                    mat_val = cur_val
-                days_left = ((row["maturity_date"].date() - today).days
-                             if has_dates else None)
-                status_txt = ("**Matured — ready to withdraw**"
-                              if matured else
-                              ("Closed" if row["status"] == "closed" else "Active"))
-                with st.container(border=True):
-                    m1, m2, m3, m4 = st.columns([2.4, 1, 1, 1])
-                    with m1:
-                        st.markdown(f"🔒 **{row['name']}** — *{row['goal_name']}* · {status_txt}")
-                        maturity_txt = (row["maturity_date"].strftime("%d %b %Y")
-                                        if has_dates else "—")
-                        days_txt = (f" · {days_left} days left" if days_left is not None
-                                    and days_left >= 0 and row["status"] == "active" else "")
-                        st.caption(f"Rate: {float(row['annual_rate']):.2f}% p.a. · "
-                                   f"Matures: {maturity_txt}{days_txt}")
-                    with m2:
-                        st.metric("Deposited", fmt(row["amount_eur"], DC, rates),
-                                  label_visibility="collapsed")
-                    with m3:
-                        st.metric("Now", fmt(cur_val, DC, rates),
-                                  label_visibility="collapsed")
-                    with m4:
-                        st.metric("At maturity", fmt(mat_val, DC, rates),
-                                  label_visibility="collapsed")
-                    with st.container(horizontal=True):
-                        if row["status"] == "active":
-                            if st.button("Withdraw", icon=":material/savings:",
-                                         key=f"savacc_wd_{acc_id}", type="primary"):
-                                withdraw_account_dialog(user_id, row)
-                            if st.button("Edit", icon=":material/edit:",
-                                         key=f"savacc_ed_{acc_id}"):
-                                edit_account_dialog(user_id, row)
-                        if st.button("Delete", icon=":material/delete:",
-                                     key=f"savacc_del_{acc_id}"):
-                            delete_account_dialog(user_id, acc_id, str(row["name"]))
-        else:
-            st.caption("No term deposits yet — open one above.")
+    # Account cards render even when the user has no goal entries yet
+    # (orphaned accounts stay manageable).
+    if not accs.empty:
+        for _, row in accs.iterrows():
+            acc_id = str(row["id"])
+            has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
+            matured = (row["status"] == "active" and has_dates
+                       and row["maturity_date"].date() <= today)
+            if has_dates:
+                end = (row["maturity_date"].date()
+                       if row["maturity_date"].date() < today else today)
+                cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                        row["start_date"].date(), end)
+                mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                         row["start_date"].date(), row["maturity_date"].date())
+            else:
+                cur_val = float(row["amount_eur"] or 0.0)
+                mat_val = cur_val
+            days_left = ((row["maturity_date"].date() - today).days
+                         if has_dates else None)
+            status_txt = ("**Matured — ready to withdraw**"
+                          if matured else
+                          ("Closed" if row["status"] == "closed" else "Active"))
+            with st.container(border=True):
+                m1, m2, m3, m4 = st.columns([2.4, 1, 1, 1])
+                with m1:
+                    st.markdown(f"🔒 **{row['name']}** — *{row['goal_name']}* · {status_txt}")
+                    maturity_txt = (row["maturity_date"].strftime("%d %b %Y")
+                                    if has_dates else "—")
+                    days_txt = (f" · {days_left} days left" if days_left is not None
+                                and days_left >= 0 and row["status"] == "active" else "")
+                    st.caption(f"Rate: {float(row['annual_rate']):.2f}% p.a. · "
+                               f"Matures: {maturity_txt}{days_txt}")
+                with m2:
+                    st.metric("Deposited", fmt(row["amount_eur"], DC, rates),
+                              label_visibility="collapsed")
+                with m3:
+                    st.metric("Now", fmt(cur_val, DC, rates),
+                              label_visibility="collapsed")
+                with m4:
+                    st.metric("At maturity", fmt(mat_val, DC, rates),
+                              label_visibility="collapsed")
+                with st.container(horizontal=True):
+                    if row["status"] == "active":
+                        if st.button("Withdraw", icon=":material/savings:",
+                                     key=f"savacc_wd_{acc_id}", type="primary"):
+                            withdraw_account_dialog(user_id, row)
+                        if st.button("Edit", icon=":material/edit:",
+                                     key=f"savacc_ed_{acc_id}"):
+                            edit_account_dialog(user_id, row)
+                    if st.button("Delete", icon=":material/delete:",
+                                 key=f"savacc_del_{acc_id}"):
+                        delete_account_dialog(user_id, acc_id, str(row["name"]))
+    elif goals:
+        st.caption("No term deposits yet — open one above.")
 
     # ── Charts ────────────────────────────────────────────────────────────────
     st.divider()

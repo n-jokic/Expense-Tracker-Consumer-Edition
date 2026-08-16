@@ -136,8 +136,9 @@ with st.form("exp_form", clear_on_submit=True):
         exp_date = st.date_input("Date", value=date.today())
         subcat   = st.selectbox("Subcategory", ["—"] + CATEGORIES[cat])
     with f2:
-        amount  = st.number_input(f"Amount ({sym})", min_value=0.01,
-                                  max_value=MAX_AMOUNT, step=0.50, format="%.2f")
+        amount  = st.number_input(f"Amount ({sym})", min_value=0.0,
+                                  max_value=MAX_AMOUNT, step=0.50, format="%.2f",
+                                  value=0.0)
         is_rec  = st.checkbox("Also save as recurring template")
     desc  = st.text_input("Description *", placeholder="e.g. Lidl weekly shop")
     notes = st.text_input("Notes (optional)")
@@ -147,6 +148,8 @@ with st.form("exp_form", clear_on_submit=True):
 if saved:
     if not desc.strip():
         safe_error("Please add a description so you can find this expense later.")
+    elif amount <= 0:
+        safe_error("Amount must be greater than 0.")
     else:
         ae = to_eur(amount, cur, rates)
         rec_id = None

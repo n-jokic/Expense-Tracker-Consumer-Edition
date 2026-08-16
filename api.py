@@ -24,7 +24,8 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
-from db import init_db, complete_pairing, device_by_token, touch_device_sync
+from db import (init_db, complete_pairing, device_by_token, touch_device_sync,
+                bump_data_revision)
 import sync_core
 
 app = FastAPI(title="Expense Tracker Sync API")
@@ -108,10 +109,18 @@ def sync_v1(req: SyncRequest, authorization: Optional[str] = Header(default=None
     since = sync_core.parse_since(req.since)
     result = sync_core.apply_changes(dev["user_id"],
                                      [c.model_dump() for c in req.changes], since)
+    _bump_after_sync(dev["user_id"], result)
     touch_device_sync(dev["id"])
     snap, _truncated = sync_core.snapshot(dev["user_id"], since)
     return {"applied": result["applied"], "conflicts": result["conflicts"],
             "snapshot": snap}
+
+
+def _bump_after_sync(user_id: int, result: dict) -> None:
+    """Invalidate the web app's cached readers after any real change — the
+    API and the web app share one database and one data-revision counter."""
+    if result.get("applied") or result.get("conflicts"):
+        bump_data_revision(user_id, include_household=True)
 
 
 @app.post("/api/v2/sync")
@@ -123,6 +132,7 @@ def sync_v2(req: SyncRequest, authorization: Optional[str] = Header(default=None
     since = sync_core.parse_since(dev.get("last_sync_at"))
     result = sync_core.apply_changes(dev["user_id"],
                                      [c.model_dump() for c in req.changes], since)
+    _bump_after_sync(dev["user_id"], result)
     touch_device_sync(dev["id"])
     snap, truncated = sync_core.snapshot(dev["user_id"], since)
     return {"applied": result["applied"], "conflicts": result["conflicts"],

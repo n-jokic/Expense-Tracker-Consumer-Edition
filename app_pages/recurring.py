@@ -56,7 +56,7 @@ def edit_template_dialog(uid: int, row):
         index=list(SUPPORTED_CURRENCIES.keys()).index(cur3)
         if cur3 in SUPPORTED_CURRENCIES else 0)
     n_amt = st.number_input(f"Typical amount ({get_currency_symbol(n_cur)})",
-                            value=float(row["amount"]), min_value=0.01,
+                            value=max(float(row["amount"]), 0.01), min_value=0.01,
                             max_value=MAX_AMOUNT, step=0.50, format="%.2f")
     dd_val = int(row["due_day"]) if row["due_day"] is not None and not pd.isna(row["due_day"]) else 0
     n_due = st.number_input("Due day (0 = none)", min_value=0, max_value=31,
@@ -108,8 +108,9 @@ with st.expander("Add new template", icon=":material/add:"):
             rsub  = st.selectbox("Subcategory", ["—"] + CATEGORIES[rcat])
             rdesc = st.text_input("Description", placeholder="e.g. Monthly gym membership")
         with ra2:
-            ramt   = st.number_input(f"Typical amount ({rsym})", min_value=0.01,
-                                     max_value=MAX_AMOUNT, step=0.50, format="%.2f")
+            ramt   = st.number_input(f"Typical amount ({rsym})", min_value=0.0,
+                                     max_value=MAX_AMOUNT, step=0.50, format="%.2f",
+                                     value=0.0)
             rdue   = st.number_input("Due day (0 = none)", min_value=0, max_value=31,
                                      value=0, step=1,
                                      help="Day of the month the bill is due, e.g. 15. "
@@ -119,19 +120,24 @@ with st.expander("Add new template", icon=":material/add:"):
                                help="The template only appears in the monthly checklist "
                                     "and reminders from this month onward (the day is ignored).")
         if st.form_submit_button("Save template", type="primary", width="stretch", icon=":material/save:"):
-            re_eur = to_eur(ramt, rc, rates)
-            add_recurring(user_id, {
-                "category": rcat,
-                "subcategory": rsub if rsub != "—" else "",
-                "description": rdesc, "amount": ramt,
-                "currency": rc, "amount_eur": re_eur,
-                "due_day": int(rdue) if rdue and int(rdue) > 0 else None,
-                "start_month": f"{rstart.year:04d}-{rstart.month:02d}",
-                "notes": rnotes, "active": True,
-            })
-            q.bump_db_version()
-            st.session_state["rec_flash"] = f"**{rdesc}** saved as a template."
-            st.rerun()
+            if not rdesc.strip():
+                st.error("Please add a description.")
+            elif ramt <= 0:
+                st.error("Typical amount must be greater than 0.")
+            else:
+                re_eur = to_eur(ramt, rc, rates)
+                add_recurring(user_id, {
+                    "category": rcat,
+                    "subcategory": rsub if rsub != "—" else "",
+                    "description": rdesc, "amount": ramt,
+                    "currency": rc, "amount_eur": re_eur,
+                    "due_day": int(rdue) if rdue and int(rdue) > 0 else None,
+                    "start_month": f"{rstart.year:04d}-{rstart.month:02d}",
+                    "notes": rnotes, "active": True,
+                })
+                q.bump_db_version()
+                st.session_state["rec_flash"] = f"**{rdesc}** saved as a template."
+                st.rerun()
 
 dfr    = q.recurring(user_id)
 active = dfr[dfr["active"] == True] if not dfr.empty else pd.DataFrame()

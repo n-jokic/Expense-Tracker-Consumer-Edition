@@ -145,8 +145,9 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
 
 def maybe_refresh_in_background(user_id: int):
     """Kick off a daily price refresh in a daemon thread (never blocks the
-    UI). A process-wide lock prevents overlapping refreshes; new prices are
-    picked up by the cached readers on their next TTL expiry (2 min)."""
+    UI). A process-wide lock prevents overlapping refreshes; after a refresh
+    the shared data revision is bumped so the cached readers pick the new
+    prices up immediately."""
     try:
         holdings = get_holdings(user_id)
         if holdings.empty or not prices_are_stale(holdings):
@@ -158,7 +159,12 @@ def maybe_refresh_in_background(user_id: int):
 
     def _worker():
         try:
-            refresh_prices_if_due(user_id, force=False, cached=False)
+            _updated, changed = refresh_prices_if_due(user_id, force=False, cached=False)
+            if changed:
+                # The web app's cached holdings/price readers share the DB
+                # revision — bump so the new prices show up immediately.
+                from db import bump_data_revision
+                bump_data_revision(user_id, include_household=False)
         finally:
             _refresh_lock.release()
 

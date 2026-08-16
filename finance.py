@@ -60,12 +60,13 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     r = (annual_rate_pct / 100) / 12
     asof = asof or date.today()
 
-    # Attribute payments to the accrual month they fall in: a payment made
-    # on any day between two due dates counts towards the earlier due date's
-    # month (users rarely pay on the exact payment_day). The month index is
-    # measured from the FIRST due date — not the loan start — so payments
-    # land in the right bucket even when the first due rolls into the month
-    # after the start (e.g. start Jan 31 with payment day 1 → first due Feb 1).
+    # Attribute payments by CALENDAR month relative to the first due date:
+    # a payment lands in the bucket of the month it was made in (users rarely
+    # pay on the exact payment_day), and each bucket's due date is the
+    # clamped payment day for that month. Measuring the month index from the
+    # FIRST due date — not the loan start — keeps payments in the right
+    # bucket even when the first due rolls into the month after the start
+    # (e.g. start Jan 31 with payment day 1 → first due Feb 1).
     by_due = {}
     first_due = _first_due(start_date, payment_day)
     for p_date, amt in payments:
@@ -117,12 +118,13 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
                 remaining_months = 0
         remaining_months = max(remaining_months, 1)
         if remaining_months:
-            # k = last simulated month index + 1. If that month's due date
-            # hasn't arrived yet, its payment event is still owed and counts
-            # as one of the remaining events; otherwise the next unprocessed
-            # month is k.
+            # k = last simulated month index + 1. The current month's payment
+            # slot is still owed ONLY when its due date hasn't arrived AND no
+            # payment was applied to it — if a payment already landed there,
+            # the remaining events start with the next month (k).
             last_idx = k - 1
-            if _next_due(start_date, payment_day, last_idx) > asof:
+            due_last = _next_due(start_date, payment_day, last_idx)
+            if due_last > asof and by_due.get(due_last, 0.0) <= 0.005:
                 next_idx = last_idx
             else:
                 next_idx = last_idx + 1

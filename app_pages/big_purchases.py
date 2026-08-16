@@ -79,8 +79,9 @@ with st.form("bp_form", clear_on_submit=True):
     with c1:
         bp_name = st.text_input("Item name", placeholder="e.g. New laptop")
         bp_cat  = st.selectbox("Category", CAT_LIST)
-        bp_price = st.number_input("Price", min_value=0.01,
-                                   max_value=MAX_SAVINGS_TARGET, step=10.0, format="%.2f")
+        bp_price = st.number_input("Price", min_value=0.0,
+                                   max_value=MAX_SAVINGS_TARGET, step=10.0,
+                                   format="%.2f", value=0.0)
     with c2:
         bp_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()))
         bp_use  = st.number_input("Expected use (hours / month)", min_value=0.0,
@@ -90,7 +91,11 @@ with st.form("bp_form", clear_on_submit=True):
                             help="1 = nice to have · 5 = life-changing")
     bp_notes = st.text_input("Notes (optional)")
     if st.form_submit_button("Add to wishlist", type="primary", width="stretch", icon=":material/add:"):
-        if bp_name.strip():
+        if not bp_name.strip():
+            st.error("Please give the item a name.")
+        elif float(bp_price) <= 0:
+            st.error("Price must be greater than 0.")
+        else:
             pe = to_eur(bp_price, bp_cur, rates)
             add_big_purchase(user_id, {
                 "name": bp_name.strip(), "category": bp_cat,
@@ -101,8 +106,6 @@ with st.form("bp_form", clear_on_submit=True):
             q.bump_db_version()
             st.session_state["bp_flash"] = ("success", f"**{bp_name}** added to your wishlist.")
             st.rerun()
-        else:
-            st.error("Please give the item a name.")
 
 # ── Matrix & list ─────────────────────────────────────────────────────────────
 dfb = q.big_purchases(user_id)

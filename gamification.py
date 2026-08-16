@@ -77,12 +77,13 @@ def get_logging_streak(expenses_df: pd.DataFrame) -> int:
 
 def get_budget_adherence_streak(expenses_df: pd.DataFrame, budgets_df: pd.DataFrame,
                                  year: int, month: int) -> int:
-    """Return consecutive months (going back from current) where spending stayed under budget."""
+    """Return consecutive FULL months (going back from the previous month)
+    where spending stayed under budget. The in-progress current month never
+    counts — a partial month can't prove a full month of adherence."""
     if expenses_df.empty or budgets_df.empty:
         return 0
     streak    = 0
-    check_y   = year
-    check_m   = month
+    check_y, check_m = _prev_month(date(year, month, 1))
     for _ in range(24):  # check up to 24 months back
         m_exp = expenses_df[
             (expenses_df["date"].dt.year == check_y) &
@@ -171,7 +172,7 @@ def _penny_pincher(df: pd.DataFrame, today: date) -> bool:
     if len(m) < 5:
         return False
     first = date(today.year, today.month, 1) - pd.DateOffset(months=6)
-    hist = df[df["date"] >= first]
+    hist = df[(df["date"] >= first) & (df["date"] <= pd.Timestamp(today))]
     if len(hist) < 6:
         return False
     totals = hist.groupby(hist["date"].dt.to_period("M"))["amount_eur"].sum()
@@ -182,11 +183,15 @@ def _penny_pincher(df: pd.DataFrame, today: date) -> bool:
 
 
 def _saver_streak(df: pd.DataFrame, n: int = 3) -> bool:
-    """n consecutive recorded months (ending with the latest) where net
-    deposits were positive."""
+    """n consecutive COMPLETE months (ending with the previous month) where
+    net deposits were positive. The in-progress current month never counts."""
     if df.empty:
         return False
     net = df.groupby(df["date"].dt.to_period("M"))["deposited_eur"].sum().sort_index()
+    cur_period = pd.Period(date.today(), freq="M")
+    net = net[net.index != cur_period]
+    if net.empty:
+        return False
     streak = 0
     for p in reversed(net.index):
         if float(net[p]) > 0:

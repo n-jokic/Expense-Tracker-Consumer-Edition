@@ -71,7 +71,8 @@ def days_until_budget_depleted(expenses_df: pd.DataFrame, total_budget_eur: floa
     today = date.today()
     days_elapsed = max((today - period_start).days + 1, 1)
     period_exp = expenses_df[
-        expenses_df["date"].dt.date >= period_start
+        (expenses_df["date"].dt.date >= period_start)
+        & (expenses_df["date"].dt.date <= today)   # future-dated rows don't count yet
     ]
     if period_exp.empty:
         return None
@@ -273,6 +274,7 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         m_exp = expenses_df[(expenses_df["date"].dt.year == year) &
                             (expenses_df["date"].dt.month == month)]
         if not m_exp.empty:
+            m_exp = m_exp[m_exp["date"].dt.date <= today]  # ignore future-dated rows
             spent_days = set(m_exp["date"].dt.day.dropna())
             no_spend = today.day - len(spent_days)
             if no_spend >= 3:
@@ -318,7 +320,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
 
     # ── Insight 11: Last 30 days vs previous 30 days ──────────────────────────
     if not expenses_df.empty:
-        recent = expenses_df[expenses_df["date"] >= pd.Timestamp(today) - pd.Timedelta(days=30)]
+        recent = expenses_df[(expenses_df["date"] >= pd.Timestamp(today) - pd.Timedelta(days=30))
+                             & (expenses_df["date"] <= pd.Timestamp(today))]
         prev   = expenses_df[(expenses_df["date"] < pd.Timestamp(today) - pd.Timedelta(days=30)) &
                              (expenses_df["date"] >= pd.Timestamp(today) - pd.Timedelta(days=60))]
         r_sum, p_sum = float(recent["amount_eur"].sum()), float(prev["amount_eur"].sum())

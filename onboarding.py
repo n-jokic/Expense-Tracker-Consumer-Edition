@@ -58,7 +58,7 @@ def render_onboarding():
             if dc != "EUR":
                 rate_val = st.number_input(
                     f"Exchange rate (1 EUR = ? {get_currency_symbol(dc)})",
-                    value=float(rates.get(dc, 117.0)),
+                    value=max(float(rates.get(dc, 117.0)), 0.0001),
                     step=1.0, format="%.2f", min_value=0.0001,
                     help="Used to convert your amounts for display.")
             budget   = st.number_input("Monthly budget (EUR)",
@@ -94,8 +94,9 @@ def render_onboarding():
                 exp_date = st.date_input("Date", value=date.today())
                 cat      = st.selectbox("Category", CAT_LIST)
             with c2:
-                amount = st.number_input("Amount (€)", min_value=0.01,
-                                         max_value=MAX_AMOUNT, step=1.0, format="%.2f")
+                amount = st.number_input("Amount (€)", min_value=0.0,
+                                         max_value=MAX_AMOUNT, step=1.0, format="%.2f",
+                                         value=0.0)
                 desc   = st.text_input("Description", placeholder="e.g. Weekly groceries")
 
             c_save, c_skip = st.columns(2)
@@ -105,7 +106,11 @@ def render_onboarding():
                 skipped = st.form_submit_button("Skip for now", width="stretch")
 
         if saved:
-            if desc.strip():
+            if not desc.strip():
+                st.error("Please add a description.")
+            elif amount <= 0:
+                st.error("Amount must be greater than 0.")
+            else:
                 add_expense(user_id, {
                     "date": exp_date, "category": cat, "subcategory": "",
                     "description": desc, "amount": amount,

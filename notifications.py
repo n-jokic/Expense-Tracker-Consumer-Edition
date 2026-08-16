@@ -199,6 +199,19 @@ def _sent_markers(settings: dict) -> dict:
     return dict(settings.get("sent_markers") or {})
 
 
+def _fresh_markers(user_id: int, settings: dict) -> dict:
+    """Overlay the PERSISTED marker values onto a possibly-stale settings
+    snapshot. Delivery callbacks write markers through the raw DB writer
+    (they run in background threads without a session context), so the
+    caller's snapshot may lag behind — deciding against fresh markers
+    prevents duplicate emails within a session."""
+    fresh = _db_get_settings(user_id) or {}
+    for key in ("sent_markers", "weekly_summary_last_sent"):
+        if key in fresh:
+            settings = {**settings, key: fresh[key]}
+    return settings
+
+
 def _persist_marker(user_id: int, kind: str, month_key: str,
                     item_key: str) -> dict:
     """Record that an alert was sent (survives session loss / restarts).
@@ -287,6 +300,7 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                                   budgets_df: pd.DataFrame, settings: dict,
                                   rates: dict, DC: str):
     """Check budget limits and show toasts + optionally send emails."""
+    settings = _fresh_markers(user_id, settings)
     if expenses_df.empty or budgets_df.empty:
         return
 
@@ -346,6 +360,7 @@ def check_and_send_bill_reminders(user_id: int, recurring_df: pd.DataFrame,
     bill_reminder_days); templates without one keep the old "on/after the 25th"
     fallback. One email per template per month.
     """
+    settings = _fresh_markers(user_id, settings)
     if recurring_df.empty:
         return
 
@@ -406,6 +421,7 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
     Loans with a payment_day are emailed N days before the due day (clamped
     to the month length); one email per loan per month.
     """
+    settings = _fresh_markers(user_id, settings)
     if loans_df is None or loans_df.empty:
         return
     today = date.today()
@@ -466,6 +482,10 @@ def check_loan_reminders(user_id: int, loans_df: pd.DataFrame,
 def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
                                   settings: dict):
     """Send the weekly spending summary email on Mondays (once per week)."""
+    # Decide against the LATEST persisted marker: the delivery callback
+    # writes it through the raw DB writer (background thread), which does
+    # not refresh the caller's session snapshot.
+    settings = _fresh_markers(user_id, settings)
     if not settings.get("weekly_summary"):
         return
     if not (settings.get("email_alerts") and settings.get("alert_email") and

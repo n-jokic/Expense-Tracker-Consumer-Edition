@@ -32,6 +32,10 @@ def _confirm_leave_household():
     st.write("Are you sure you want to leave this household?")
     if st.button("Leave household", type="primary", icon=":material/logout:",
                  width="stretch"):
+        # Bump BEFORE leaving: bump_data_revision(include_household=True)
+        # invalidates every member's cached household readers, and that only
+        # reaches the other members while this user is still in the household.
+        q.bump_db_version()
         leave_household(user_id)
         st.session_state.household_id = None
         st.toast("You left the household.", icon=":material/waving_hand:")
@@ -48,6 +52,7 @@ if not hh_id:
                 if hh_name.strip():
                     new_hh_id, code = create_household(user_id, hh_name.strip())
                     st.session_state.household_id = new_hh_id
+                    q.bump_db_version()
                     st.success("Household created!", icon=":material/check_circle:")
                     st.code(code)
                     st.caption("Share this code with your partner.")
@@ -62,6 +67,9 @@ if not hh_id:
                     # Refresh session state immediately (previously needed a re-login)
                     u = get_user_by_username(st.session_state.username)
                     st.session_state.household_id = u["household_id"] if u else None
+                    # The joiner is now a member: bump so the OTHER members'
+                    # cached member lists / combined views refresh too.
+                    q.bump_db_version()
                     st.success("Joined household!", icon=":material/check_circle:")
                     st.rerun()
                 else:

@@ -11,7 +11,7 @@ import streamlit as st
 
 import queries as q
 from db import add_loan, update_loan, delete_loan, add_expense
-from finance import annuity_payment, loan_schedule
+from finance import annuity_payment, loan_schedule, _first_due, _next_due
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     fmt, to_eur, get_currency_symbol,
@@ -46,8 +46,8 @@ with st.form("loan_form", clear_on_submit=True):
         l_name    = st.text_input("Loan name", placeholder="e.g. Car loan")
         l_cur     = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="loan_cur")
         l_principal = st.number_input(f"Principal ({get_currency_symbol(l_cur)})",
-                                      min_value=0.01, max_value=MAX_SAVINGS_TARGET,
-                                      step=100.0, format="%.2f")
+                                      min_value=0.0, max_value=MAX_SAVINGS_TARGET,
+                                      step=100.0, format="%.2f", value=0.0)
         l_rate    = st.number_input("Annual interest rate (%)", min_value=0.0,
                                     max_value=100.0, step=0.01, format="%.2f", value=6.0)
     with c2:
@@ -58,7 +58,11 @@ with st.form("loan_form", clear_on_submit=True):
                                     value=1, step=1)
         l_notes   = st.text_input("Notes (optional)")
     if st.form_submit_button("Save loan", type="primary", width="stretch", icon=":material/save:"):
-        if l_name.strip():
+        if not l_name.strip():
+            st.error("Please give the loan a name.")
+        elif float(l_principal) <= 0:
+            st.error("Principal must be greater than 0.")
+        else:
             pe = to_eur(l_principal, l_cur, rates)
             add_loan(user_id, {
                 "name": l_name.strip(), "principal": l_principal, "currency": l_cur,
@@ -73,8 +77,6 @@ with st.form("loan_form", clear_on_submit=True):
                 f"(monthly payment ~{fmt(annuity_payment(pe, l_rate, int(l_term)), DC, rates)})",
             )
             st.rerun()
-        else:
-            st.error("Please give the loan a name.")
 
 
 @st.dialog("Delete loan?")
@@ -194,7 +196,17 @@ else:
                 if row["status"] == "active":
                     month_paid = any((p[0].year == today.year and p[0].month == today.month)
                                      for p in payments)
-                    overdue = (not month_paid and today.day > int(row["payment_day"]))
+                    # Overdue only once the CURRENT month's due date (clamped
+                    # to the month's length, e.g. the 31st -> Feb 28) has
+                    # actually passed and no payment was logged this month.
+                    # Loans whose first due date hasn't arrived yet are never
+                    # overdue.
+                    first_due = _first_due(start_date, int(row["payment_day"]))
+                    if first_due <= today:
+                        k = ((today.year - first_due.year) * 12
+                             + (today.month - first_due.month))
+                        due_this_month = _next_due(start_date, int(row["payment_day"]), k)
+                        overdue = (not month_paid and today > due_this_month)
                 st.caption(
                     f"Monthly: **{fmt(sched['monthly_payment'], DC, rates)}** · "
                     f"Remaining: **{fmt(sched['remaining_balance'], DC, rates)}** "
@@ -218,7 +230,7 @@ else:
                         st.markdown(f"Expected payment: {fmt(sched['monthly_payment'], DC, rates)}")
                         p_date = st.date_input("Date", value=today, key=f"loan_pd_{loan_id}")
                         p_amt  = st.number_input(f"Amount ({lsym})",
-                                                 value=monthly_in_cur,
+                                                 value=max(monthly_in_cur, 0.01),
                                                  min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                                  step=10.0, format="%.2f", key=f"loan_pa_{loan_id}")
                         if st.button("Log", icon=":material/check:", key=f"loan_pc_{loan_id}", type="primary", width="stretch"):
