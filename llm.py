@@ -308,20 +308,34 @@ def build_data_context(user_id: int, settings: dict) -> str:
     return "\n".join(lines)
 
 
-def answer_query(user_id: int, question: str, settings: dict) -> str | None:
+def answer_query(user_id: int, question: str, settings: dict,
+                 history: list | None = None) -> str | None:
     """Answer a natural-language question about the user's own data.
 
-    The question and every data field are sanitized before they reach the
-    model; ANY failure — including a crash while building the data context —
-    returns None so the caller can show a fallback."""
+    `history`: optional list of {"role": "user"|"assistant", "content": str}
+    turns so follow-up questions keep context; every turn is sanitized and
+    capped. The question and every data field are sanitized before they
+    reach the model; ANY failure — including a crash while building the
+    data context — returns None so the caller can show a fallback."""
     if resolve_provider(settings) == "none":
         return None
     q = _sanitize_stat(question or "")
     if not q.strip():
         return None
+    chat_so_far = ""
+    if history:
+        turns = []
+        for h in history[-4:]:
+            role = str(h.get("role", "user")) if isinstance(h, dict) else "user"
+            content = h.get("content", "") if isinstance(h, dict) else str(h)
+            content = _sanitize_stat(content)[:200]
+            turns.append(f"{role}: {content}")
+        if turns:
+            chat_so_far = "CHAT SO FAR:\n" + "\n".join(turns) + "\n\n"
     try:
         context = build_data_context(user_id, settings)
-        user = f"DATA:\n{context}\n\nQUESTION:\n{q}\n\nAnswer the question now."
+        user = (f"{chat_so_far}DATA:\n{context}\n\nQUESTION:\n{q}\n\n"
+                "Answer the question now.")
         return _generate(settings, _ASK_SYSTEM, user, max_tokens=300)
     except Exception as e:
         log.warning("answer_query failed: %s", e)

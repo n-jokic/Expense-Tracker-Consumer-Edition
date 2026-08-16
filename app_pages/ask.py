@@ -20,7 +20,15 @@ st.caption("Chat with your own financial data. The assistant sees only a "
            "sanitized snapshot of your numbers — nothing else — and every "
            "answer is computed from your data, never guessed.")
 
-if llm.resolve_provider(settings) == "none":
+provider = llm.resolve_provider(settings)
+if provider == "local":
+    import os as _os
+    path = str(settings.get("ai_local_model") or "")
+    st.caption(f"Provider: **local Gemma** — {_os.path.basename(path) or path or 'model'}")
+elif provider == "api":
+    st.caption(f"Provider: **API** — {settings.get('ai_api_model') or 'configured model'}")
+
+if provider == "none":
     st.info("The AI assistant is not configured yet. Set it up in "
             "**Settings → Notifications → AI assistant** (a local Gemma model "
             "or an API key) — the README has the download steps. "
@@ -59,8 +67,11 @@ if prompt and prompt.strip():
 
 if st.session_state.pop("ask_pending", None):
     question = st.session_state.ask_history[-1]["content"]
+    # Prior turns give follow-up questions context ("and what about
+    # groceries?"); the pending question itself is NOT re-sent as history.
+    prior = st.session_state.ask_history[:-1]
     with st.spinner("Thinking…"):
-        answer = llm.answer_query(user_id, question, settings)
+        answer = llm.answer_query(user_id, question, settings, history=prior)
     fallback = ("I couldn't reach the AI assistant (model not loaded or the "
                 "API call failed). Check the provider in Settings → "
                 "Notifications → AI assistant.")

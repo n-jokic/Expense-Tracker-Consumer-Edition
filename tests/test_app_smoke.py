@@ -229,6 +229,31 @@ def test_ai_settings_provider_switch_saves_without_crash(smoke_user):
     assert not at.exception, f"provider-switch back crashed: {at.exception}"
 
 
+def test_dashboard_quick_add_logs_expense(smoke_user):
+    """Regression: the one-tap quick-add buttons must log a real expense."""
+    from db import get_expenses
+    before = len(get_expenses(smoke_user))
+    at = _authenticated_at(smoke_user)
+    at.run()
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "dashboard.py"))
+    at.run()
+    assert not at.exception, at.exception
+
+    coffee = [b for b in at.button if "Coffee" in (b.label or "")]
+    assert coffee, "quick-add Coffee button missing"
+    coffee[0].click()
+    at.run()
+    assert not at.exception, at.exception
+
+    after = get_expenses(smoke_user)
+    assert len(after) == before + 1
+    row = after[after["description"] == "Coffee"]
+    assert len(row) == 1
+    assert row.iloc[0]["amount_eur"] == 2.5
+    assert row.iloc[0]["category"] == "Dining Out"
+    assert row.iloc[0]["subcategory"] == "Coffee & Snacks"
+
+
 def test_onboarding_gate_blocks_new_users(smoke_user):
     at = _authenticated_at(smoke_user)
     at.session_state["onboarding_complete"] = False

@@ -242,3 +242,24 @@ def test_read_tools_return_errors_not_exceptions(test_user, monkeypatch):
     monkeypatch.setattr(mcp, "MCP_USERNAME", "missing_user_zz")
     res = run(mcp.expense_summary("current"))
     assert res["ok"] is False and "error" in res
+
+
+def test_ask_data_tool(monkeypatch):
+    # No provider configured → clean error result, no exception.
+    monkeypatch.setattr(mcp, "_USER_ID", 1)
+    res = run(mcp._ask_data_impl("how much did I spend?"))
+    assert res["ok"] is False and "not configured" in res["error"]
+
+    # Provider configured + engine works → the answer comes through.
+    import llm as llm_module
+    monkeypatch.setattr(llm_module, "resolve_provider", lambda s: "api")
+    monkeypatch.setattr(llm_module, "answer_query",
+                        lambda uid, q, settings, history=None: "123 EUR.")
+    res = run(mcp._ask_data_impl("how much did I spend?"))
+    assert res == {"ok": True, "answer": "123 EUR."}
+
+    # Engine failure → clean error result.
+    monkeypatch.setattr(llm_module, "answer_query",
+                        lambda uid, q, settings, history=None: None)
+    res = run(mcp._ask_data_impl("how much did I spend?"))
+    assert res["ok"] is False and "could not answer" in res["error"]

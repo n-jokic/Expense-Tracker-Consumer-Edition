@@ -307,6 +307,27 @@ async def _get_insights_impl() -> dict:
     return out
 
 
+async def _ask_data_impl(question: str) -> dict:
+    """Free-form question answered over the user's own data via the optional
+    AI assistant (llm.py). Read-only; needs a configured provider."""
+    uid = _resolve_user()
+    try:
+        from llm import answer_query, resolve_provider
+        settings = get_settings(uid)
+        if resolve_provider(settings) == "none":
+            return {"ok": False,
+                    "error": "AI assistant is not configured — set it up in "
+                             "Settings → Notifications → AI assistant."}
+        answer = answer_query(uid, question or "", settings)
+        if not answer:
+            return {"ok": False,
+                    "error": "The AI assistant could not answer right now "
+                             "(model/API failure)."}
+        return {"ok": True, "answer": answer}
+    except Exception as e:
+        return _err(e)
+
+
 # ── Write tools ───────────────────────────────────────────────────────────────
 
 async def _add_expense_impl(amount: float, category: str, description: str = "",
@@ -486,6 +507,14 @@ async def get_insights() -> dict:
         return await _get_insights_impl()
     except Exception as e:
         return _err(e)
+
+
+@server.tool()
+async def ask_data(question: str) -> dict:
+    """Ask a free-form question about the user's own financial data, answered
+    by the optional AI assistant (local Gemma or API key). Read-only. Returns
+    an error result when the assistant is not configured or unavailable."""
+    return await _ask_data_impl(question)
 
 
 @server.tool()

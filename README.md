@@ -131,6 +131,12 @@ The app is organised into five navigation groups: **Overview**, **Track**,
   an **Upcoming bills** list (recurring bills due within 7 days), and
   **Recent activity** (your 5 latest expenses) — all visible even when you
   have no data yet.
+- **One-tap logging**: ☕ Coffee, 🍔 Lunch, and 🚌 Transit buttons log a preset
+  everyday expense in a single click (amounts fixed in EUR, logged under the
+  matching category/subcategory, editable later like any expense).
+- **Last 7 days**: a mini sparkline of daily spending right under the KPIs.
+- **Net worth strip**: today's savings balances + portfolio value − total
+  debt, so the whole financial picture is one glance away.
 - **Budget alerts & progress bars** for the current month, including the
   "near limit" (≥ 90 %) and "exceeded" states.
 - **🎈 Fun money**: a guilt-free monthly allowance across categories you pick;
@@ -354,6 +360,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
   newlines stripped, values capped). With the local Gemma provider nothing
   leaves the machine; with an API provider only that sanitized snapshot is
   sent.
+- **Follow-ups keep context**: the last few turns are re-sent (sanitized)
+  with each question, so "and what about groceries?" builds on the previous
+  answer. A caption shows which provider/model is answering.
 - The model may do simple arithmetic on the provided numbers but is prompted
   to never invent figures — and to say so when the data can't answer. Answers
   are conversational help, not an audit trail: double-check against the pages
@@ -620,6 +629,7 @@ Exposed tools:
 | `list_recurring_bills`, `list_loans` | Bills and loans |
 | `get_milestones` | Earned gamification badges |
 | `get_insights` | Month-over-month trends, unusual expenses, budget burn-down |
+| `ask_data` | Free-form question answered over your data by the AI assistant (read-only) |
 | `add_expense`, `add_income` | **Writes** — validated, audit-logged ("via mcp"), instantly visible in the app |
 
 Connect it to OpenClaw (run once):
@@ -833,7 +843,7 @@ make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # the 18 UI pages (Budgets, Rewards & badges, Ask your data, …)
-tests/                  # 369 pytest regression/AppTest suites
+tests/                  # 372 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -843,7 +853,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (369 tests) covers the currency engine, loan amortization edge
+The suite (372 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
 date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry

@@ -4,7 +4,7 @@ Dashboard page: KPIs, budget alerts, spending charts, monthly trends.
 
 import calendar
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import queries as q
+from db import add_expense
 from utils import (
     NEAR_LIMIT_THRESHOLD, SAVINGS_TARGET_PCT, SAVINGS_GOAL_PCT, CHART_COLORS,
     fmt, fmt_row, to_display, get_currency_symbol, effective_category_budgets,
@@ -98,6 +99,30 @@ if personal_view:
                         else (r["category"] if pd.notna(r["category"]) else "Bill"))
                 amt  = fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates)
                 st.markdown(f"- {d.strftime('%d %b')} — **{desc}** · {amt}")
+
+    # One-tap quick logging for small everyday expenses.
+    with st.container(border=True):
+        st.markdown("**One-tap logging**")
+        _presets = [
+            ("☕ Coffee", 2.50, "Dining Out", "Coffee & Snacks", "Coffee"),
+            ("🍔 Lunch", 10.00, "Dining Out", "Work Lunch", "Lunch"),
+            ("🚌 Transit", 2.00, "Transport", "Public Transit", "Transit"),
+        ]
+        qb1, qb2, qb3 = st.columns(3)
+        for col, (label, amt, cat, sub, desc) in zip((qb1, qb2, qb3), _presets):
+            with col:
+                if st.button(f"{label} · {fmt(amt, DC, rates)}",
+                             key=f"qa_{desc.lower()}", width="stretch"):
+                    add_expense(user_id, {
+                        "date": today, "category": cat, "subcategory": sub,
+                        "description": desc, "amount": amt, "currency": "EUR",
+                        "amount_eur": amt, "recurring": False,
+                        "notes": "Quick-add",
+                    })
+                    q.bump_db_version()
+                    st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
+                             icon=":material/check:")
+                    st.rerun()
 
     # Recent activity: the 5 most recent expenses.
     with st.container(border=True):
@@ -199,6 +224,29 @@ else:
     st.caption("Personal income, savings, budgets, loans and fun money are hidden "
                "in household view — switch to Personal mode to see them.")
 
+# ── 7-day spending sparkline (both views) ─────────────────────────────────────
+if not dfe.empty:
+    _week_days = [date.today() - timedelta(days=i) for i in range(6, -1, -1)]
+    _week_start = pd.Timestamp(_week_days[0])
+    _daily = (dfe[dfe["date"] >= _week_start]
+              .groupby(dfe["date"].dt.date)["amount_eur"].sum())
+    if not _daily.empty:
+        _daily = _daily.reindex(_week_days, fill_value=0.0)
+        _vals = [to_display(float(v), DC, rates) for v in _daily]
+        _fig = go.Figure(go.Scatter(
+            x=[d.strftime("%a") for d in _week_days], y=_vals,
+            mode="lines+markers", line=dict(color=CHART_COLORS[0], width=2),
+            fill="tozeroy", fillcolor="rgba(15,52,96,0.08)"))
+        _fig.update_layout(height=150, margin=dict(t=10, b=10, l=10, r=10),
+                           xaxis_title=None, yaxis_title=None,
+                           showlegend=False,
+                           plot_bgcolor="rgba(0,0,0,0)",
+                           paper_bgcolor="rgba(0,0,0,0)")
+        with st.container(border=True):
+            st.markdown("**Last 7 days**")
+            st.plotly_chart(_fig, width="stretch",
+                            config={"displayModeBar": False})
+
 # Fixed costs metric (personal) — templates count only from their start month.
 rec_df = q.recurring(user_id)
 if personal_view and not rec_df.empty:
@@ -224,8 +272,8 @@ if personal_view and not rec_df.empty:
 # Debt KPIs (loans) — personal
 from finance import loan_schedule
 df_loans = q.loans(user_id)
+total_debt = 0.0
 if personal_view and not df_loans.empty:
-    total_debt = 0.0
     free_dates = []
     for _, row in df_loans.iterrows():
         if row["status"] != "active":
@@ -248,6 +296,30 @@ if personal_view and not df_loans.empty:
         with d2:
             free = max(free_dates).strftime("%b %Y") if free_dates else "—"
             st.metric("Debt-free by", free, border=True)
+
+# Net worth strip (personal): today's savings + portfolio value − debt.
+if personal_view:
+    sav_total = 0.0
+    if not dfs.empty:
+        last_bal = (dfs.sort_values("date")
+                    .groupby("goal_name")["balance_eur"].last().dropna())
+        sav_total = float(last_bal.sum()) if not last_bal.empty else 0.0
+    port_value = 0.0
+    dfh = q.holdings(user_id)
+    if not dfh.empty:
+        for _, h in dfh.iterrows():
+            price = float(h["last_price"]) if pd.notna(h["last_price"]) else 0.0
+            qty = float(h["quantity"]) if pd.notna(h["quantity"]) else 0.0
+            rt = float(rates.get(str(h["currency"]), 1.0) or 1.0)
+            port_value += price * qty / rt
+    net_worth = sav_total + port_value - total_debt
+    with st.container(border=True):
+        st.markdown("**Net worth**")
+        n1, n2, n3 = st.columns(3)
+        n1.metric("Savings today", fmt(sav_total, DC, rates))
+        n2.metric("Portfolio", fmt(port_value, DC, rates))
+        n3.metric("Net worth (savings + portfolio − debt)",
+                  fmt(net_worth, DC, rates))
 
 st.divider()
 
