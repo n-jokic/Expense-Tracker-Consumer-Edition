@@ -92,7 +92,13 @@ def _generate_and_store_file_key() -> bytes:
 
 
 def get_master_bytes() -> bytes:
-    """The 32-byte master secret, resolved with the documented precedence."""
+    """The 32-byte master secret, resolved with the documented precedence.
+
+    NOTE: this value feeds the SQLCipher database key only. For the file
+    case it is the RAW .secret_key content (a Fernet key string), so the
+    DB key stays stable for installs whose database was encrypted with an
+    earlier version. Fernet encryption uses get_fernet_key() instead.
+    """
     secret = _env_secret()
     if secret is not None:
         return secret
@@ -106,8 +112,25 @@ def get_master_bytes() -> bytes:
 
 
 def get_fernet_key() -> bytes:
-    """A Fernet key (urlsafe-base64 of the 32-byte master secret)."""
-    return base64.urlsafe_b64encode(get_master_bytes())
+    """A valid Fernet key derived from the same master secret.
+
+    - env var:   urlsafe-base64 of the 32-byte normalized secret;
+    - st.secrets: urlsafe-base64 of the SHA-256 digest (matches the app's
+      original SMTP-encryption behavior exactly);
+    - .secret_key file: the file content IS a Fernet key already — returned
+      as-is (re-encoding would double-base64 it and break every stored
+      SMTP password / GitHub token).
+    """
+    secret = _env_secret()
+    if secret is not None:
+        return base64.urlsafe_b64encode(secret)
+    secret = _file_secret()
+    if secret is not None:
+        return secret
+    secret = _streamlit_secret()
+    if secret is not None:
+        return base64.urlsafe_b64encode(secret)
+    return _generate_and_store_file_key()  # a Fernet key by construction
 
 
 def sqlcipher_key_pragma() -> str:

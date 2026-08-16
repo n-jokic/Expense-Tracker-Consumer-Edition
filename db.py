@@ -100,18 +100,25 @@ def _file_is_plaintext(path):
         return False
 
 
-def _wait_for_migration_lock(timeout_s=120):
-    """Block while another process is encrypting the database (or break a
-    stale lock left behind by a crashed process)."""
+def _wait_for_migration_lock(timeout_s: int = 600) -> bool:
+    """Block while another process is encrypting the database.
+
+    Returns True when this process may proceed (lock gone or stale-removed).
+    Returns False when the lock is still FRESHLY held at the deadline —
+    another process is actively migrating, so the caller must NOT start its
+    own migration (two migrators would write the same temp files). The
+    timeout matches the lock's staleness threshold: a slow-but-alive
+    migration is waited out instead of being raced."""
     deadline = time.time() + timeout_s
     while os.path.exists(_ENCRYPTION_LOCK) and time.time() < deadline:
         try:
             if time.time() - os.path.getmtime(_ENCRYPTION_LOCK) > 600:
                 os.remove(_ENCRYPTION_LOCK)  # stale lock from a crash
-                break
+                return True
         except OSError:
             pass
         time.sleep(0.5)
+    return not os.path.exists(_ENCRYPTION_LOCK)
 
 
 def _migrate_plaintext_to_encrypted():
@@ -124,8 +131,16 @@ def _migrate_plaintext_to_encrypted():
     leaves the plaintext database intact and working.
     """
     os.makedirs(BASE_DIR, exist_ok=True)
-    with open(_ENCRYPTION_LOCK, "w", encoding="utf-8") as f:
-        f.write(str(os.getpid()))
+    # Exclusive creation: if another process grabs the lock in the instant
+    # between the caller's wait loop and here, we must NOT truncate its lock
+    # file and migrate against it — retry coordination instead.
+    try:
+        fd = os.open(_ENCRYPTION_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except FileExistsError:
+        raise FileExistsError(
+            "database encryption is already running in another process")
     tmp_plain = f"{DB_PATH}.migrating"
     tmp_enc = f"{DB_PATH}.enc-new"
     try:
@@ -231,12 +246,23 @@ def _ensure_db_encrypted():
                     "Set EXPENSE_TRACKER_DB_KEY or restore data/.secret_key "
                     "from your backup.") from e
             raise
-    _wait_for_migration_lock()
-    if not _file_is_plaintext(DB_PATH):
-        _ENCRYPTION_DONE = True  # another process finished migrating
-        return
-    _migrate_plaintext_to_encrypted()
-    _ENCRYPTION_DONE = True
+    for _attempt in range(2):
+        if not _wait_for_migration_lock():
+            raise RuntimeError(
+                "Another process is encrypting the database right now — "
+                "wait a moment and reload the page.")
+        if not _file_is_plaintext(DB_PATH):
+            _ENCRYPTION_DONE = True  # another process finished migrating
+            return
+        try:
+            _migrate_plaintext_to_encrypted()
+            _ENCRYPTION_DONE = True
+            return
+        except FileExistsError:
+            continue  # lost the lock race — re-check after the other process
+    raise RuntimeError(
+        "Another process is encrypting the database right now — "
+        "wait a moment and reload the page.")
 
 
 def get_engine():

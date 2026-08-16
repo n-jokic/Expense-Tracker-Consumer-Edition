@@ -236,6 +236,103 @@ class _FakeThreading:
         pass
 
 
+class _Resp:
+    def __init__(self, payload, content=None):
+        self.status_code = 200
+        self._payload = payload
+        self.content = content
+
+    def json(self):
+        return self._payload
+
+    @property
+    def text(self):
+        return json.dumps(self._payload)
+
+
+def test_find_manifest_and_download_roundtrip(monkeypatch):
+    # Regression: _find_manifest used to return the Contents-API metadata
+    # wrapper instead of the base64-decoded manifest, breaking restore.
+    import base64
+    data = os.urandom(9000)
+    path = _tmpfile("x.db", data)
+    monkeypatch.setattr(gb, "CHUNK_SIZE", 4096)
+    parts, manifest = gb._split_file(path)
+
+    children = [{"type": "file", "name": n} for n, _ in parts]
+    children.append({"type": "file", "name": "x.db.manifest.json",
+                     "url": "https://api.github.com/manifest"})
+
+    def fake_list(token, repo, p, br):
+        if p == "backups":
+            return [{"type": "dir", "name": "2026-08-16"}]
+        return children
+
+    responses = [_Resp({"content": base64.b64encode(
+                    json.dumps(manifest).encode()).decode()}),
+                 *[_Resp({"content": base64.b64encode(blob).decode()})
+                   for _, blob in parts]]
+
+    def fake_api(token, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(gb, "_list_dir", fake_list)
+    monkeypatch.setattr(gb, "_api", fake_api)
+
+    found, day = gb._find_manifest("t", "repo", "main", "x")
+    assert found["original_name"] == "x.db"
+    assert day == "2026-08-16"
+
+    # _download needs the parts' responses again.
+    responses[:] = [_Resp({"content": base64.b64encode(blob).decode()})
+                    for _, blob in parts]
+    merged = gb._download("t", "repo", "main", day, found)
+    assert merged == data
+
+
+def test_find_manifest_missing_raises_cleanly(monkeypatch):
+    monkeypatch.setattr(gb, "_list_dir", lambda *a, **k: [])
+    with pytest.raises(RuntimeError, match="No backup manifest"):
+        gb._find_manifest("t", "repo", "main", "2026-08-16_120000")
+
+
+def test_download_falls_back_to_download_url_for_large_files(monkeypatch):
+    # Regression: the Contents API omits `content` for files > 1 MB (parts
+    # are 50 MB); _download must fetch them through download_url instead of
+    # crashing with KeyError on a real restore.
+    import base64
+    import hashlib
+    blob = os.urandom(2048)
+    manifest = {"original_name": "x.db", "original_size": len(blob),
+                "db_sha256": hashlib.sha256(blob).hexdigest(),
+                "parts": [{"file": "x.db.part001",
+                           "sha256": hashlib.sha256(blob).hexdigest()}]}
+    responses = [_Resp({"content": None,
+                        "download_url": "https://raw.example/x.db.part001"}),
+                 _Resp({}, content=blob)]
+
+    def fake_api(token, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(gb, "_api", fake_api)
+    out = gb._download("t", "repo", "main", "2026-08-16", manifest)
+    assert out == blob
+
+
+def test_replace_db_wraps_file_in_use_error(monkeypatch):
+    from db import init_db, DB_PATH
+    init_db()
+    restored = _tmpfile("restored.db", b"x")
+    monkeypatch.setattr(gb.os, "replace",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            PermissionError("WinError 32: file in use")))
+    with pytest.raises(RuntimeError, match="Stop the app"):
+        gb._replace_db(restored, "orig.db")
+    assert os.path.exists(DB_PATH)  # live DB untouched
+    keeps = [f for f in os.listdir(gb.BACKUP_DIR) if f.startswith("pre_restore_")]
+    assert keeps
+
+
 def test_maybe_auto_backup_gates(monkeypatch):
     fake = _FakeThreading()
 

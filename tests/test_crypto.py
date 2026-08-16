@@ -137,6 +137,24 @@ def test_master_key_env_precedence_and_passphrase_digest(monkeypatch):
     assert crypto.get_master_bytes() == hashlib.sha256(b"my-passphrase").digest()
 
 
+def test_fernet_key_file_path_is_used_verbatim(monkeypatch):
+    # Regression: get_fernet_key once base64-encoded the .secret_key file
+    # content AGAIN (double-encoding), producing an invalid Fernet key and
+    # silently breaking every stored SMTP password / GitHub token on the
+    # default file-key path. The file content is already a Fernet key.
+    from cryptography.fernet import Fernet
+    fk = Fernet.generate_key()
+    monkeypatch.setattr(crypto, "_env_secret", lambda: None)
+    monkeypatch.setattr(crypto, "_file_secret", lambda: fk)
+    assert crypto.get_fernet_key() == fk
+    token = Fernet(crypto.get_fernet_key()).encrypt(b"x")
+    assert Fernet(fk).decrypt(token) == b"x"
+    # The SQLCipher derivation stays on the raw file bytes (the live DB was
+    # encrypted with that derivation — it must not change).
+    import hashlib
+    assert crypto.sqlcipher_key_pragma() == f"\"x'{hashlib.sha256(fk).hexdigest()}'\""
+
+
 def test_fernet_roundtrip_and_tamper():
     token = crypto.encrypt_str("github_pat_secret")
     assert token and token != "github_pat_secret"
@@ -149,3 +167,93 @@ def test_notifications_use_the_same_secret():
     import notifications
     token = crypto.encrypt_str("smtp-pass-123")
     assert notifications._decrypt(token) == "smtp-pass-123"
+
+
+def test_ensure_db_encrypted_reports_wrong_key_clearly(monkeypatch):
+    # A ciphertext DB created with the suite key, then opened with a
+    # DIFFERENT key: _ensure_db_encrypted must fail with the friendly
+    # message, not a raw DatabaseError.
+    other = os.path.join(_tmpdir(), "other.db")
+    con = _raw_connect(other)
+    try:
+        con.execute("CREATE TABLE t (x)")
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(db_module, "DB_PATH", other)
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", False)
+    monkeypatch.setenv("EXPENSE_TRACKER_DB_KEY", "00" * 32)
+    with pytest.raises(RuntimeError, match="key does not match"):
+        db_module._ensure_db_encrypted()
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", True)
+
+
+def test_empty_db_file_becomes_encrypted(monkeypatch):
+    # A 0-byte DB file (e.g. created by a broken download) must be treated
+    # as a fresh database and opened keyed — no crash, ciphertext on disk.
+    empty = os.path.join(_tmpdir(), "empty.db")
+    with open(empty, "wb") as f:
+        f.write(b"")
+    monkeypatch.setattr(db_module, "DB_PATH", empty)
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", False)
+    db_module._ensure_db_encrypted()
+    assert db_module._ENCRYPTION_DONE is True
+    con = _raw_connect(empty)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    finally:
+        con.close()
+    assert not _file_is_plaintext(empty)
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", True)
+
+
+def test_ensure_db_encrypted_yields_when_another_process_migrates(monkeypatch):
+    # A concurrent process holding a FRESH lock means WE must not start our
+    # own migration (same temp paths) — fail with a clear message instead.
+    plain = os.path.join(_tmpdir(), "busy.db")
+    con = sqlite3.connect(plain)
+    try:
+        con.execute("CREATE TABLE t (x)")
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(db_module, "DB_PATH", plain)
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", False)
+    monkeypatch.setattr(db_module, "_wait_for_migration_lock",
+                        lambda timeout_s=120: False)
+    with pytest.raises(RuntimeError, match="Another process"):
+        db_module._ensure_db_encrypted()
+    assert _file_is_plaintext(plain)  # untouched
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", True)
+
+
+def test_lock_race_retries_when_other_process_finishes(monkeypatch):
+    # Losing the O_EXCL lock race once, then seeing the other process's
+    # ciphertext, must converge without a second migration attempt.
+    plain = os.path.join(_tmpdir(), "race.db")
+    con = sqlite3.connect(plain)
+    try:
+        con.execute("CREATE TABLE t (x)")
+        con.commit()
+    finally:
+        con.close()
+    state = {"migrations": 0}
+
+    def fake_migrate():
+        state["migrations"] += 1
+        raise FileExistsError("database encryption is already running in another process")
+
+    def fake_plain(path):
+        return state["migrations"] == 0  # plaintext until the other finishes
+
+    monkeypatch.setattr(db_module, "DB_PATH", plain)
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", False)
+    monkeypatch.setattr(db_module, "_migrate_plaintext_to_encrypted", fake_migrate)
+    monkeypatch.setattr(db_module, "_wait_for_migration_lock",
+                        lambda timeout_s=120: True)
+    monkeypatch.setattr(db_module, "_file_is_plaintext", fake_plain)
+    db_module._ensure_db_encrypted()
+    assert state["migrations"] == 1
+    assert db_module._ENCRYPTION_DONE is True
+    monkeypatch.setattr(db_module, "_ENCRYPTION_DONE", True)

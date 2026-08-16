@@ -252,8 +252,8 @@ async def _list_savings_goals_impl() -> dict:
                 "interest_rate_pct": _clean(last.get("interest_rate")),
             })
     accounts = get_savings_accounts(uid)
-    term = _records(accounts, ["id", "account_name", "bank", "amount_eur",
-                               "currency", "interest_rate_pct", "start_date",
+    term = _records(accounts, ["id", "goal_name", "name", "amount", "currency",
+                               "amount_eur", "annual_rate", "start_date",
                                "maturity_date", "status"]) if not accounts.empty else []
     return {"ok": True, "goals": goals, "term_deposits": term}
 
@@ -314,6 +314,8 @@ async def _add_expense_impl(amount: float, category: str, description: str = "",
                             currency: str = "EUR") -> dict:
     try:
         uid = _resolve_user()
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise ValueError("amount must be a number")
         amt = float(amount)
         if not math.isfinite(amt) or amt <= 0 or amt > MAX_AMOUNT:
             raise ValueError(f"amount must be > 0 and <= {MAX_AMOUNT:g}")
@@ -327,6 +329,8 @@ async def _add_expense_impl(amount: float, category: str, description: str = "",
         desc = (description or "").strip()
         if not desc:
             raise ValueError("description is required")
+        if len(desc) > 500:
+            raise ValueError("description must be at most 500 characters")
         cur = (currency or "EUR").strip().upper()
         if cur not in SUPPORTED_CURRENCIES:
             raise ValueError(f"unknown currency '{cur}'")
@@ -353,6 +357,8 @@ async def _add_income_impl(amount: float, income_type: str = "Other",
                            notes: str = "") -> dict:
     try:
         uid = _resolve_user()
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise ValueError("amount must be a number")
         amt = float(amount)
         if not math.isfinite(amt) or amt <= 0 or amt > MAX_AMOUNT:
             raise ValueError(f"amount must be > 0 and <= {MAX_AMOUNT:g}")
@@ -364,13 +370,16 @@ async def _add_income_impl(amount: float, income_type: str = "Other",
         if cur not in SUPPORTED_CURRENCIES:
             raise ValueError(f"unknown currency '{cur}'")
         when = _parse_date(date_str)
+        notes = (notes or "").strip()
+        if len(notes) > 2000:
+            raise ValueError("notes must be at most 2000 characters")
         rates = _user_rates()
         ae = to_eur(amt, cur, rates)
         row = {
             "date": when, "source": itype, "income_type": itype,
             "hours": None, "rate": None,
             "budgeted": amt, "actual": amt, "currency": cur,
-            "budgeted_eur": ae, "actual_eur": ae, "notes": notes or "",
+            "budgeted_eur": ae, "actual_eur": ae, "notes": notes,
             "via": "mcp",
         }
         inc_id = db_add_income(uid, row)

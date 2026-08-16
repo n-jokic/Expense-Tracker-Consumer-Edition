@@ -142,6 +142,26 @@ def test_insights_with_budget(test_user):
     assert out["days_until_budget_depleted"] is not None
 
 
+def test_savings_goals_lists_term_deposits_with_real_fields(test_user):
+    # Regression: the tool once referenced non-existent columns
+    # (account_name/bank/interest_rate_pct) so term deposits came back empty
+    # of their name and rate.
+    from db import add_savings_account
+    add_savings_account(test_user, {"goal_name": "House", "name": "CD X",
+                                    "amount": 1000.0, "currency": "EUR",
+                                    "amount_eur": 1000.0, "annual_rate": 4.0,
+                                    "start_date": date(2025, 1, 1),
+                                    "maturity_date": date(2026, 1, 1),
+                                    "status": "active", "notes": ""})
+    sv = run(mcp._list_savings_goals_impl())
+    assert sv["ok"] is True
+    assert sv["term_deposits"], "term deposit must be listed"
+    t = sv["term_deposits"][0]
+    assert t["name"] == "CD X"
+    assert t["annual_rate"] == 4.0
+    assert t["goal_name"] == "House"
+
+
 # ── Write tools ───────────────────────────────────────────────────────────────
 
 def test_add_expense_valid_and_invalid(test_user):
@@ -173,12 +193,16 @@ def test_add_expense_valid_and_invalid(test_user):
     for kwargs, msg in [
         (dict(amount=0, category="Groceries", description="x"), "amount"),
         (dict(amount=-5, category="Groceries", description="x"), "amount"),
+        (dict(amount=True, category="Groceries", description="x"), "number"),
+        (dict(amount="5", category="Groceries", description="x"), "number"),
         (dict(amount=5, category="Nonsense", description="x"), "category"),
         (dict(amount=5, category="Groceries", description="x",
               subcategory="Nope"), "subcategory"),
         (dict(amount=5, category="Groceries", description="x",
               currency="XXX"), "currency"),
         (dict(amount=5, category="Groceries", description="  "),
+         "description"),
+        (dict(amount=5, category="Groceries", description="x" * 501),
          "description"),
     ]:
         r = run(mcp._add_expense_impl(**kwargs))
@@ -205,6 +229,10 @@ def test_add_income_valid_and_invalid(test_user):
     assert bad["ok"] is False and "amount" in bad["error"]
     bad = run(mcp._add_income_impl(10, "Royalties"))
     assert bad["ok"] is False and "income_type" in bad["error"]
+    bad = run(mcp._add_income_impl(True, "Other"))
+    assert bad["ok"] is False and "number" in bad["error"]
+    bad = run(mcp._add_income_impl(10, "Other", notes="n" * 2001))
+    assert bad["ok"] is False and "notes" in bad["error"]
 
 
 def test_read_tools_return_errors_not_exceptions(test_user, monkeypatch):

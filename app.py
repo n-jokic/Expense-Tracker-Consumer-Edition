@@ -4,6 +4,8 @@ Main Streamlit entry point: auth/onboarding gates, shared sidebar, alerts,
 and st.navigation-based page routing (pages live in app_pages/).
 """
 
+import logging
+
 import streamlit as st
 
 import queries as q
@@ -53,8 +55,9 @@ st.session_state.settings, _ = refresh_rates_if_due(user_id, st.session_state.se
 try:
     from github_backup import maybe_auto_backup
     maybe_auto_backup(user_id, st.session_state.settings)
-except Exception:
-    pass
+except Exception as e:
+    # A broken import here must not silently disable the feature forever.
+    logging.getLogger("app").warning("GitHub auto-backup unavailable: %s", e)
 
 # ── Onboarding gate (default False: never skip onboarding accidentally) ───────
 if not st.session_state.get("onboarding_complete", False):

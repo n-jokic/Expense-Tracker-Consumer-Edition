@@ -307,8 +307,13 @@ def _find_manifest(token: str, repo: str, branch: str, stamp_prefix: str) -> tup
         for child in _list_dir(token, repo, f"{_BACKUPS_PREFIX}/{entry['name']}", branch):
             name = child.get("name", "")
             if name.endswith(".manifest.json") and name.startswith(stamp_prefix):
+                # The Contents API returns a metadata wrapper with the file
+                # base64-encoded in its `content` field — not the raw JSON.
                 resp = _api(token, "GET", child["url"])
-                return resp.json(), entry["name"]
+                payload = resp.json()
+                raw = payload.get("content") or ""
+                manifest = json.loads(base64.b64decode(raw).decode("utf-8"))
+                return manifest, entry["name"]
     raise RuntimeError(f"No backup manifest found matching '{stamp_prefix}'.")
 
 
@@ -319,7 +324,19 @@ def _download(token: str, repo: str, branch: str, day: str,
         resp = _api(token, "GET",
                     f"{GH_API}/repos/{repo}/contents/{_BACKUPS_PREFIX}/{day}/{entry['file']}"
                     f"?ref={branch}")
-        parts.append((entry["file"], base64.b64decode(resp.json()["content"])))
+        payload = resp.json()
+        content = payload.get("content")
+        if content:
+            blob = base64.b64decode(content)
+        elif payload.get("download_url"):
+            # The Contents API omits `content` for files > 1 MB — fetch the
+            # raw file through download_url instead (parts are 50 MB).
+            raw = _api(token, "GET", payload["download_url"])
+            blob = raw.content
+        else:
+            raise RuntimeError(f"Could not download {entry['file']} "
+                               "(no content and no download_url)")
+        parts.append((entry["file"], blob))
     return _merge_parts(parts, manifest)
 
 
@@ -380,7 +397,14 @@ def _replace_db(restored: str, original_name: str) -> None:
     os.makedirs(BACKUP_DIR, exist_ok=True)
     with open(DB_PATH, "rb") as src, open(keep, "wb") as dst:
         dst.write(src.read())
-    os.replace(restored, DB_PATH)
+    try:
+        os.replace(restored, DB_PATH)
+    except OSError as e:
+        # Windows: the file is still open by a running app/API process.
+        raise RuntimeError(
+            f"Could not replace the database ({e}). Stop the app and the "
+            "sync API first, then retry — your previous database is "
+            f"untouched and a copy was kept at {keep}.") from e
     print(f"Database replaced. The previous file was kept at: {keep}")
     print("Restart the app (and the sync API) now.")
 
@@ -423,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             parser.print_help()
             return 1
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         print(f"ERROR: {e}")
         return 1
     return 0
