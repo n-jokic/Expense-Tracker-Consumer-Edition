@@ -142,6 +142,54 @@ def test_insights_with_budget(test_user):
     assert out["days_until_budget_depleted"] is not None
 
 
+def test_insights_includes_narrative_with_provider(test_user, monkeypatch):
+    import llm
+
+    db_add_expense(test_user, {"date": date.today(), "category": "Groceries",
+                               "description": "today's shop", "amount": 20.0,
+                               "currency": "EUR", "amount_eur": 20.0})
+    save_settings(test_user, {"ai_provider": "local",
+                              "ai_local_model": "configured.gguf"})
+    captured = {}
+
+    def fake_narrative(stats, settings):
+        captured.update(stats)
+        return "You spent 20 EUR this month."
+
+    monkeypatch.setattr(llm, "generate_narrative", fake_narrative)
+    out = run(mcp._get_insights_impl())
+
+    assert out["narrative"] == "You spent 20 EUR this month."
+    assert captured["spent_eur"] == 20.0
+    assert out["spending_mom"]["current"] == 20.0
+
+
+def test_insights_without_provider_keeps_structured_metrics(test_user):
+    out = run(mcp._get_insights_impl())
+
+    assert out["ok"] is True
+    assert "spending_mom" in out and "income_mom" in out
+    assert "narrative" not in out
+
+
+def test_insights_generation_failure_keeps_structured_metrics(test_user,
+                                                               monkeypatch):
+    import llm
+
+    save_settings(test_user, {"ai_provider": "local",
+                              "ai_local_model": "configured.gguf"})
+
+    def failing_narrative(stats, settings):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(llm, "generate_narrative", failing_narrative)
+    out = run(mcp._get_insights_impl())
+
+    assert out["ok"] is True
+    assert "spending_mom" in out and "income_mom" in out
+    assert "narrative" not in out
+
+
 def test_savings_goals_lists_term_deposits_with_real_fields(test_user):
     # Regression: the tool once referenced non-existent columns
     # (account_name/bank/interest_rate_pct) so term deposits came back empty

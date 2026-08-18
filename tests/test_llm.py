@@ -46,6 +46,17 @@ def test_resolve_provider():
         {"ai_provider": "api", "ai_api_key_enc": encrypt_str("sk-x")}) == "api"
 
 
+def test_local_provider_discovers_app_model(tmp_path, monkeypatch):
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    model = model_dir / "google_gemma-3-1b-it-Q4_K_M.gguf"
+    model.write_bytes(b"not-a-real-model")
+    monkeypatch.setattr(llm, "__file__", str(tmp_path / "llm.py"))
+
+    assert llm.find_bundled_model() == str(model)
+    assert llm.resolve_provider({"ai_provider": "local"}) == "local"
+
+
 # ── API provider ──────────────────────────────────────────────────────────────
 
 class _FakeResp:

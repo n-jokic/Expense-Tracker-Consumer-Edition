@@ -19,6 +19,7 @@ HTML-escape it before embedding.
 
 import logging
 import threading
+from pathlib import Path
 
 import requests
 
@@ -28,6 +29,7 @@ log = logging.getLogger("llm")
 
 DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_API_MODEL = "google/gemma-3-12b-it"
+DEFAULT_LOCAL_MODEL_FILENAME = "google_gemma-3-1b-it-Q4_K_M.gguf"
 
 # One local generation at a time; the model is loaded once per path.
 _local_lock = threading.Lock()
@@ -36,10 +38,18 @@ _local_cache: tuple = (None, None)  # (model_path, llama instance)
 
 # ── Provider resolution ───────────────────────────────────────────────────────
 
+def find_bundled_model() -> str | None:
+    """Return the app-local Gemma path when the optional GGUF is present."""
+    path = (Path(__file__).resolve().parent / "models"
+            / DEFAULT_LOCAL_MODEL_FILENAME)
+    return str(path) if path.is_file() else None
+
+
 def resolve_provider(settings: dict) -> str:
     """'none' | 'local' | 'api' based on the stored AI settings."""
     provider = str(settings.get("ai_provider") or "none").strip().lower()
-    if provider == "local" and not str(settings.get("ai_local_model") or "").strip():
+    model_path = str(settings.get("ai_local_model") or "").strip()
+    if provider == "local" and not model_path and not find_bundled_model():
         return "none"
     if provider == "api" and not decrypt_str(settings.get("ai_api_key_enc") or ""):
         return "none"
@@ -51,7 +61,8 @@ def resolve_provider(settings: dict) -> str:
 def _get_local_model(settings: dict):
     """Load (once) and return the llama-cpp model for the configured path."""
     global _local_cache
-    path = str(settings.get("ai_local_model") or "").strip()
+    path = (str(settings.get("ai_local_model") or "").strip()
+            or find_bundled_model())
     if not path:
         return None
     if _local_cache[0] == path and _local_cache[1] is not None:

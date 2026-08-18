@@ -287,7 +287,8 @@ async def _get_insights_impl() -> dict:
     income = get_income(uid)
     settings = get_settings(uid)
     from insights import (month_over_month, top_category_this_month,
-                          unusual_expenses, days_until_budget_depleted)
+                          unusual_expenses, days_until_budget_depleted,
+                          build_narrative_stats)
     out = {
         "ok": True,
         "spending_mom": month_over_month(expenses, "amount_eur", today.year, today.month),
@@ -304,6 +305,15 @@ async def _get_insights_impl() -> dict:
     if budget > 0:
         out["days_until_budget_depleted"] = days_until_budget_depleted(
             expenses, budget, today.replace(day=1))
+    try:
+        from llm import generate_narrative
+        narrative = generate_narrative(
+            build_narrative_stats(expenses, settings, today.year, today.month),
+            settings)
+        if narrative:
+            out["narrative"] = narrative
+    except Exception:
+        pass  # AI is optional; never hide the structured metrics
     return out
 
 
@@ -502,7 +512,8 @@ async def get_milestones() -> dict:
 @server.tool()
 async def get_insights() -> dict:
     """Month-over-month spending/income trends, top category, unusual
-    expenses, and days until the monthly budget runs out."""
+    expenses, days until the monthly budget runs out, and an optional AI
+    narrative when a provider is configured."""
     try:
         return await _get_insights_impl()
     except Exception as e:

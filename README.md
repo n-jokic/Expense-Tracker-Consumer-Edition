@@ -543,16 +543,22 @@ templates — nothing else changes. Configure it in
 1. Install llama-cpp-python (optional dependency):
    `pip install llama-cpp-python` — CPU wheels install directly; if you want
    GPU acceleration, use the CUDA wheels from the project's GitHub releases.
-2. Download a GGUF model from HuggingFace (`bartowski`):
+2. Download a GGUF model from HuggingFace (`bartowski`) and place the
+   recommended file at `models\google_gemma-3-1b-it-Q4_K_M.gguf`:
    - **Gemma 3 1B Q4_K_M** (~0.9 GB — the default recommendation):
      `bartowski/google_gemma-3-1b-it-GGUF` → `google_gemma-3-1b-it-Q4_K_M.gguf`
    - alternative **Gemma 2 2B Q4_K_M** (~1.6 GB):
      `bartowski/google_gemma-2-2b-it-GGUF`
+   The app auto-detects the recommended file in `models\`; for another model,
+   paste its full `.gguf` path instead.
 3. In the app: Settings → Notifications → AI assistant → provider **Local
-   Gemma model** → paste the full `.gguf` path. **GPU layers**: `-1` puts
-   everything on the GPU (2 GB VRAM is plenty for the 1B model); `0` runs on
-   CPU (a few seconds per summary).
+   Gemma model**. **GPU layers**: `-1` puts everything on the GPU (2 GB VRAM
+   is plenty for the 1B model); `0` runs on CPU (a few seconds per summary).
 4. Press **Test summary** to verify.
+
+The `models\*.gguf` files are intentionally ignored by Git. The desktop
+launcher keeps the project folder beside the executable, so the model remains
+available there without being embedded into the launcher.
 
 **External API key**
 
@@ -628,9 +634,13 @@ Exposed tools:
 | `list_savings_goals` | Goal balances, targets, term deposits |
 | `list_recurring_bills`, `list_loans` | Bills and loans |
 | `get_milestones` | Earned gamification badges |
-| `get_insights` | Month-over-month trends, unusual expenses, budget burn-down |
+| `get_insights` | Month-over-month trends, unusual expenses, budget burn-down, and an optional AI narrative |
 | `ask_data` | Free-form question answered over your data by the AI assistant (read-only) |
 | `add_expense`, `add_income` | **Writes** — validated, audit-logged ("via mcp"), instantly visible in the app |
+
+When an AI provider is configured, `get_insights` adds a plain-text `narrative`.
+If the provider is off or generation fails, the existing structured metrics are
+still returned unchanged.
 
 Connect it to OpenClaw (run once):
 
@@ -837,13 +847,14 @@ sync_core.py            # sync protocol: schemas, cursor, atomic apply, snapshot
 api.py                  # FastAPI sync API (port 8502), pairing, rate limits
 crypto.py               # master key: SQLCipher DB key + Fernet field encryption
 llm.py                  # optional LLM: local Gemma (llama.cpp) or API key
+models/                 # optional local Gemma GGUF files (ignored)
 mcp_server.py           # MCP server for OpenClaw / AI assistants (stdio or HTTP)
 github_backup.py        # encrypted backups to GitHub + restore CLI
 make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # the 18 UI pages (Budgets, Rewards & badges, Ask your data, …)
-tests/                  # 372 pytest regression/AppTest suites
+tests/                  # 376 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -853,7 +864,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (372 tests) covers the currency engine, loan amortization edge
+The suite (376 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
 date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
@@ -899,13 +910,12 @@ Cloudflare Tunnel) and disable open registration as above.
   languages); PP-Structure for table-heavy PDFs only where parsing fails.
 - **LLM ideas (the engine is in place)** — anomaly explanations in words,
   OCR/bank-import merchant & category normalization when the trained
-  classifier is unsure, an annual financial-narrative email, and an
-  `narrative` field on the MCP `get_insights` tool. (The ask-your-data chat
-  shipped — see the Feature guide.)
+  classifier is unsure, and an annual financial-narrative email. (The
+  ask-your-data chat shipped — see the Feature guide.)
 
 Shipped recently: SQLCipher database encryption with automatic migration,
 encrypted GitHub backups with a restore CLI, the OpenClaw/MCP assistant
 integration, the optional local-Gemma/API assistant (weekly emails, Insights
-narrative, and the ask-your-data chat), dedicated Budgets and
+narrative, MCP Insights narrative, and the ask-your-data chat), dedicated Budgets and
 Rewards & badges pages, and user-created custom milestones with fun-money
 rewards.

@@ -36,6 +36,9 @@ dist/
 build/
 *.spec
 
+# ── Optional local Gemma weights ───────────────────────────────────────────────
+models/*.gguf
+
 # ── Exports / backups ───────────────────────────────────────────────────────────
 *.zip
 *.bak

@@ -642,7 +642,7 @@ def render_notification_settings(user_id: int, settings: dict):
                "an external API key writes the weekly summary paragraph and the "
                "Insights narrative. Without it, everything falls back to the "
                "built-in templates — see the README for model downloads and setup.")
-    from llm import DEFAULT_API_BASE, DEFAULT_API_MODEL
+    from llm import DEFAULT_API_BASE, DEFAULT_API_MODEL, find_bundled_model
     cur_provider = str(settings.get("ai_provider") or "none")
     with st.form("ai_form"):
         ai_provider = st.selectbox(
@@ -658,10 +658,11 @@ def render_notification_settings(user_id: int, settings: dict):
         if ai_provider == "local":
             ai_model_path = st.text_input(
                 "GGUF model file path",
-                value=str(settings.get("ai_local_model") or ""),
+                value=str(settings.get("ai_local_model") or
+                           find_bundled_model() or ""),
                 placeholder=r"C:\models\gemma-3-1b-it-Q4_K_M.gguf",
-                help="Download from HuggingFace (see README); Gemma 3 1B Q4 "
-                     "is ~0.9 GB.")
+                help="The app auto-detects models\\google_gemma-3-1b-it-Q4_K_M.gguf; "
+                     "you can also enter another GGUF path.")
             ai_gpu = st.number_input(
                 "GPU layers (-1 = all to GPU, 0 = CPU)",
                 value=int(settings.get("ai_local_gpu_layers") or -1),
