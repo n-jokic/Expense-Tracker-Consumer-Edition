@@ -11,7 +11,8 @@ import streamlit as st
 
 import queries as q
 from db import add_loan, update_loan, delete_loan, add_expense
-from finance import annuity_payment, loan_schedule, _first_due, _next_due
+from finance import (annuity_payment, loan_schedule, _first_due, _next_due,
+                     calculate_early_repayment_surcharge)
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     fmt, to_eur, get_currency_symbol,
@@ -57,6 +58,17 @@ with st.form("loan_form", clear_on_submit=True):
         l_day     = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
                                     value=1, step=1)
         l_notes   = st.text_input("Notes (optional)")
+        l_surcharge_type = st.selectbox(
+            "Early repayment surcharge",
+            ["fixed", "percent"],
+            format_func=lambda v: "Fixed amount" if v == "fixed" else "Percentage",
+        )
+        l_surcharge_value = st.number_input(
+            "Surcharge value (% or loan currency)", min_value=0.0,
+            max_value=100.0 if l_surcharge_type == "percent" else MAX_SAVINGS_TARGET,
+            step=0.1 if l_surcharge_type == "percent" else 10.0,
+            format="%.2f", value=0.0,
+        )
     if st.form_submit_button("Save loan", type="primary", width="stretch", icon=":material/save:"):
         if not l_name.strip():
             st.error("Please give the loan a name.")
@@ -69,6 +81,8 @@ with st.form("loan_form", clear_on_submit=True):
                 "principal_eur": pe, "annual_rate": l_rate,
                 "start_date": l_start, "term_months": int(l_term),
                 "payment_day": int(l_day), "status": "active", "notes": l_notes,
+                "early_repayment_surcharge_type": l_surcharge_type,
+                "early_repayment_surcharge_value": float(l_surcharge_value),
             })
             q.bump_db_version()
             st.session_state["loan_flash"] = (
@@ -134,6 +148,26 @@ def edit_loan_dialog(uid: int, row):
     e_notes = st.text_input("Notes (optional)",
                             value=str(row["notes"]) if pd.notna(row["notes"]) else "",
                             key="loan_edit_notes")
+    e_surcharge_type = str(row.get("early_repayment_surcharge_type") or "fixed")
+    if e_surcharge_type not in {"fixed", "percent"}:
+        e_surcharge_type = "fixed"
+    e_surcharge_type = st.selectbox(
+        "Early repayment surcharge", ["fixed", "percent"],
+        index=["fixed", "percent"].index(e_surcharge_type),
+        format_func=lambda v: "Fixed amount" if v == "fixed" else "Percentage",
+        key="loan_edit_surcharge_type",
+    )
+    e_surcharge_raw = (float(row.get("early_repayment_surcharge_value") or 0.0)
+                       if pd.notna(row.get("early_repayment_surcharge_value")) else 0.0)
+    e_surcharge_max = 100.0 if e_surcharge_type == "percent" else MAX_SAVINGS_TARGET
+    e_surcharge_value = st.number_input(
+        "Surcharge value (% or loan currency)", min_value=0.0,
+        max_value=e_surcharge_max,
+        step=0.1 if e_surcharge_type == "percent" else 10.0,
+        format="%.2f",
+        value=min(e_surcharge_raw, e_surcharge_max),
+        key="loan_edit_surcharge_value",
+    )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -151,10 +185,86 @@ def edit_loan_dialog(uid: int, row):
                     "annual_rate": float(e_rate), "start_date": e_start,
                     "term_months": int(e_term), "payment_day": int(e_day),
                     "status": e_status, "notes": e_notes,
+                    "early_repayment_surcharge_type": e_surcharge_type,
+                    "early_repayment_surcharge_value": float(e_surcharge_value),
                 })
                 q.bump_db_version()
                 st.session_state["loan_flash"] = ("toast", f"Loan **{e_name.strip()}** updated.")
                 st.rerun()
+
+
+def _loan_payment_records(pay_df):
+    """Return schedule inputs while retaining early-payment fee metadata."""
+    records = []
+    for _, payment in pay_df.iterrows():
+        if pd.isna(payment.get("date")):
+            continue
+        records.append({
+            "date": payment["date"].date(),
+            "amount_eur": float(payment.get("amount_eur") or 0.0),
+            "surcharge_eur": float(payment.get("loan_surcharge_eur") or 0.0),
+            "type": str(payment.get("loan_payment_type") or "regular"),
+        })
+    return records
+
+
+@st.dialog("Early repayment")
+def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
+    """Log principal plus a configured fee without reducing balance by the fee."""
+    lcur = str(row["currency"])
+    lsym = get_currency_symbol(lcur)
+    fx = float(rates.get(lcur, 1.0) or 1.0) if lcur != "EUR" else 1.0
+    max_principal = sched["remaining_balance"] * fx
+    if max_principal <= 0.005:
+        st.info("This loan has no remaining principal.")
+        return
+
+    mode = str(row.get("early_repayment_surcharge_type") or "fixed")
+    if mode not in {"fixed", "percent"}:
+        mode = "fixed"
+    configured = float(row.get("early_repayment_surcharge_value") or 0.0)
+    p_date = st.date_input("Date", value=today, key=f"loan_early_date_{row['id']}")
+    principal = st.number_input(
+        f"Principal ({lsym})", min_value=0.01, max_value=max(max_principal, 0.01),
+        value=min(max_principal, max(max_principal, 0.01)), step=10.0,
+        format="%.2f", key=f"loan_early_amount_{row['id']}",
+    )
+    surcharge = calculate_early_repayment_surcharge(principal, mode, configured)
+    principal_eur = to_eur(principal, lcur, rates)
+    surcharge_eur = to_eur(surcharge, lcur, rates)
+    st.caption(f"Principal: **{fmt(principal_eur, DC, rates)}** · "
+               f"Surcharge: **{fmt(surcharge_eur, DC, rates)}** · "
+               f"Total expense: **{fmt(principal_eur + surcharge_eur, DC, rates)}**")
+    if p_date > today:
+        st.warning("Early repayments must be dated today or earlier.")
+    if st.button("Log early repayment", type="primary",
+                 key=f"loan_early_save_{row['id']}", width="stretch"):
+        if p_date > today:
+            st.error("Choose today or an earlier date.")
+            return
+        total_eur = principal_eur + surcharge_eur
+        record = {"date": p_date, "amount_eur": total_eur,
+                  "surcharge_eur": surcharge_eur}
+        add_expense(uid, {
+            "date": p_date, "category": "Loans & Debt",
+            "subcategory": "Loan Repayment",
+            "description": f"{row['name']} early repayment",
+            "amount": float(principal + surcharge), "currency": lcur,
+            "amount_eur": total_eur, "recurring": False, "loan_id": str(row["id"]),
+            "loan_payment_type": "early", "loan_surcharge_eur": surcharge_eur,
+            "notes": "Early repayment",
+        })
+        projected = loan_schedule(
+            float(row["principal_eur"]), float(row["annual_rate"]),
+            int(row["term_months"]),
+            row["start_date"].date() if pd.notna(row["start_date"]) else today,
+            int(row["payment_day"]), payments + [record], today,
+        )
+        if projected["remaining_balance"] <= 0.005:
+            update_loan(uid, str(row["id"]), {"status": "paid_off"})
+        q.bump_db_version()
+        st.session_state["loan_flash"] = ("success", f"Early repayment logged for {row['name']}")
+        st.rerun()
 
 
 # ── Loan list ─────────────────────────────────────────────────────────────────
@@ -167,8 +277,7 @@ else:
     for _, row in df_loans.iterrows():
         loan_id = str(row["id"])
         pay_df = q.loan_payments(user_id, loan_id)
-        payments = [(r["date"].date(), float(r["amount_eur"]))
-                    for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        payments = _loan_payment_records(pay_df)
         start_date = (row["start_date"].date() if pd.notna(row["start_date"])
                       else date.today())
         _principal = float(row["principal_eur"]) if pd.notna(row["principal_eur"]) else 0.0
@@ -217,7 +326,9 @@ else:
                     f"Remaining: **{fmt(sched['remaining_balance'], DC, rates)}** "
                     f"({sched['remaining_months']} mo) · "
                     f"Payoff: **{payoff_str}** · "
-                    f"Interest paid: {fmt(sched['total_interest_paid'], DC, rates)} · "
+                    f"Interest paid (incl. fees): {fmt(sched['total_interest_paid'], DC, rates)} · "
+                    f"Next split: {fmt(sched['next_payment_interest'], DC, rates)} interest + "
+                    f"{fmt(sched['next_payment_principal'], DC, rates)} principal · "
                     f"Total cost: {fmt(sched['total_cost'], DC, rates)}"
                     + (" · ⚠️ payment overdue" if overdue else "")
                 )
@@ -233,6 +344,8 @@ else:
                         if lcur != "EUR":
                             monthly_in_cur = monthly_in_cur * (rates.get(lcur, 1.0) or 1.0)
                         st.markdown(f"Expected payment: {fmt(sched['monthly_payment'], DC, rates)}")
+                        st.caption(f"Next installment: {fmt(sched['next_payment_interest'], DC, rates)} interest · "
+                                   f"{fmt(sched['next_payment_principal'], DC, rates)} principal")
                         p_date = st.date_input("Date", value=today, key=f"loan_pd_{loan_id}")
                         p_amt  = st.number_input(f"Amount ({lsym})",
                                                  value=max(monthly_in_cur, 0.01),
@@ -252,11 +365,25 @@ else:
                                 "amount_eur": ae,
                                 "recurring": False,
                                 "loan_id": loan_id,
+                                "loan_payment_type": "regular",
+                                "loan_surcharge_eur": 0.0,
                                 "notes": "Loan payment",
                             })
+                            projected = loan_schedule(
+                                _principal, _rate, int(row["term_months"]), start_date,
+                                int(row["payment_day"]), payments + [{
+                                    "date": p_date, "amount_eur": ae,
+                                    "surcharge_eur": 0.0,
+                                }], today,
+                            )
+                            if projected["remaining_balance"] <= 0.005:
+                                update_loan(user_id, loan_id, {"status": "paid_off"})
                             q.bump_db_version()
                             st.session_state["loan_flash"] = ("toast", f"Payment logged for {row['name']}")
                             st.rerun()
+                    if st.button("Early repayment", key=f"loan_early_{loan_id}",
+                                 icon=":material/payments:", width="stretch"):
+                        early_repayment_dialog(user_id, row, sched, payments)
                 else:
                     st.success("Paid off ✓")
 
@@ -266,8 +393,13 @@ else:
                     if payments:
                         # NB: pay_date/pay_amt, not p_date/p_amt — those are
                         # the "Log payment" popover widgets in this same scope.
-                        for pay_date, pay_amt in sorted(payments, reverse=True):
-                            st.write(f"{pay_date.strftime('%d %b %Y')} — {fmt(pay_amt, DC, rates)}")
+                        for payment in sorted(payments, key=lambda p: p["date"], reverse=True):
+                            label = ("Early repayment" if payment["type"] == "early"
+                                     else "Payment")
+                            fee = (f" · fee {fmt(payment['surcharge_eur'], DC, rates)}"
+                                   if payment["surcharge_eur"] > 0 else "")
+                            st.write(f"{payment['date'].strftime('%d %b %Y')} — {label}: "
+                                     f"{fmt(payment['amount_eur'], DC, rates)}{fee}")
                     else:
                         st.caption("No payments logged yet.")
             with c2:

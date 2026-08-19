@@ -3,7 +3,6 @@ Big purchases page: wishlist items with a 4-quadrant priority matrix
 (expected usage vs work-hours needed) and a "bought → expense" handoff.
 """
 
-import math
 from datetime import date
 
 import pandas as pd
@@ -15,11 +14,12 @@ from db import (
     add_big_purchase, update_big_purchase, delete_big_purchase, add_expense,
     BIG_STATUSES,
 )
+from finance import derive_hourly_rate
 from utils import (
     CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     QUADRANT_COLORS, classify_quadrant,
     fmt, fmt_row, to_eur, get_currency_symbol,
-    help_expander,
+    help_expander, sortable_grouped_ids,
 )
 
 user_id  = st.session_state.user_id
@@ -42,40 +42,24 @@ if (flash := st.session_state.pop("bp_flash", None)):
     else:
         st.toast(flash[1], icon=":material/check_circle:")
 
-_hr = float(settings.get("hourly_rate") or 0.0)
-# A stored NaN is truthy, so `or 0.0` alone doesn't normalise it — and a NaN
-# value would crash the number_input below.
-hourly_rate = _hr if math.isfinite(_hr) else 0.0
-rate_source = "manual"
-if hourly_rate <= 0:
-    # Auto-derive the hourly rate from the salary settings (salary ÷ 160
-    # working hours per month) so the work-hour math works out of the box.
-    sal = float(settings.get("salary_amount") or 0.0)
-    if sal > 0:
-        sal_cur = settings.get("salary_currency") or "EUR"
-        try:
-            sal_eur = to_eur(sal, sal_cur, rates)
-        except ValueError:
-            sal_eur = 0.0
-        derived = sal_eur / 160.0
-        if derived > 0:
-            hourly_rate = derived
-            rate_source = "salary"
+dfi = q.income(user_id)
+salary_eur = 0.0
+try:
+    salary_eur = to_eur(float(settings.get("salary_amount") or 0.0),
+                        settings.get("salary_currency") or "EUR", rates)
+except (TypeError, ValueError):
+    pass
+hourly_rate, rate_source = derive_hourly_rate(dfi, salary_eur)
 
 # ── Hourly rate ───────────────────────────────────────────────────────────────
-hr1, hr2 = st.columns([3, 1])
-with hr1:
-    new_rate = st.number_input("Your hourly rate (EUR) — used for work-hour math",
-                               value=hourly_rate, min_value=0.0,
-                               max_value=10_000.0, step=0.5, format="%.2f",
-                               key="bp_hourly_rate")
-    if rate_source == "salary":
-        st.caption("💼 Auto-calculated from your salary settings "
-                   "(salary ÷ 160 hours/month). Save a value above to override.")
-with hr2:
-    if st.button("Save rate", icon=":material/save:", width="stretch", key="bp_save_rate"):
-        q.save_settings(user_id, {"hourly_rate": float(new_rate)})
-        st.rerun()
+if rate_source == "income":
+    st.caption(f"Hourly rate: **{hourly_rate:,.2f} EUR** — calculated from Hourly income "
+               "(actual EUR ÷ recorded hours).")
+elif rate_source == "salary":
+    st.caption(f"Hourly rate: **{hourly_rate:,.2f} EUR** — calculated from salary "
+               "(salary ÷ 160 hours/month). Add Hourly income entries to replace this fallback.")
+else:
+    st.info("Add Hourly income or salary data to calculate work-hours automatically.")
 
 # ── Add form ──────────────────────────────────────────────────────────────────
 with st.form("bp_form", clear_on_submit=True):
@@ -246,7 +230,32 @@ def edit_purchase_dialog(uid: int, row):
 # ── Item list ─────────────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Wishlist items")
-for _, row in dfb.iterrows():
+
+
+def _persist_grouped_order(groups, rows):
+    by_id = {str(row["id"]): row for _, row in rows.iterrows()}
+    changed = False
+    for category, item_ids in groups.items():
+        for position, item_id in enumerate(item_ids):
+            row = by_id.get(str(item_id))
+            if row is None:
+                continue
+            updates = {"sort_order": position}
+            if str(row["category"]) != str(category):
+                updates["category"] = str(category)
+            current_order = row.get("sort_order")
+            order_changed = (pd.isna(current_order)
+                             or int(current_order) != int(updates["sort_order"]))
+            category_changed = "category" in updates
+            if order_changed or category_changed:
+                update_big_purchase(user_id, str(item_id), updates)
+                changed = True
+    if changed:
+        q.bump_db_version()
+        st.rerun()
+
+
+def _render_purchase_card(row, archived=False):
     if hourly_rate > 0 and row["price_eur"] > 0:
         wh = float(row["price_eur"]) / hourly_rate
         work_str = f" · ≈ {wh:,.0f} h of work"
@@ -255,37 +264,83 @@ for _, row in dfb.iterrows():
 
     status_icon = {"wishlist": "⭐", "saving": "🐷", "bought": "✅"}.get(row["status"], "⭐")
 
-    l1, l2, l3, l4 = st.columns([3.2, 1.6, 1.6, 1.4])
-    with l1:
-        st.markdown(f"{status_icon} **{row['name']}**")
-        st.caption(f"{row['category']} · importance {int(row['importance'])}/5 · "
-                   f"use {float(row['usage_hours']):,.1f} h/mo{work_str}")
-    with l2:
-        st.write(fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates))
+    with st.container(border=True):
+        l1, l2, l3 = st.columns([3.5, 1.6, 1.3])
+        with l1:
+            st.markdown(f"{status_icon} **{row['name']}**")
+            st.caption(f"{row['category']} · importance {int(row['importance'])}/5 · "
+                       f"use {float(row['usage_hours']):,.1f} h/mo{work_str}")
+        with l2:
+            st.write(fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates))
 
-    with l3:
-        new_status = st.selectbox(
-            "Status", BIG_STATUSES,
-            index=BIG_STATUSES.index(row["status"]) if row["status"] in BIG_STATUSES else 0,
-            key=f"bp_status_{row['id']}", label_visibility="collapsed",
-            on_change=lambda i=row["id"]: (
-                update_big_purchase(user_id, i, {"status": st.session_state[f"bp_status_{i}"]}),
-                q.bump_db_version(),
-            ),
-        )
-    with l4:
-        if row["status"] != "bought":
-            if st.button("Bought → log expense", icon=":material/check_circle:", key=f"bp_buy_{row['id']}", width="stretch"):
-                confirm_purchase_dialog(
-                    user_id, str(row["id"]), str(row["name"]), str(row["category"]),
-                    float(row["price"]), str(row["currency"]), float(row["price_eur"]),
-                    str(row.get("notes", "")),
+        with l3:
+            if archived:
+                st.caption("Bought · archived")
+                if st.button("Restore", icon=":material/undo:", key=f"bp_restore_{row['id']}",
+                             width="stretch"):
+                    update_big_purchase(user_id, str(row["id"]),
+                                        {"status": "wishlist"})
+                    q.bump_db_version()
+                    st.rerun()
+            else:
+                st.selectbox(
+                    "Status", BIG_STATUSES,
+                    index=BIG_STATUSES.index(row["status"])
+                    if row["status"] in BIG_STATUSES else 0,
+                    key=f"bp_status_{row['id']}", label_visibility="collapsed",
+                    on_change=lambda i=row["id"]: (
+                        update_big_purchase(user_id, i, {
+                            "status": st.session_state[f"bp_status_{i}"]}),
+                        q.bump_db_version(),
+                    ),
                 )
-        if st.button("Edit", icon=":material/edit:", key=f"bp_edit_{row['id']}", width="stretch",
-                     help="Edit this item"):
-            edit_purchase_dialog(user_id, row)
-        if st.button("Delete", icon=":material/delete:", key=f"bp_del_{row['id']}", width="stretch",
-                     help="Delete this item"):
-            delete_big_purchase(user_id, row["id"])
-            q.bump_db_version()
-            st.rerun()
+                if row["status"] != "bought" and st.button(
+                        "Bought → log expense", icon=":material/check_circle:",
+                        key=f"bp_buy_{row['id']}", width="stretch"):
+                    confirm_purchase_dialog(
+                        user_id, str(row["id"]), str(row["name"]), str(row["category"]),
+                        float(row["price"]), str(row["currency"]), float(row["price_eur"]),
+                        str(row.get("notes", "")),
+                    )
+
+        with st.popover("More", icon=":material/more_vert:"):
+            if st.button("Edit", icon=":material/edit:", key=f"bp_edit_{row['id']}",
+                         width="stretch"):
+                edit_purchase_dialog(user_id, row)
+            if st.button("Delete", icon=":material/delete:", key=f"bp_del_{row['id']}",
+                         width="stretch"):
+                delete_big_purchase(user_id, row["id"])
+                q.bump_db_version()
+                st.rerun()
+
+
+active = dfb[dfb["status"] != "bought"].copy()
+if not active.empty:
+    categories = {str(category) for category in active["category"].dropna()}
+    category_order = [category for category in CAT_LIST if category in categories]
+    category_order += sorted(categories - set(category_order))
+    groups = {}
+    for category in category_order:
+        rows = active[active["category"] == category].copy()
+        rows["_sort"] = pd.to_numeric(rows["sort_order"], errors="coerce").fillna(0)
+        rows = rows.sort_values(["_sort", "created_at", "name"], na_position="last")
+        groups[category] = [
+            (str(row["id"]), str(row["name"])) for _, row in rows.iterrows()
+        ]
+
+    st.caption("Drag items to reorder them or move them between categories.")
+    ordered = sortable_grouped_ids(groups, f"big_purchase_order_{user_id}")
+    _persist_grouped_order(ordered, active)
+    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
+    for category in ordered:
+        with st.expander(f"{category} ({len(ordered[category])})", expanded=True):
+            for item_id in ordered[category]:
+                _render_purchase_card(rows_by_id[item_id])
+else:
+    st.info("All wishlist items are archived. Add a new item above or restore one below.")
+
+bought = dfb[dfb["status"] == "bought"]
+if not bought.empty:
+    with st.expander(f"Archived ({len(bought)})", expanded=False):
+        for _, row in bought.sort_values("created_at", ascending=False).iterrows():
+            _render_purchase_card(row, archived=True)

@@ -14,7 +14,7 @@ from db import add_expense, add_recurring, update_recurring
 from utils import (
     CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt, to_eur, get_currency_symbol, filter_started_templates,
-    help_expander,
+    help_expander, sortable_grouped_ids,
 )
 
 user_id = st.session_state.user_id
@@ -150,11 +150,53 @@ if active.empty:
 else:
     st.subheader(f"Monthly checklist — {calendar.month_name[today.month]} {today.year}")
 
-    # Sort by due day (undated last); match logged bills via template link
-    active = active.sort_values(
-        by="due_day",
-        key=lambda s: s.fillna(32).astype(int),
-    )
+    def _persist_grouped_order(groups, rows):
+        by_id = {str(row["id"]): row for _, row in rows.iterrows()}
+        changed = False
+        for category, item_ids in groups.items():
+            valid_subcategories = set(CATEGORIES.get(category, []))
+            for position, item_id in enumerate(item_ids):
+                row = by_id.get(str(item_id))
+                if row is None:
+                    continue
+                updates = {"sort_order": position}
+                if str(row["category"]) != str(category):
+                    updates["category"] = str(category)
+                    current_subcategory = str(row.get("subcategory") or "")
+                    if current_subcategory and current_subcategory not in valid_subcategories:
+                        updates["subcategory"] = ""
+                current_order = row.get("sort_order")
+                order_changed = (pd.isna(current_order)
+                                 or int(current_order) != position)
+                category_changed = "category" in updates
+                subcategory_changed = "subcategory" in updates
+                if order_changed or category_changed or subcategory_changed:
+                    update_recurring(user_id, str(item_id), updates)
+                    changed = True
+        if changed:
+            q.bump_db_version()
+            st.rerun()
+
+    categories = {str(category) for category in active["category"].dropna()}
+    category_order = [category for category in CAT_LIST if category in categories]
+    category_order += sorted(categories - set(category_order))
+    groups = {}
+    for category in category_order:
+        rows = active[active["category"] == category].copy()
+        rows["_sort"] = pd.to_numeric(rows["sort_order"], errors="coerce").fillna(0)
+        rows = rows.sort_values(["_sort", "due_day", "description"],
+                                key=lambda s: s.fillna(32).astype(int)
+                                if s.name == "due_day" else s,
+                                na_position="last")
+        groups[category] = [
+            (str(row["id"]), str(row["description"])) for _, row in rows.iterrows()
+        ]
+
+    st.caption("Drag templates to reorder them or move them between categories.")
+    ordered = sortable_grouped_ids(groups, f"recurring_order_{user_id}")
+    _persist_grouped_order(ordered, active)
+    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
+    ordered_ids = [item_id for category in ordered for item_id in ordered[category]]
 
     # One source of truth for "logged this month": the same helper the email/
     # sidebar reminders use, including the legacy description+amount fallback
@@ -164,7 +206,12 @@ else:
 
     month_len = calendar.monthrange(today.year, today.month)[1]
 
-    for idx, row in active.iterrows():
+    previous_category = None
+    for item_id in ordered_ids:
+        row = rows_by_id[item_id]
+        if row["category"] != previous_category:
+            st.markdown(f"**{row['category']}**")
+            previous_category = row["category"]
         done = str(row["id"]) not in unlogged_ids
         rc1, rc2, rc3, rc4 = st.columns([3, 1.4, 1.6, 1.6])
 

@@ -6,7 +6,13 @@ from datetime import date
 
 import pytest
 
-from finance import annuity_payment, loan_schedule, portfolio_metrics
+from finance import (
+    annuity_payment,
+    calculate_early_repayment_surcharge,
+    derive_hourly_rate,
+    loan_schedule,
+    portfolio_metrics,
+)
 
 
 def test_annuity_zero_interest():
@@ -17,6 +23,75 @@ def test_annuity_with_interest():
     # 1000 at 12% for 12 months: well-known value ≈ 88.85
     p = annuity_payment(1000, 12, 12)
     assert p == pytest.approx(88.85, abs=0.01)
+
+
+def test_next_payment_breakdown_separates_interest_and_principal():
+    s = loan_schedule(1000, 12, 12, date(2026, 1, 1), 25, [],
+                      asof=date(2026, 1, 10))
+
+    assert s["monthly_payment"] == pytest.approx(88.85, abs=0.01)
+    assert s["next_payment_interest"] == pytest.approx(10.0, abs=0.01)
+    assert s["next_payment_principal"] == pytest.approx(78.85, abs=0.01)
+
+
+def test_early_repayment_surcharge_is_interest_but_not_principal():
+    s = loan_schedule(
+        1000, 12, 12, date(2026, 1, 1), 25,
+        [{"date": date(2026, 1, 5), "amount_eur": 210.0,
+          "surcharge_eur": 10.0}],
+        asof=date(2026, 1, 10),
+    )
+
+    assert s["remaining_balance"] == pytest.approx(810.0, abs=0.01)
+    assert s["scheduled_interest_paid"] == pytest.approx(10.0, abs=0.01)
+    assert s["total_surcharge_paid"] == pytest.approx(10.0, abs=0.01)
+    assert s["total_interest_paid"] == pytest.approx(20.0, abs=0.01)
+
+
+def test_early_repayment_surcharge_modes():
+    assert calculate_early_repayment_surcharge(250.0, "fixed", 15.0) == 15.0
+    assert calculate_early_repayment_surcharge(250.0, "percent", 4.0) == 10.0
+    assert calculate_early_repayment_surcharge(250.0, "fixed", 0.0) == 0.0
+
+
+def test_hourly_rate_uses_weighted_income_and_salary_fallback():
+    rows = [
+        {"income_type": "Hourly", "hours": 20.0, "actual_eur": 1000.0, "currency": "USD"},
+        {"income_type": "Hourly", "hours": 10.0, "actual_eur": 600.0, "currency": "EUR"},
+        {"income_type": "Salary", "hours": None, "actual_eur": 3000.0},
+        {"income_type": "Hourly", "hours": 0.0, "actual_eur": 9999.0},
+    ]
+
+    rate, source = derive_hourly_rate(rows, salary_eur=3200.0)
+    assert rate == pytest.approx(1600.0 / 30.0)
+    assert source == "income"
+
+    fallback, source = derive_hourly_rate(
+        [{"income_type": "Hourly", "hours": 0.0, "actual_eur": 100.0}],
+        salary_eur=3200.0,
+    )
+    assert fallback == pytest.approx(20.0)
+    assert source == "salary"
+
+    zero_rate, source = derive_hourly_rate(
+        [{"income_type": "Hourly", "hours": 2.0, "actual_eur": 0.0}],
+        salary_eur=3200.0,
+    )
+    assert zero_rate == 0.0
+    assert source == "income"
+
+
+def test_early_repayment_can_pay_off_principal_without_counting_fee_as_principal():
+    s = loan_schedule(
+        1000, 0, 10, date(2026, 1, 1), 25,
+        [{"date": date(2026, 1, 5), "amount_eur": 1010.0,
+          "surcharge_eur": 10.0}],
+        asof=date(2026, 1, 10),
+    )
+    assert s["remaining_balance"] == 0.0
+    assert s["total_surcharge_paid"] == 10.0
+    assert s["total_interest_paid"] == 10.0
+    assert s["payoff_date"] == date(2026, 1, 25)
 
 
 def test_schedule_no_payments():

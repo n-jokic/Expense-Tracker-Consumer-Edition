@@ -170,6 +170,10 @@ The app is organised into five navigation groups: **Overview**, **Track**,
 
 - Income types: **Salary, Hourly, Bonus/Raise, Freelance, Investment, Rental,
   Other**. Hourly entries store hours × rate and compute the total.
+- Big-purchase work-hours use a weighted rate from valid Hourly entries
+  (`sum(actual EUR) / sum(hours)`); if none exist, the configured salary is
+  converted to EUR and divided by 160. The old manual hourly setting remains
+  only for compatibility.
 - One-tap monthly salary logging, salary-cycle projection, and automatic
   **raise detection** (a salary entry higher than every earlier one).
 - Every entry can be **edited after the fact** — date, source, income type,
@@ -278,6 +282,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
   checklist knows the bill was logged this month.
 - Templates only appear in checklists, reminders, and "upcoming bills" from
   their start month onward; "Remove" deactivates (never deletes).
+- Active templates are grouped by category and can be dragged within or
+  between categories; the order is persisted. Moving a template clears a
+  subcategory that is not valid for its new category.
 
 **Loans** (`app_pages/loans.py`)
 
@@ -297,7 +304,13 @@ require confirmation dialogs. Every change is written to the **audit log**.
   (no phantom first month), and the remaining-payment count rounds up so a
   €149 balance at €100/month correctly needs 2 payments.
 - **Editable terms** (name, principal, rate, term, payment day, start date,
-  status): editing recomputes the schedule but never touches logged payments.
+  status, early-repayment surcharge): editing recomputes the schedule but
+  never touches logged payments.
+- Each loan has an optional early-repayment surcharge: fixed in the loan
+  currency or a percentage of the entered principal (default 0). The separate
+  Early repayment action logs one expense for principal plus surcharge; only
+  principal reduces the balance, while the surcharge is included in interest
+  paid. The next installment shows its interest/principal split.
 - Email reminders N days before the due day; deleting a loan keeps its payment
   expenses.
 
@@ -308,6 +321,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
   Maybe later / Reconsider).
 - Status flow: wishlist → saving → **bought**, with a confirmation dialog that
   logs the purchase as an expense in one step.
+- Bought rows remain recoverable in a collapsed **Archived** section. Active
+  rows are compact cards grouped by category and can be dragged to reorder or
+  move between categories; the order is persisted.
 - Name, category, price, usage, importance, and notes are editable; deleting a
   wishlist row never touches the expense logged at purchase time.
 
@@ -408,6 +424,9 @@ phone sync. Budgets and fun money live on their own pages (see above).
   from your data on every app start, awarded **once**, and its reward lands in
   next month's fun money exactly like badge rewards. Progress bars show how
   close each open milestone is; delete any time.
+- The page is organized as **Milestones** first and **Badges** second. The
+  Badges tab groups earned and locked cards, shows progress hints, streaks,
+  and recent unlocks.
 
 - **Streaks and badges**: logging streaks (7/30 days), first expense/income,
   first budget, first salary, budget keeper (full month under budget), saving
@@ -853,7 +872,7 @@ github_backup.py        # encrypted backups to GitHub + restore CLI
 make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
-app_pages/*.py          # the 18 UI pages (Budgets, Rewards & badges, Ask your data, …)
+app_pages/*.py          # UI pages (Budgets, Rewards & badges, Ask your data, …)
 tests/                  # 376 pytest regression/AppTest suites
 ```
 
@@ -908,14 +927,15 @@ Cloudflare Tunnel) and disable open registration as above.
 - **OCR upgrade (optional)** — benchmark Tesseract against the small
   `latin_PP-OCRv5_mobile_rec` model (supports Serbian and other Latin-script
   languages); PP-Structure for table-heavy PDFs only where parsing fails.
-- **LLM ideas (the engine is in place)** — anomaly explanations in words,
+- **LLM ideas (the engine is in place)** — anomaly explanations in words and
   OCR/bank-import merchant & category normalization when the trained
-  classifier is unsure, and an annual financial-narrative email. (The
-  ask-your-data chat shipped — see the Feature guide.)
+  classifier is unsure. Insights/MCP narratives and the ask-your-data chat
+  are shipped — see the Feature guide.
 
 Shipped recently: SQLCipher database encryption with automatic migration,
 encrypted GitHub backups with a restore CLI, the OpenClaw/MCP assistant
 integration, the optional local-Gemma/API assistant (weekly emails, Insights
 narrative, MCP Insights narrative, and the ask-your-data chat), dedicated Budgets and
-Rewards & badges pages, and user-created custom milestones with fun-money
-rewards.
+Rewards & badges pages, user-created custom milestones with fun-money rewards,
+category-grouped ordered commitments/wishlists, automatic income-based hourly
+rates, and loan early-repayment surcharge tracking.

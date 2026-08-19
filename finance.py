@@ -18,6 +18,57 @@ def annuity_payment(principal: float, annual_rate_pct: float, term_months: int) 
     return principal * r * (1 + r) ** term_months / ((1 + r) ** term_months - 1)
 
 
+def derive_hourly_rate(income_rows, salary_eur: float = 0.0) -> tuple[float, str]:
+    """Return a weighted hourly income rate, or the salary fallback.
+
+    ``income_rows`` may be a pandas DataFrame or an iterable of mappings. Only
+    Hourly rows with positive hours and finite EUR actuals contribute. The
+    weighted calculation avoids letting a small one-off entry outweigh the
+    user's actual recorded workload.
+    """
+    if hasattr(income_rows, "to_dict"):
+        income_rows = income_rows.to_dict("records")
+
+    total_hours = 0.0
+    total_actual_eur = 0.0
+    for row in income_rows or []:
+        if str(row.get("income_type", "")) != "Hourly":
+            continue
+        hours_raw = row.get("hours")
+        actual_raw = row.get("actual_eur")
+        if hours_raw is None or actual_raw is None:
+            continue
+        try:
+            hours = float(hours_raw)
+            actual_eur = float(actual_raw)
+        except (TypeError, ValueError):
+            continue
+        if hours > 0 and math.isfinite(hours) and math.isfinite(actual_eur):
+            total_hours += hours
+            total_actual_eur += actual_eur
+
+    if total_hours > 0:
+        return total_actual_eur / total_hours, "income"
+
+    try:
+        salary_eur = float(salary_eur or 0.0)
+    except (TypeError, ValueError):
+        salary_eur = 0.0
+    if salary_eur > 0 and math.isfinite(salary_eur):
+        return salary_eur / 160.0, "salary"
+    return 0.0, "none"
+
+
+def calculate_early_repayment_surcharge(amount: float, mode: str,
+                                        value: float) -> float:
+    """Calculate a non-negative surcharge in the same currency as ``amount``."""
+    amount = max(float(amount or 0.0), 0.0)
+    value = max(float(value or 0.0), 0.0)
+    if mode == "percent":
+        return amount * value / 100.0
+    return value
+
+
 def _first_due(start: date, payment_day: int) -> date:
     """First due date: the first occurrence of payment_day on or after the
     loan start, clamped to the month's length (31st in February -> 28/29).
@@ -50,15 +101,18 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
                   payments: list, asof: date | None = None) -> dict:
     """Simulate a loan month by month against its ACTUAL payment history.
 
-    payments: list of (date, amount_eur). Interest accrues on the running
-    balance each month; a month's interest is booked when its due date has
-    passed OR when a payment is applied to it — whichever comes first — so a
-    payment logged before its due date still carries that month's interest
-    (previously such payments reduced the balance with zero interest ever
-    booked). Missed or partial payments extend the payoff date.
+    Payments may be legacy ``(date, amount_eur)`` tuples or mappings with
+    ``date``, ``amount_eur`` (total paid), and optional ``surcharge_eur``.
+    Surcharges count as interest but only the principal component reduces the
+    balance. Interest accrues on the running balance each month; a month's
+    interest is booked when its due date has passed OR when a payment is
+    applied to it — whichever comes first. Missed or partial payments extend
+    the payoff date.
 
     Returns: monthly_payment, remaining_balance, remaining_months, payoff_date,
-    total_interest_paid, total_interest_remaining, months_paid, total_cost.
+    total_interest_paid, scheduled_interest_paid, total_surcharge_paid,
+    total_interest_remaining, next_payment_interest, next_payment_principal,
+    months_paid, total_cost.
     """
     monthly = annuity_payment(principal, annual_rate_pct, term_months)
     r = (annual_rate_pct / 100) / 12
@@ -72,14 +126,30 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     # bucket even when the first due rolls into the month after the start
     # (e.g. start Jan 31 with payment day 1 → first due Feb 1).
     by_due = {}
+    surcharge_paid = 0.0
     first_due = _first_due(start_date, payment_day)
-    for p_date, amt in payments:
+    for payment in payments:
+        if isinstance(payment, dict):
+            p_date = payment.get("date")
+            total = float(payment.get("amount_eur", 0.0) or 0.0)
+            surcharge = max(float(payment.get("surcharge_eur", 0.0) or 0.0), 0.0)
+            principal_paid = payment.get("principal_eur")
+            if principal_paid is None:
+                principal_paid = total - surcharge
+            principal_paid = max(float(principal_paid or 0.0), 0.0)
+        else:
+            p_date, total = payment[0], float(payment[1] or 0.0)
+            surcharge = max(float(payment[2] or 0.0), 0.0) if len(payment) > 2 else 0.0
+            principal_paid = max(total - surcharge, 0.0) if len(payment) > 2 else total
         if p_date is None:
+            continue
+        if p_date > asof:
             continue
         k = ((p_date.year - first_due.year) * 12
              + (p_date.month - first_due.month))
         due = _next_due(start_date, payment_day, max(k, 0))
-        by_due[due] = by_due.get(due, 0.0) + float(amt or 0.0)
+        by_due[due] = by_due.get(due, 0.0) + principal_paid
+        surcharge_paid += surcharge
 
     bal = float(principal)
     interest_paid = 0.0
@@ -137,16 +207,23 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
                                next_idx + remaining_months - 1)
 
     interest_remaining = (monthly * remaining_months - bal) if remaining_months else 0.0
+    next_interest = min(max(bal * r, 0.0), monthly) if bal > 0.005 else 0.0
+    next_principal = min(max(monthly - next_interest, 0.0), bal) if bal > 0.005 else 0.0
+    total_interest = interest_paid + surcharge_paid
 
     return {
         "monthly_payment": round(monthly, 2),
         "remaining_balance": round(bal, 2),
         "remaining_months": remaining_months,
         "payoff_date": payoff,
-        "total_interest_paid": round(interest_paid, 2),
+        "total_interest_paid": round(total_interest, 2),
+        "scheduled_interest_paid": round(interest_paid, 2),
+        "total_surcharge_paid": round(surcharge_paid, 2),
         "total_interest_remaining": round(max(interest_remaining, 0.0), 2),
+        "next_payment_interest": round(next_interest, 2),
+        "next_payment_principal": round(next_principal, 2),
         "months_paid": months_paid,
-        "total_cost": round(principal + interest_paid + max(interest_remaining, 0.0), 2),
+        "total_cost": round(principal + total_interest + max(interest_remaining, 0.0), 2),
     }
 
 

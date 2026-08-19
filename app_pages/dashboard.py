@@ -279,8 +279,11 @@ if personal_view and not df_loans.empty:
         if row["status"] != "active":
             continue
         pay_df = q.loan_payments(user_id, str(row["id"]))
-        payments = [(r["date"].date(), float(r["amount_eur"]))
-                    for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        payments = [{
+            "date": r["date"].date(),
+            "amount_eur": float(r.get("amount_eur") or 0.0),
+            "surcharge_eur": float(r.get("loan_surcharge_eur") or 0.0),
+        } for _, r in pay_df.iterrows() if pd.notna(r["date"])]
         start_date = (row["start_date"].date() if pd.notna(row["start_date"])
                       else date.today())
         sched = loan_schedule(float(row["principal_eur"]), float(row["annual_rate"]),

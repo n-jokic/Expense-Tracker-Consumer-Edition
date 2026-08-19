@@ -2,8 +2,6 @@
 Rewards page: fun money, milestones/badges, streaks, and unlocks.
 
 Moved out of Settings so gamification is front and center (Play → Rewards).
-All edits here only touch settings (fun allowance / category pool) — the
-milestone computation itself stays in gamification.py.
 """
 
 import math
@@ -13,9 +11,11 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import get_session, UserMilestone
+from db import (get_session, UserMilestone, add_custom_milestone,
+                get_custom_milestones, delete_custom_milestone)
 from gamification import (MILESTONES, get_earned_milestones,
-                          get_logging_streak, _next_milestone_hint)
+                          get_logging_streak, _next_milestone_hint,
+                          CUSTOM_METRIC_LABELS, custom_metric_value)
 from utils import (CAT_LIST, DEFAULT_FUN_CATEGORIES,
                    fmt, to_eur, to_display, fun_spent)
 
@@ -89,20 +89,20 @@ with st.form("fun_form"):
 
 if bonuses_map:
     if month_key in bonuses_map:
-        active = float(bonuses_map[month_key] or 0.0)
-        if math.isfinite(active) and active > 0:
+        active_bonus = float(bonuses_map[month_key] or 0.0)
+        if math.isfinite(active_bonus) and active_bonus > 0:
             st.success(f"🎁 Milestone bonus active this month: "
-                       f"+{fmt(active, DC, rates)} fun money!")
+                       f"+{fmt(active_bonus, DC, rates)} fun money!")
     queued = sorted(k for k in bonuses_map if k != month_key)
     if queued:
         queued_total = 0.0
         for k in queued:
-            v = float(bonuses_map[k] or 0.0)
-            if math.isfinite(v):
-                queued_total += v
+            value = float(bonuses_map[k] or 0.0)
+            if math.isfinite(value):
+                queued_total += value
         if queued_total > 0:
             st.caption("🎁 Bonus queued for " + ", ".join(queued)
-                       + f": +{fmt(queued_total, DC, rates)} fun money.")
+                       + f": +{queued_total:,.2f} fun money.")
 else:
     legacy_bonus = float(settings.get("fun_bonus_amount") or 0.0)
     legacy_month = settings.get("fun_bonus_month")
@@ -112,34 +112,98 @@ else:
                        f"+{fmt(legacy_bonus, DC, rates)} fun money!")
         else:
             st.caption(f"🎁 Milestone bonus queued for {legacy_month}: "
-                       f"+{fmt(legacy_bonus, DC, rates)} fun money.")
+                       f"+{legacy_bonus:,.2f} fun money.")
 
 
-# ── Streak ────────────────────────────────────────────────────────────────────
-st.subheader(":material/local_fire_department: Streak")
-streak = get_logging_streak(dfe)
-best = 0
-if not dfe.empty and "date" in dfe.columns:
-    ds = sorted({d.date() for d in dfe["date"].dropna()})
-    cur = 0
-    prev = None
-    for d in ds:
-        cur = cur + 1 if (prev is not None and (d - prev).days == 1) else 1
-        best = max(best, cur)
-        prev = d
-s1, s2 = st.columns(2)
-s1.metric("Current streak", f"{streak} day{'s' if streak != 1 else ''}")
-s2.metric("Best streak", f"{best} day{'s' if best != 1 else ''}")
+def _render_milestones():
+    st.subheader(":material/flag: My milestones")
+    st.caption("Create your own goals with a fun-money reward — e.g. \"Save €500\" "
+               "with a +€20 reward. A milestone is awarded **once**; the reward "
+               "lands in next month's fun money, just like badge rewards.")
 
-hint = _next_milestone_hint(dfe, earned_ids)
-if hint:
-    st.caption(f"💡 {hint}")
+    with st.form("custom_ms_form"):
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            cm_title = st.text_input("Title", placeholder="Save €500")
+        with m2:
+            cm_metric = st.selectbox("Metric", list(CUSTOM_METRIC_LABELS),
+                                     format_func=CUSTOM_METRIC_LABELS.get)
+        with m3:
+            cm_target = st.number_input("Target", min_value=0.01, value=100.0,
+                                        step=10.0, format="%.2f")
+        with m4:
+            cm_reward = st.number_input("Reward (€ fun money)", min_value=0.0,
+                                        value=20.0, step=5.0, format="%.2f")
+        if st.form_submit_button("Create milestone", type="primary",
+                                 icon=":material/add:", width="stretch"):
+            if not cm_title.strip():
+                st.error("Please give the milestone a name.")
+            else:
+                try:
+                    add_custom_milestone(user_id, {
+                        "title": cm_title.strip(), "metric": cm_metric,
+                        "target": float(cm_target), "reward": float(cm_reward),
+                    })
+                    q.bump_db_version()
+                    st.toast("Milestone created!", icon=":material/flag:")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
+    ms_rows = get_custom_milestones(user_id)
+    if ms_rows.empty:
+        st.caption("No custom milestones yet — create your first above.")
+        return
+
+    for _, row in ms_rows.iterrows():
+        value = custom_metric_value(str(row["metric"]), dfe, dfi, dfs)
+        done = pd.notna(row.get("achieved_at"))
+        target = float(row["target"])
+        progress = min(max(value / target, 0.0), 1.0) if target > 0 else 0.0
+        label = CUSTOM_METRIC_LABELS.get(str(row["metric"]), str(row["metric"]))
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            if done:
+                when = (pd.Timestamp(row["achieved_at"]).strftime("%d %b %Y")
+                        if pd.notna(row.get("achieved_at")) else "")
+                st.markdown(f"🏁 **{row['title']}** — {label}: "
+                            f"{value:.1f}/{target:.1f} · achieved {when}")
+            else:
+                st.markdown(f"🎯 **{row['title']}** — {label}: "
+                            f"{value:.1f}/{target:.1f} · +{float(row.get('reward') or 0):.0f} fun money")
+            st.progress(1.0 if done else progress)
+        with c2:
+            if st.button("Delete", key=f"cm_del_{row['id']}",
+                         icon=":material/delete:", width="stretch"):
+                delete_custom_milestone(user_id, str(row["id"]))
+                q.bump_db_version()
+                st.toast("Milestone deleted.", icon=":material/delete:")
+                st.rerun()
 
 
-# ── Badge wall ────────────────────────────────────────────────────────────────
-st.subheader(f":material/military_tech: Badge wall ({len(earned_ids)}/{len(MILESTONES)})")
+def _render_badges():
+    st.subheader(":material/local_fire_department: Streak")
+    streak = get_logging_streak(dfe)
+    best = 0
+    if not dfe.empty and "date" in dfe.columns:
+        days = sorted({d.date() for d in dfe["date"].dropna()})
+        current = 0
+        previous = None
+        for day in days:
+            current = current + 1 if (previous is not None and
+                                      (day - previous).days == 1) else 1
+            best = max(best, current)
+            previous = day
+    s1, s2 = st.columns(2)
+    s1.metric("Current streak", f"{streak} day{'s' if streak != 1 else ''}")
+    s2.metric("Best streak", f"{best} day{'s' if best != 1 else ''}")
 
-def _progress_hints():
+    hint = _next_milestone_hint(dfe, earned_ids)
+    if hint:
+        st.caption(f"💡 {hint}")
+
+    st.subheader(f":material/military_tech: Badge wall ({len(earned_ids)}/{len(MILESTONES)})")
+
     hints = {}
     n_exp = len(dfe)
     hints["first_expense"] = f"{min(n_exp, 1)}/1"
@@ -148,122 +212,64 @@ def _progress_hints():
     hints["week_streak"] = f"{min(streak, 7)}/7"
     hints["month_streak"] = f"{min(streak, 30)}/30"
     if not dfe.empty and "category" in dfe.columns:
-        nc = dfe["category"].nunique()
-        hints["category_explorer"] = f"{min(int(nc), 10)}/10"
-    n_inc = len(dfi)
-    hints["first_income"] = f"{min(n_inc, 1)}/1"
+        hints["category_explorer"] = f"{min(int(dfe['category'].nunique()), 10)}/10"
+    hints["first_income"] = f"{min(len(dfi), 1)}/1"
     if not dfi.empty and "income_type" in dfi.columns:
-        for mid, itype in (("first_salary", "Salary"),
-                           ("first_bonus", "Bonus / Raise"),
-                           ("first_hourly", "Hourly")):
-            hints[mid] = f"{min(int((dfi['income_type'] == itype).sum()), 1)}/1"
+        for milestone_id, income_type in (("first_salary", "Salary"),
+                                           ("first_bonus", "Bonus / Raise"),
+                                           ("first_hourly", "Hourly")):
+            hints[milestone_id] = f"{min(int((dfi['income_type'] == income_type).sum()), 1)}/1"
     hints["first_budget"] = f"{min(len(dfb), 1)}/1"
-    bal = 0.0
+    balance = 0.0
     if not dfs.empty and "balance_eur" in dfs.columns:
-        vals = dfs["balance_eur"].dropna()
-        bal = float(vals.max()) if not vals.empty else 0.0
-    for mid, cap in (("saver_100", 100), ("saver_1000", 1000), ("saver_10000", 10000)):
-        hints[mid] = f"{min(bal / cap, 1.0):.0%}"
-    return hints
+        values = dfs["balance_eur"].dropna()
+        balance = float(values.max()) if not values.empty else 0.0
+    for milestone_id, cap in (("saver_100", 100), ("saver_1000", 1000),
+                              ("saver_10000", 10000)):
+        hints[milestone_id] = f"{min(balance / cap, 1.0):.0%}"
 
-hints = _progress_hints()
-cols = st.columns(4)
-for i, m in enumerate(MILESTONES):
-    with cols[i % 4]:
-        with st.container(border=True):
-            got = m["id"] in earned_ids
-            st.markdown(f"{m['icon']} **{m['title']}**" if got
-                        else f"🔒 **{m['title']}**")
-            if got:
-                when = earned_dates.get(m["id"])
-                when_str = (f" · {when.strftime('%d %b %Y')}"
-                            if when is not None else "")
-                st.caption(f"Earned{when_str}"
-                           + (f" · +{m['reward']:.0f} fun money" if m.get("reward") else ""))
-            else:
-                prog = hints.get(m["id"])
-                st.caption(f"{m['desc']}" + (f" — {prog}" if prog else ""))
+    earned_badges = [m for m in MILESTONES if m["id"] in earned_ids]
+    locked_badges = [m for m in MILESTONES if m["id"] not in earned_ids]
+    st.markdown(f"**Earned badges ({len(earned_badges)})**")
+    earned_cols = st.columns(3)
+    for i, milestone in enumerate(earned_badges):
+        with earned_cols[i % 3]:
+            with st.container(border=True):
+                when = earned_dates.get(milestone["id"])
+                when_str = when.strftime("%d %b %Y") if when is not None else "?"
+                st.markdown(f"{milestone['icon']} **{milestone['title']}**")
+                st.caption(f"Earned {when_str}"
+                           + (f" · +{milestone['reward']:.0f} fun money"
+                              if milestone.get("reward") else ""))
+
+    with st.expander(f"Locked badges ({len(locked_badges)})", expanded=False):
+        locked_cols = st.columns(3)
+        for i, milestone in enumerate(locked_badges):
+            with locked_cols[i % 3]:
+                with st.container(border=True):
+                    progress = hints.get(milestone["id"])
+                    st.markdown(f"🔒 **{milestone['title']}**")
+                    st.caption(f"{milestone['desc']}"
+                               + (f" · {progress}" if progress else ""))
+
+    st.subheader(":material/notifications_active: Recent unlocks")
+    recent = sorted(earned_dates.items(), key=lambda item: item[1] or pd.Timestamp.min,
+                    reverse=True)[:6]
+    if recent:
+        for milestone_id, when in recent:
+            if milestone_id in {m["id"] for m in MILESTONES}:
+                milestone = next(m for m in MILESTONES if m["id"] == milestone_id)
+                when_str = when.strftime("%d %b %Y") if when is not None else "?"
+                st.write(f"{milestone['icon']} **{milestone['title']}** — {when_str}")
+    else:
+        st.caption("No badges unlocked yet — log your first expense to start!")
 
 
-# ── Recent unlocks ────────────────────────────────────────────────────────────
-st.subheader(":material/notifications_active: Recent unlocks")
-recent = sorted(earned_dates.items(), key=lambda kv: kv[1] or pd.Timestamp.min,
-                reverse=True)[:6]
-if recent:
-    for mid, when in recent:
-        if mid in {m["id"] for m in MILESTONES}:
-            m = next(m for m in MILESTONES if m["id"] == mid)
-            when_str = when.strftime("%d %b %Y") if when is not None else "?"
-            st.write(f"{m['icon']} **{m['title']}** — {when_str}")
-else:
-    st.caption("No badges unlocked yet — log your first expense to start!")
-
-
-# ── My milestones (user-created goals with fun-money rewards) ─────────────────
-st.subheader(":material/flag: My milestones")
-st.caption("Create your own goals with a fun-money reward — e.g. \"Save €500\" "
-           "with a +€20 reward. A milestone is awarded **once**; the reward "
-           "lands in next month's fun money, just like badge rewards.")
-from db import add_custom_milestone, get_custom_milestones, delete_custom_milestone
-from gamification import CUSTOM_METRIC_LABELS, custom_metric_value
-
-with st.form("custom_ms_form"):
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        cm_title = st.text_input("Title", placeholder="Save €500")
-    with m2:
-        cm_metric = st.selectbox("Metric", list(CUSTOM_METRIC_LABELS),
-                                 format_func=CUSTOM_METRIC_LABELS.get)
-    with m3:
-        cm_target = st.number_input("Target", min_value=0.01, value=100.0,
-                                    step=10.0, format="%.2f")
-    with m4:
-        cm_reward = st.number_input("Reward (€ fun money)", min_value=0.0,
-                                    value=20.0, step=5.0, format="%.2f")
-    if st.form_submit_button("Create milestone", type="primary",
-                             icon=":material/add:", width="stretch"):
-        if not cm_title.strip():
-            st.error("Please give the milestone a name.")
-        else:
-            try:
-                add_custom_milestone(user_id, {
-                    "title": cm_title.strip(), "metric": cm_metric,
-                    "target": float(cm_target), "reward": float(cm_reward),
-                })
-                q.bump_db_version()
-                st.toast("Milestone created!", icon=":material/flag:")
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
-
-ms_rows = get_custom_milestones(user_id)
-if not ms_rows.empty:
-    for _, r in ms_rows.iterrows():
-        val = custom_metric_value(str(r["metric"]), dfe, dfi, dfs)
-        done = pd.notna(r.get("achieved_at"))
-        target = float(r["target"])
-        pct = (min(max(val / target, 0.0), 1.0) if target > 0 else 0.0)
-        label = CUSTOM_METRIC_LABELS.get(str(r["metric"]), str(r["metric"]))
-        c1, c2 = st.columns([5, 1])
-        with c1:
-            if done:
-                when = (pd.Timestamp(r["achieved_at"]).strftime("%d %b %Y")
-                        if pd.notna(r.get("achieved_at")) else "")
-                st.markdown(f"🏁 **{r['title']}** — {label}: "
-                            f"{val:.1f}/{target:.1f} · achieved {when}")
-            else:
-                st.markdown(f"🎯 **{r['title']}** — {label}: "
-                            f"{val:.1f}/{target:.1f} · +{float(r.get('reward') or 0):.0f} fun money")
-            st.progress(1.0 if done else pct)
-        with c2:
-            if st.button("Delete", key=f"cm_del_{r['id']}",
-                         icon=":material/delete:", width="stretch"):
-                delete_custom_milestone(user_id, str(r["id"]))
-                q.bump_db_version()
-                st.toast("Milestone deleted.", icon=":material/delete:")
-                st.rerun()
-else:
-    st.caption("No custom milestones yet — create your first above.")
+milestones_tab, badges_tab = st.tabs(["Milestones", "Badges"])
+with milestones_tab:
+    _render_milestones()
+with badges_tab:
+    _render_badges()
 
 
 # Link back to where budgets live (keeps navigation obvious).

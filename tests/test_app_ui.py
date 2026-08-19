@@ -87,6 +87,14 @@ def test_grouped_navigation_routes_every_group(ui_user):
         assert not at.exception, f"group page {page} failed: {at.exception}"
 
 
+def test_rewards_and_grouped_commitment_pages_render(ui_user):
+    at = _authenticated(ui_user)
+    for page in ("rewards.py", "big_purchases.py", "recurring.py"):
+        at.switch_page(os.path.join(APP_DIR, "app_pages", page))
+        at.run()
+        assert not at.exception, f"page {page} failed: {at.exception}"
+
+
 def test_dashboard_task_hub_quick_actions(ui_user):
     at = _authenticated(ui_user)
     at.switch_page(os.path.join(APP_DIR, "app_pages", "dashboard.py"))

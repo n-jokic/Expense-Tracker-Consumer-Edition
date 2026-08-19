@@ -63,6 +63,24 @@ def test_start_month_persists_and_updates(test_user):
     assert row["active"] is False or row["active"] == 0
 
 
+def test_recurring_sort_order_persists(test_user):
+    rid = _template(test_user, sort_order=7)
+    row = get_recurring(test_user).iloc[0]
+    assert row["sort_order"] == 7
+
+    assert update_recurring(test_user, rid, {"sort_order": 2})
+    row = get_recurring(test_user).iloc[0]
+    assert row["sort_order"] == 2
+
+
+def test_recurring_category_move_clears_invalid_subcategory(test_user):
+    rid = _template(test_user)
+    assert update_recurring(test_user, rid, {"category": "Groceries"})
+    row = get_recurring(test_user).iloc[0]
+    assert row["category"] == "Groceries"
+    assert row["subcategory"] == ""
+
+
 def test_editing_template_never_rewrites_past_logs(test_user):
     """The core guarantee: expenses logged from a template store their OWN
     copies of amount/description/category — editing the template afterwards

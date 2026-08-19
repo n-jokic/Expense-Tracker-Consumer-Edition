@@ -492,6 +492,47 @@ def classify_quadrant(work_hours: float, usage_hours: float,
     return "Reconsider"
 
 
+def sortable_grouped_ids(groups: dict, key: str) -> dict:
+    """Return persisted-friendly IDs after optional category drag/drop.
+
+    The sortable component only transports strings, so each visible label gets
+    an invisible unique suffix. If the optional dependency is unavailable, the
+    original order is returned and the page remains usable.
+    """
+    original = {str(category): [str(item_id) for item_id, _ in items]
+                for category, items in groups.items()}
+    try:
+        from streamlit_sortables import sort_items
+    except Exception:
+        return original
+
+    marker = "\u2063"
+    payload = [{
+        "header": str(category),
+        "items": [f"{label}{marker}{item_id}" for item_id, label in items],
+    } for category, items in groups.items()]
+    try:
+        sorted_payload = sort_items(payload, multi_containers=True,
+                                    direction="vertical", key=key)
+    except Exception:
+        return original
+
+    result = {}
+    for container in sorted_payload or []:
+        category = str(container.get("header", ""))
+        ids = []
+        for token in container.get("items", []) or []:
+            token = str(token)
+            if marker not in token:
+                return original
+            ids.append(token.rsplit(marker, 1)[1])
+        result[category] = ids
+
+    expected = {item_id for ids in original.values() for item_id in ids}
+    actual = {item_id for ids in result.values() for item_id in ids}
+    return result if expected == actual else original
+
+
 # Cells starting with these characters are treated as formulas when the
 # spreadsheet opens (or when a CSV is re-imported): a user-supplied value
 # like "=HYPERLINK(...)" would execute. Prefixing with a quote makes

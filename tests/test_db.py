@@ -11,7 +11,8 @@ import pytest
 from db import (
     init_db, create_user, delete_user_account, username_exists,
     add_expense, get_expenses, soft_delete_expense, restore_expense,
-    get_audit_log, add_income, get_income,
+    get_audit_log, add_income, get_income, add_loan, get_loans,
+    update_loan, get_loan_payments,
 )
 from auth import hash_password
 
@@ -76,3 +77,31 @@ def test_income_roundtrip(test_user):
     df = get_income(test_user)
     assert len(df) == 1
     assert df.iloc[0]["actual_eur"] == 1050.0
+
+
+def test_loan_surcharge_defaults_and_payment_metadata(test_user):
+    loan_id = add_loan(test_user, {
+        "name": "Car", "principal": 5000.0, "currency": "EUR",
+        "principal_eur": 5000.0, "annual_rate": 5.0,
+        "start_date": date(2025, 1, 1), "term_months": 36,
+        "payment_day": 1, "status": "active", "notes": "",
+    })
+    loan = get_loans(test_user).iloc[0]
+    assert loan["early_repayment_surcharge_type"] == "fixed"
+    assert loan["early_repayment_surcharge_value"] == 0.0
+
+    assert update_loan(test_user, loan_id, {
+        "early_repayment_surcharge_type": "percent",
+        "early_repayment_surcharge_value": 2.5,
+    })
+    add_expense(test_user, {
+        "date": date(2025, 2, 1), "category": "Loans & Debt",
+        "subcategory": "Loan Repayment", "description": "Car early repayment",
+        "amount": 102.5, "currency": "EUR", "amount_eur": 102.5,
+        "recurring": False, "loan_id": loan_id,
+        "loan_payment_type": "early", "loan_surcharge_eur": 2.5,
+        "notes": "Early repayment",
+    })
+    payment = get_loan_payments(test_user, loan_id).iloc[0]
+    assert payment["loan_payment_type"] == "early"
+    assert payment["loan_surcharge_eur"] == 2.5

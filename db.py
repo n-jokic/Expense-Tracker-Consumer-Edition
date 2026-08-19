@@ -348,6 +348,8 @@ class Expense(Base):
     recurring    = Column(Boolean, default=False)
     rec_template_id = Column(String, nullable=True)  # links to recurring.id when logged from a template
     loan_id      = Column(String, nullable=True)     # links to loans.id when logged as a loan payment
+    loan_payment_type = Column(String, default="regular")  # regular | early
+    loan_surcharge_eur = Column(Float, default=0.0)
     notes        = Column(String, default="")
     # ML suggestion telemetry (measurement-first): which pipeline suggested
     # the category, its confidence/model version, the normalized merchant,
@@ -461,6 +463,7 @@ class Recurring(Base):
     start_month = Column(String, nullable=True)    # "YYYY-MM" first active month; None = always
     notes       = Column(String, default="")
     active      = Column(Boolean, default=True)
+    sort_order  = Column(Integer, default=0)
 
 
 class AuditLog(Base):
@@ -487,6 +490,7 @@ class BigPurchase(Base):
     usage_hours = Column(Float, default=0.0)   # expected use, hours per month
     importance  = Column(Integer, default=3)    # 1-5
     status      = Column(String, default="wishlist")  # wishlist | saving | bought
+    sort_order  = Column(Integer, default=0)
     notes       = Column(String, default="")
     created_at  = Column(DateTime, default=_utcnow)
 
@@ -504,6 +508,8 @@ class Loan(Base):
     term_months = Column(Integer, default=12)
     payment_day = Column(Integer, default=1)
     status      = Column(String, default="active")  # active | paid_off
+    early_repayment_surcharge_type = Column(String, default="fixed")  # fixed | percent
+    early_repayment_surcharge_value = Column(Float, default=0.0)
     notes       = Column(String, default="")
     created_at  = Column(DateTime, default=_utcnow)
 
@@ -710,10 +716,16 @@ def _migrate(engine):
     _add_missing_columns(engine, "recurring", {
         "due_day": "INTEGER",
         "start_month": "VARCHAR",
+        "sort_order": "INTEGER DEFAULT 0",
+    })
+    _add_missing_columns(engine, "big_purchases", {
+        "sort_order": "INTEGER DEFAULT 0",
     })
     _add_missing_columns(engine, "expenses", {
         "rec_template_id": "VARCHAR",
         "loan_id": "VARCHAR",
+        "loan_payment_type": "VARCHAR DEFAULT 'regular'",
+        "loan_surcharge_eur": "FLOAT DEFAULT 0",
         "updated_at": "TIMESTAMP",
         "suggest_source": "VARCHAR",
         "suggest_confidence": "FLOAT",
@@ -730,6 +742,10 @@ def _migrate(engine):
     })
     _add_missing_columns(engine, "savings", {
         "updated_at": "TIMESTAMP",
+    })
+    _add_missing_columns(engine, "loans", {
+        "early_repayment_surcharge_type": "VARCHAR DEFAULT 'fixed'",
+        "early_repayment_surcharge_value": "FLOAT DEFAULT 0",
     })
     _add_missing_columns(engine, "users", {
         "data_revision": "INTEGER DEFAULT 0",
@@ -969,7 +985,8 @@ def _parse_dates(df, cols):
 # ── Expenses ──────────────────────────────────────────────────────────────────
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
-             "amount","currency","amount_eur","recurring","rec_template_id","loan_id","notes",
+             "amount","currency","amount_eur","recurring","rec_template_id","loan_id",
+             "loan_payment_type","loan_surcharge_eur","notes",
              "suggest_source","suggest_confidence","suggest_model_version",
              "suggest_merchant","suggest_accepted",
              "suggest_subcategory","suggest_subcategory_confidence",
@@ -997,6 +1014,8 @@ def add_expense(user_id, row):
             amount_eur=float(row.get("amount_eur",0)), recurring=bool(row.get("recurring",False)),
             rec_template_id=row.get("rec_template_id"),
             loan_id=row.get("loan_id"),
+            loan_payment_type=row.get("loan_payment_type", "regular"),
+            loan_surcharge_eur=float(row.get("loan_surcharge_eur", 0.0) or 0.0),
             notes=row.get("notes",""),
             suggest_source=row.get("suggest_source"),
             suggest_confidence=row.get("suggest_confidence"),
@@ -1484,11 +1503,14 @@ def delete_budget(user_id, budget_id):
 # ── Recurring ─────────────────────────────────────────────────────────────────
 
 _REC_COLS = ["id","user_id","category","subcategory","description",
-             "amount","currency","amount_eur","due_day","start_month","notes","active"]
+             "amount","currency","amount_eur","due_day","start_month","notes","active",
+             "sort_order"]
 
 def get_recurring(user_id):
     with get_session() as s:
-        rows = s.query(Recurring).filter(Recurring.user_id == user_id).all()
+        rows = (s.query(Recurring).filter(Recurring.user_id == user_id)
+                .order_by(Recurring.category.asc(), Recurring.sort_order.asc(),
+                          Recurring.description.asc()).all())
     return _to_df(rows, _REC_COLS)
 
 
@@ -1503,7 +1525,8 @@ def add_recurring(user_id, row):
             amount_eur=float(row.get("amount_eur",0)),
             due_day=row.get("due_day"),
             start_month=row.get("start_month"),
-            notes=row.get("notes",""), active=bool(row.get("active",True))
+            notes=row.get("notes",""), active=bool(row.get("active",True)),
+            sort_order=int(row.get("sort_order", 0) or 0),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "recurring", rec_id, row)
@@ -1515,6 +1538,10 @@ def update_recurring(user_id, rec_id, updates):
         obj = s.query(Recurring).filter(Recurring.id == rec_id, Recurring.user_id == user_id).first()
         if not obj:
             return False
+        if "category" in updates and "subcategory" not in updates:
+            from utils import CATEGORIES
+            if getattr(obj, "subcategory", "") not in CATEGORIES.get(updates["category"], []):
+                updates = dict(updates, subcategory="")
         for k, v in updates.items():
             if hasattr(obj, k):
                 setattr(obj, k, v)
@@ -1525,7 +1552,7 @@ def update_recurring(user_id, rec_id, updates):
 # ── Big purchases ─────────────────────────────────────────────────────────────
 
 _BIG_COLS = ["id","user_id","name","category","price","currency","price_eur",
-             "usage_hours","importance","status","notes","created_at"]
+             "usage_hours","importance","status","sort_order","notes","created_at"]
 
 BIG_STATUSES = ["wishlist", "saving", "bought"]
 
@@ -1534,7 +1561,8 @@ def get_big_purchases(user_id):
     with get_session() as s:
         rows = (s.query(BigPurchase)
                 .filter(BigPurchase.user_id == user_id)
-                .order_by(BigPurchase.created_at.desc()).all())
+                .order_by(BigPurchase.category.asc(), BigPurchase.sort_order.asc(),
+                          BigPurchase.created_at.asc(), BigPurchase.name.asc()).all())
     df = _to_df(rows, _BIG_COLS)
     return _parse_dates(df, ["created_at"])
 
@@ -1550,6 +1578,7 @@ def add_big_purchase(user_id, row):
             usage_hours=float(row.get("usage_hours",0)),
             importance=int(row.get("importance",3)),
             status=row.get("status","wishlist"),
+            sort_order=int(row.get("sort_order", 0) or 0),
             notes=row.get("notes",""),
         )
         s.add(obj)
@@ -1583,6 +1612,7 @@ def delete_big_purchase(user_id, bp_id):
 
 _LOAN_COLS = ["id","user_id","name","principal","currency","principal_eur",
               "annual_rate","start_date","term_months","payment_day","status",
+              "early_repayment_surcharge_type","early_repayment_surcharge_value",
               "notes","created_at"]
 
 
@@ -1606,6 +1636,9 @@ def add_loan(user_id, row):
             start_date=row.get("start_date"), term_months=int(row.get("term_months",12)),
             payment_day=int(row.get("payment_day",1)),
             status=row.get("status","active"), notes=row.get("notes",""),
+            early_repayment_surcharge_type=row.get("early_repayment_surcharge_type", "fixed"),
+            early_repayment_surcharge_value=float(
+                row.get("early_repayment_surcharge_value", 0.0) or 0.0),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "loans", loan_id, row)
