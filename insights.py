@@ -56,7 +56,7 @@ def top_category_this_month(expenses_df: pd.DataFrame, year: int, month: int):
 def unusual_expenses(expenses_df: pd.DataFrame, multiplier: float = 2.0) -> pd.DataFrame:
     """Return expenses where amount > multiplier × that category's average."""
     if expenses_df.empty:
-        return pd.DataFrame()
+        return expenses_df.iloc[0:0]  # schema-preserving empty frame (keeps amount_eur)
     avgs = expenses_df.groupby("category")["amount_eur"].mean()
     def is_unusual(row):
         avg = avgs.get(row["category"], 0)

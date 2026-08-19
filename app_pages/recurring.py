@@ -14,7 +14,7 @@ from db import add_expense, add_recurring, update_recurring
 from utils import (
     CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt, to_eur, get_currency_symbol, filter_started_templates,
-    help_expander, sortable_grouped_ids,
+    help_expander, draggable_card_board,
 )
 
 user_id = st.session_state.user_id
@@ -79,6 +79,25 @@ def edit_template_dialog(uid: int, row):
     with c1:
         if st.button("Cancel", width="stretch"):
             st.rerun()
+
+
+@st.dialog("Log recurring expense")
+def log_template_dialog(row):
+    rid = str(row["id"])
+    cur = str(row["currency"])
+    st.markdown(f"**{row['description']}** — expected {fmt(float(row['amount_eur']), DC, rates)}")
+    paid_on = st.date_input("Date", value=today, key=f"lr_d_{rid}")
+    amount = st.number_input(f"Actual amount ({get_currency_symbol(cur)})",
+                             value=float(row["amount"]), min_value=0.01,
+                             max_value=MAX_AMOUNT, step=0.50, format="%.2f",
+                             key=f"lr_a_{rid}")
+    if st.button("Log it", icon=":material/check:", type="primary", key=f"lr_c_{rid}"):
+        add_expense(user_id, {"date": paid_on, "category": row["category"],
+            "subcategory": row["subcategory"], "description": row["description"],
+            "amount": amount, "currency": cur, "amount_eur": to_eur(amount, cur, rates),
+            "recurring": True, "rec_template_id": rid, "notes": str(row.get("notes", ""))})
+        q.bump_db_version()
+        st.rerun()
     with c2:
         if st.button("Save changes", type="primary", width="stretch"):
             n_eur = to_eur(n_amt, n_cur, rates)
@@ -180,6 +199,11 @@ else:
     categories = {str(category) for category in active["category"].dropna()}
     category_order = [category for category in CAT_LIST if category in categories]
     category_order += sorted(categories - set(category_order))
+    # One source of truth for "logged this month": the same helper the email/
+    # sidebar reminders use, including the legacy description+amount fallback.
+    from notifications import _unlogged_templates
+    unlogged_ids = {str(r["id"]) for r in _unlogged_templates(active, dfe, today)}
+    month_len = calendar.monthrange(today.year, today.month)[1]
     groups = {}
     for category in category_order:
         rows = active[active["category"] == category].copy()
@@ -188,100 +212,33 @@ else:
                                 key=lambda s: s.fillna(32).astype(int)
                                 if s.name == "due_day" else s,
                                 na_position="last")
-        groups[category] = [
-            (str(row["id"]), str(row["description"])) for _, row in rows.iterrows()
-        ]
-
-    st.caption("Drag templates to reorder them or move them between categories.")
-    ordered = sortable_grouped_ids(groups, f"recurring_order_{user_id}")
-    _persist_grouped_order(ordered, active)
-    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
-    ordered_ids = [item_id for category in ordered for item_id in ordered[category]]
-
-    # One source of truth for "logged this month": the same helper the email/
-    # sidebar reminders use, including the legacy description+amount fallback
-    # for rows logged before rec_template_id links existed.
-    from notifications import _unlogged_templates
-    unlogged_ids = {str(r["id"]) for r in _unlogged_templates(active, dfe, today)}
-
-    month_len = calendar.monthrange(today.year, today.month)[1]
-
-    previous_category = None
-    for item_id in ordered_ids:
-        row = rows_by_id[item_id]
-        if row["category"] != previous_category:
-            st.markdown(f"**{row['category']}**")
-            previous_category = row["category"]
-        done = str(row["id"]) not in unlogged_ids
-        rc1, rc2, rc3, rc4 = st.columns([3, 1.4, 1.6, 1.6])
-
-        with rc1:
-            ic = "✅" if done else "⏳"
-            st.markdown(f"{ic} **{row['description']}**")
-            st.caption(f"{row['category']}{' › ' + row['subcategory'] if row['subcategory'] else ''}")
-
-        with rc2:
-            st.metric("Expected", fmt(float(row["amount_eur"]), DC, rates),
-                      label_visibility="collapsed")
-
-        with rc3:
-            # NB: the due/overdue state is only meaningful while the bill is
-            # NOT logged this month — a logged bill must never show a stuck
-            # "overdue" warning (regression).
-            if done:
-                st.caption("paid this month")
-            else:
-                dd = row.get("due_day")
-                if dd is not None and not pd.isna(dd) and int(dd) > 0:
-                    dd = int(dd)
-                    due_date = date(today.year, today.month, min(dd, month_len))
-                    days_left = (due_date - today).days
-                    if days_left < 0:
-                        st.caption("⚠️ overdue")
-                    elif days_left == 0:
-                        st.caption("⏰ due today")
-                    else:
-                        st.caption(f"due {calendar.month_name[today.month]} {dd} · in {days_left}d")
-                else:
-                    st.caption("no due day")
-
-        with rc4:
+        cards = []
+        for _, row in rows.iterrows():
             rid = str(row["id"])
-            if done:
-                st.success("Logged ✓")
-            else:
-                with st.popover("Log now", key=f"lr_{rid}"):
-                    cur2  = str(row["currency"])
-                    sym2  = get_currency_symbol(cur2)
-                    st.markdown(f"**{row['description']}** — expected {fmt(float(row['amount_eur']), DC, rates)}")
-                    p_date = st.date_input("Date", value=today, key=f"lr_d_{rid}")
-                    p_amt  = st.number_input(f"Actual amount ({sym2})",
-                                             value=float(row["amount"]),
-                                             min_value=0.01, max_value=MAX_AMOUNT,
-                                             step=0.50, format="%.2f", key=f"lr_a_{rid}")
-                    if st.button("Log it", icon=":material/check:", key=f"lr_c_{rid}", type="primary", width="stretch"):
-                        ae = to_eur(p_amt, cur2, rates)
-                        add_expense(user_id, {
-                            "date": p_date, "category": row["category"],
-                            "subcategory": row["subcategory"],
-                            "description": row["description"],
-                            "amount": p_amt,
-                            "currency": cur2,
-                            "amount_eur": ae,
-                            "recurring": True,
-                            "rec_template_id": rid,
-                            "notes": str(row.get("notes","")),
-                        })
-                        q.bump_db_version()
-                        diff = float(p_amt) - float(row["amount"])
-                        extra = ""
-                        if abs(diff) > 0.005:
-                            extra = f" ({'+' if diff > 0 else ''}{diff:,.2f} {cur2} vs expected)"
-                        st.toast(f"✅ Logged {row['description']}: {p_amt:,.2f} {cur2}{extra}")
-                        st.rerun()
-            if st.button("Edit", icon=":material/edit:", key=f"ed_{rid}", width="stretch"):
-                edit_template_dialog(user_id, row)
-            if st.button("Remove", icon=":material/delete:", key=f"dr_{rid}", type="secondary", width="stretch"):
-                update_recurring(user_id, row["id"], {"active": False})
-                q.bump_db_version()
-                st.rerun()
+            done = rid not in unlogged_ids
+            due = "paid this month" if done else "no due day"
+            dd = row.get("due_day")
+            if not done and dd is not None and not pd.isna(dd) and int(dd) > 0:
+                due_date = date(today.year, today.month, min(int(dd), month_len))
+                days_left = (due_date - today).days
+                due = "overdue" if days_left < 0 else ("due today" if not days_left else f"due in {days_left}d")
+            cards.append({"id": rid, "title": f"{'✅' if done else '⏳'} {row['description']}",
+                "details": f"{row['subcategory'] or 'No subcategory'} · {due}",
+                "amount": fmt(float(row["amount_eur"]), DC, rates),
+                "actions": ([] if done else [{"label": "Log now", "action": "log"}]) + [
+                    {"label": "Edit", "action": "edit"}, {"label": "Remove", "action": "remove"}]})
+        groups[category] = cards
+    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
+    st.caption("Drag complete cards between categories. Use Alt+Up / Alt+Down to move by keyboard.")
+    ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
+    _persist_grouped_order(ordered, active)
+    if action:
+        row = rows_by_id[action["id"]]
+        if action["action"] == "log":
+            log_template_dialog(row)
+        elif action["action"] == "edit":
+            edit_template_dialog(user_id, row)
+        elif action["action"] == "remove":
+            update_recurring(user_id, row["id"], {"active": False})
+            q.bump_db_version()
+            st.rerun()

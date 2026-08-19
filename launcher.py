@@ -7,7 +7,7 @@ If the server is already running it just opens the browser.
 """
 
 import os
-import shutil
+import filecmp
 import subprocess
 import sys
 import time
@@ -45,10 +45,13 @@ def _save_project(path: str) -> None:
 def _project_dir() -> str:
     """The project folder: remembered location, then wherever app.py sits
     next to (or above) this exe/script, then the current directory."""
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     saved = _saved_project()
     if saved:
         return saved
-    candidates = [os.path.dirname(sys.executable)]
+    candidates = [getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)),
+                  os.path.dirname(sys.executable)]
     if getattr(sys, "frozen", False):
         candidates.append(os.getcwd())
     # Also probe the script's own directory (covers `python launcher.py`,
@@ -96,28 +99,75 @@ def _ask_for_project() -> str | None:
         return None
 
 
-def _python(project_dir: str) -> str:
-    """Pick a WORKING python: the project venv first, but only when it still
-    runs (a venv created against a base Python that was since upgraded can
-    exist on disk yet fail to launch)."""
-    def _works(py: str) -> bool:
-        try:
-            r = subprocess.run(
-                [py, "-c", "import sys"],
-                capture_output=True, timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
+def _state_dir() -> str:
+    return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                        "ExpenseTracker")
 
-    venv = os.path.join(project_dir, ".venv", "Scripts", "python.exe")
-    if os.path.isfile(venv) and _works(venv):
-        return venv
-    system = shutil.which("python")
-    if system and _works(system):
-        return system
-    return "python"   # last resort — the subprocess error is visible via run_server.bat
+
+def _copy_tree_verified(source: str, destination: str) -> None:
+    for root, _, files in os.walk(source):
+        relative = os.path.relpath(root, source)
+        target = os.path.join(destination, relative)
+        os.makedirs(target, exist_ok=True)
+        for name in files:
+            source_file, target_file = os.path.join(root, name), os.path.join(target, name)
+            if not os.path.exists(target_file):
+                import shutil
+                shutil.copy2(source_file, target_file)
+            if not filecmp.cmp(source_file, target_file, shallow=False):
+                raise OSError(f"Could not verify migrated file: {name}")
+
+
+def _prepare_state(project_dir: str) -> str:
+    """Migrate a legacy bundled data directory only into an empty user store."""
+    state = _state_dir()
+    if os.path.isdir(state) and os.listdir(state):
+        return state
+    os.makedirs(state, exist_ok=True)
+    candidates = []
+    saved = _saved_project()
+    if saved:
+        candidates.append(os.path.join(saved, "data"))
+    candidates.extend((os.path.join(os.path.dirname(sys.executable), "data"),
+                       os.path.join(project_dir, "data")))
+    for legacy in candidates:
+        if os.path.isdir(legacy):
+            _copy_tree_verified(legacy, state)
+            break
+    return state
+
+
+def _mode_command(mode: str) -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, mode]
+    return [sys.executable, os.path.abspath(__file__), mode]
+
+
+def _run_streamlit() -> None:
+    from streamlit.web.cli import main as streamlit_main
+    sys.argv = [sys.argv[0], "run", os.path.join(_project_dir(), "app.py"),
+                "--server.address", "0.0.0.0", "--server.port", str(APP_PORT),
+                "--server.headless", "true"]
+    streamlit_main()
+
+
+def _run_api() -> None:
+    import uvicorn
+    from api import app
+    kwargs = {"host": "0.0.0.0", "port": API_PORT}
+    if os.environ.get("EXPENSE_TRACKER_TLS") == "1":
+        from make_cert import ensure_cert
+        cert, key = ensure_cert()
+        kwargs.update(ssl_certfile=cert, ssl_keyfile=key)
+    uvicorn.run(app, **kwargs)
+
+
+def _smoke_check() -> None:
+    import streamlit  # noqa: F401
+    import llama_cpp  # noqa: F401
+    import sqlcipher3  # noqa: F401
+    if not os.path.isfile(os.path.join(_project_dir(), "app.py")):
+        raise RuntimeError("Packaged app.py is missing")
 
 
 def _fail(message: str) -> None:
@@ -148,6 +198,15 @@ def _api_healthy(port: int) -> bool:
 
 
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] == "--streamlit":
+        _run_streamlit()
+        return
+    if len(sys.argv) == 2 and sys.argv[1] == "--api":
+        _run_api()
+        return
+    if len(sys.argv) == 2 and sys.argv[1] == "--smoke":
+        _smoke_check()
+        return
     project = _project_dir()
     if not os.path.isfile(os.path.join(project, "app.py")):
         chosen = _ask_for_project()
@@ -158,18 +217,16 @@ def main() -> None:
             _fail("Could not find app.py.\n\nSelect the Expense Tracker "
                   "project folder (the one containing app.py) in the dialog.")
 
-    python = _python(project)
+    state = _prepare_state(project)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    child_env = dict(os.environ, EXPENSE_TRACKER_DATA_DIR=state)
 
     # Start the two servers INDEPENDENTLY: the API must also come up when the
     # web app is already running (and vice versa).
     if not _server_healthy(APP_PORT):
         subprocess.Popen(
-            [python, "-m", "streamlit", "run", "app.py",
-             "--server.address", "0.0.0.0",
-             "--server.port", str(APP_PORT),   # keep the health-check port in sync
-             "--server.headless", "true"],
-            cwd=project, creationflags=creationflags,
+            _mode_command("--streamlit"), cwd=project, env=child_env,
+            creationflags=creationflags,
         )
     # Phone-sync API (optional; used by the experimental phone pairing).
     # Only start it when nothing is already answering on port 8502 — a
@@ -177,7 +234,8 @@ def main() -> None:
     # no-console window).
     if os.path.isfile(os.path.join(project, "api.py")) and not _api_healthy(API_PORT):
         subprocess.Popen(
-            [python, "api.py"], cwd=project, creationflags=creationflags,
+            _mode_command("--api"), cwd=project, env=child_env,
+            creationflags=creationflags,
         )
 
     # Wait for the app to come up (max 90 s), then open the browser.

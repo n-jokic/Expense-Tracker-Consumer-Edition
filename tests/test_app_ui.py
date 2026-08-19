@@ -4,16 +4,18 @@ hub, persisted household invite code, and expense-history pagination.
 """
 
 import os
+import sys
 from datetime import date, timedelta
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import llm
 import queries as q
 from db import (
     init_db, create_user, delete_user_account, username_exists,
     get_user_by_username, create_household, get_household_by_member,
-    add_expense, bump_data_revision,
+    add_expense, add_loan, bump_data_revision, save_settings,
 )
 from auth import hash_password
 
@@ -87,12 +89,25 @@ def test_grouped_navigation_routes_every_group(ui_user):
         assert not at.exception, f"group page {page} failed: {at.exception}"
 
 
-def test_rewards_and_grouped_commitment_pages_render(ui_user):
+def test_loans_page_renders_with_current_month_payment(ui_user):
+    """A normalized payment record must support the current-month overdue check."""
+    today = date.today()
+    loan_id = add_loan(ui_user, {
+        "name": "UI test loan", "principal": 5000.0, "currency": "EUR",
+        "principal_eur": 5000.0, "annual_rate": 5.0,
+        "start_date": today - timedelta(days=100), "term_months": 24,
+        "payment_day": today.day, "status": "active", "notes": "",
+    })
+    add_expense(ui_user, {
+        "date": today, "category": "Loans & Debt",
+        "subcategory": "Loan Repayment", "description": "Current payment",
+        "amount": 215.0, "currency": "EUR", "amount_eur": 215.0,
+        "recurring": False, "loan_id": loan_id, "notes": "",
+    })
     at = _authenticated(ui_user)
-    for page in ("rewards.py", "big_purchases.py", "recurring.py"):
-        at.switch_page(os.path.join(APP_DIR, "app_pages", page))
-        at.run()
-        assert not at.exception, f"page {page} failed: {at.exception}"
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "loans.py"))
+    at.run()
+    assert not at.exception, f"loans page failed with payment: {at.exception}"
 
 
 def test_dashboard_task_hub_quick_actions(ui_user):
@@ -196,8 +211,81 @@ def test_savings_page_goal_cards_and_term_deposits(ui_user):
             + " " + _main_text(at, "subheader"))
     assert "Term-deposit accounts" in text
     assert "6-month CD" in text
-    btn_labels = [str(getattr(el, "label", "") or "") for el in at.main
-                  if el.type == "button"]
-    assert any("Deposit" == lbl for lbl in btn_labels)
-    assert any("Withdraw" == lbl for lbl in btn_labels)
-    assert any("Edit goal" == lbl for lbl in btn_labels)
+    btn_labels2 = [str(getattr(el, "label", "") or "") for el in at.main
+                   if el.type == "button"]
+    assert any("Deposit" == lbl for lbl in btn_labels2)
+    assert any("Withdraw" == lbl for lbl in btn_labels2)
+    assert any("Edit goal" == lbl for lbl in btn_labels2)
+
+
+# ── AI assistant UI ───────────────────────────────────────────────────────────
+
+def _broken_llama_cpp():
+    """Simulate a machine without the llama.cpp runtime: importing the module
+    raises OSError (the DLL-load failure mode) — the page must degrade to an
+    error banner, never crash."""
+    class _Broken:
+        def __getattr__(self, name):
+            raise OSError("DLL load failed")
+    return _Broken()
+
+
+def test_ask_page_error_does_not_pollute_history(ui_user, tmp_path, monkeypatch):
+    """Regression (B1.1): a failed provider call must surface as an st.error
+    banner — NOT be appended to ask_history as an assistant message (which
+    would later be fed back into prompts as 'CHAT SO FAR' context)."""
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    save_settings(ui_user, {"ai_provider": "local",
+                            "ai_local_model": str(model_path)})
+    monkeypatch.setitem(sys.modules, "llama_cpp", _broken_llama_cpp())
+    llm._local_cache = ()
+    llm._last_result = None
+
+    at = _authenticated(ui_user)
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "ask.py"))
+    at.run()
+    assert not at.exception, at.exception
+    assert at.chat_input, "chat input missing from ask page"
+
+    at.chat_input[0].set_value("How much did I spend?")
+    at.run()
+    assert not at.exception, at.exception
+
+    # A real error banner with the pointer must appear.
+    err_text = " ".join(str(getattr(el, "value", "") or "") for el in at.error)
+    assert err_text, "expected an error banner for the failed generation"
+    assert "Settings" in err_text
+
+    # And the failed turn was NOT stored: history has only the user's turn.
+    hist = at.session_state["ask_history"]
+    assert len(hist) == 1, f"failed turn polluted history: {hist}"
+    assert hist[0]["role"] == "user"
+
+
+def test_ask_page_pills_show_on_empty_chat(ui_user):
+    """The suggestion pills render only while the chat is empty (B1.2)."""
+    from crypto import encrypt_str
+    save_settings(ui_user, {"ai_provider": "api",
+                            "ai_api_key_enc": encrypt_str("sk-test")})
+    at = _authenticated(ui_user)
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "ask.py"))
+    at.run()
+    assert not at.exception, at.exception
+    # One chat input, and the pills widget exists on the empty chat.
+    assert at.chat_input
+    assert any(el.type == "button_group" for el in at.main), \
+        "suggestion pills missing on empty chat"
+    assert not at.session_state["ask_history"]
+
+
+def test_settings_page_renders_ai_section(ui_user):
+    """The AI assistant settings moved to app_pages/settings_ai.py must still
+    render inside the Settings → Notifications tab (C2)."""
+    at = _authenticated(ui_user)
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "settings.py"))
+    at.run()
+    assert not at.exception, at.exception
+    text = (_main_text(at, "markdown") + " " + _main_text(at, "caption")
+            + " " + _main_text(at, "subheader"))
+    assert "AI assistant (optional)" in text

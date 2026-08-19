@@ -14,6 +14,7 @@ __pycache__/
 # ── Virtual environments ────────────────────────────────────────────────────────
 venv/
 .venv/
+.venv-clean/
 env/
 
 # ── Streamlit local config (may contain secrets) ───────────────────────────────
@@ -35,6 +36,7 @@ ExpenseTracker.ini
 dist/
 build/
 *.spec
+!ExpenseTracker.spec
 
 # ── Optional local Gemma weights ───────────────────────────────────────────────
 models/*.gguf

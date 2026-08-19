@@ -308,7 +308,7 @@ else:
                               if sched["payoff_date"] else "—")
                 overdue = False
                 if row["status"] == "active":
-                    month_paid = any((p[0].year == today.year and p[0].month == today.month)
+                    month_paid = any((p["date"].year == today.year and p["date"].month == today.month)
                                      for p in payments)
                     # Overdue only once the CURRENT month's due date (clamped
                     # to the month's length, e.g. the 31st -> Feb 28) has

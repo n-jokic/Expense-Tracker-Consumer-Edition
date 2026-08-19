@@ -15,7 +15,7 @@ from db import (
     update_big_purchase,
     username_exists,
 )
-from utils import classify_quadrant
+from utils import classify_quadrant, validate_grouped_order
 
 
 @pytest.fixture()
@@ -55,6 +55,15 @@ def test_quadrant_boundary_values_fall_to_low_side():
     # exactly at the median counts as "not high"
     assert classify_quadrant(work_hours=20, usage_hours=10,
                              median_work=20, median_usage=10) == "Maybe later"
+
+
+def test_drag_order_rejects_duplicate_unknown_and_missing_ids():
+    expected = {"Other": ["a", "b"], "Travel": ["c"]}
+    assert validate_grouped_order({"Other": ["b", "a"], "Travel": ["c"]}, expected) == {
+        "Other": ["b", "a"], "Travel": ["c"]}
+    assert validate_grouped_order({"Other": ["a", "a"], "Travel": ["c"]}, expected) is None
+    assert validate_grouped_order({"Other": ["a", "x"], "Travel": ["c"]}, expected) is None
+    assert validate_grouped_order({"Other": ["a"], "Travel": ["c"]}, expected) is None
 
 
 def test_bought_purchase_is_retained_and_order_is_persisted(purchase_user):

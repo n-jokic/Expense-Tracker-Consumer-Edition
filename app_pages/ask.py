@@ -8,6 +8,8 @@ stripped and capped), never credentials, and — with the local provider —
 nothing leaves this machine at all.
 """
 
+import os as _os
+
 import streamlit as st
 
 import llm
@@ -21,12 +23,21 @@ st.caption("Chat with your own financial data. The assistant sees only a "
            "answer is computed from your data, never guessed.")
 
 provider = llm.resolve_provider(settings)
+
+# ── Provider status line ───────────────────────────────────────────────────────
 if provider == "local":
-    import os as _os
     path = str(settings.get("ai_local_model") or "")
-    st.caption(f"Provider: **local Gemma** — {_os.path.basename(path) or path or 'model'}")
+    label = _os.path.basename(path) or path or "model"
+    ready, diag = llm.local_runtime_status(settings)
+    if ready:
+        st.caption(f"Provider: **local Gemma** — :green-badge[Local Gemma ready] — {label}")
+    elif "does not exist" in diag:
+        st.caption(f"Provider: **local Gemma** — :red-badge[model file missing] — {diag}")
+    else:
+        st.caption(f"Provider: **local Gemma** — :red-badge[runtime missing] — {diag}")
 elif provider == "api":
-    st.caption(f"Provider: **API** — {settings.get('ai_api_model') or 'configured model'}")
+    st.caption(f"Provider: **API** — :green-badge[API ready] — "
+               f"{settings.get('ai_api_model') or 'configured model'}")
 
 if provider == "none":
     st.info("The AI assistant is not configured yet. Set it up in "
@@ -39,27 +50,31 @@ if provider == "none":
 if "ask_history" not in st.session_state:
     st.session_state.ask_history = []
 
-# ── Suggested questions ───────────────────────────────────────────────────────
-with st.expander("Suggested questions", icon=":material/lightbulb:"):
-    sugg = st.container(horizontal=True)
-    suggestions = [
-        "How much did I spend this month?",
-        "What was my biggest expense category?",
-        "How does this month compare to last month?",
-        "How much fun money do I have left?",
-        "What did I spend at the grocery store?",
-    ]
-    for i, s in enumerate(suggestions):
-        if sugg.button(s, key=f"ask_sugg_{i}"):
-            st.session_state.ask_history.append({"role": "user", "content": s})
-            st.session_state.ask_pending = s
+# ── Suggested questions (show only on an empty chat) ───────────────────────────
+SUGGESTIONS = [
+    "How much did I spend this month?",
+    "What was my biggest expense category?",
+    "How does this month compare to last month?",
+    "How much fun money do I have left?",
+    "What did I spend at the grocery store?",
+]
+
+if not st.session_state.ask_history:
+    picked = st.pills("Try asking", SUGGESTIONS, label_visibility="collapsed",
+                      key="ask_pills")
+    if picked:
+        st.session_state.ask_history.append({"role": "user", "content": picked})
+        st.session_state.ask_pending = picked
+        st.rerun()
 
 # ── Chat history ──────────────────────────────────────────────────────────────
 for msg in st.session_state.ask_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-prompt = st.chat_input("Ask about your finances…")
+# submit_mode="disable" locks the input while a long local generation runs,
+# so it can't be interrupted mid-run.
+prompt = st.chat_input("Ask about your finances…", submit_mode="disable")
 if prompt and prompt.strip():
     st.session_state.ask_history.append({"role": "user", "content": prompt.strip()})
     st.session_state.ask_pending = prompt.strip()
@@ -72,12 +87,18 @@ if st.session_state.pop("ask_pending", None):
     prior = st.session_state.ask_history[:-1]
     with st.spinner("Thinking…"):
         answer = llm.answer_query(user_id, question, settings, history=prior)
-    fallback = ("I couldn't reach the AI assistant (model not loaded or the "
-                "API call failed). Check the provider in Settings → "
-                "Notifications → AI assistant.")
-    st.session_state.ask_history.append(
-        {"role": "assistant", "content": answer or fallback})
-    st.rerun()
+    if answer:
+        st.session_state.ask_history.append({"role": "assistant", "content": answer})
+        st.rerun()
+    else:
+        # Keep failures OUT of the transcript: a failed turn must not be
+        # stored as an assistant message (it would otherwise be fed back
+        # into later prompts as "CHAT SO FAR" context).
+        diag = (llm.local_diagnostic() or
+                "I couldn't reach the AI assistant (model not loaded or the "
+                "API call failed).")
+        st.error(f"The assistant could not answer this time. {diag} "
+                 "Check the provider in **Settings → Notifications → AI assistant**.")
 
 if st.session_state.ask_history:
     c1, c2 = st.columns([1, 3])

@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 from crypto import sqlcipher_key_pragma
+from app_paths import state_dir
 
 try:
     from sqlcipher3 import dbapi2 as sqlcipher_dbapi  # wheels: sqlcipher3-wheels
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # ── Engine & session setup ────────────────────────────────────────────────────
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+BASE_DIR = str(state_dir())
 # Tests override DB_PATH/BACKUP_DIR before importing this module (see
 # tests/conftest.py) so the live database is never touched by the suite.
 DB_PATH  = os.environ.get("DB_PATH") or os.path.join(BASE_DIR, "expense_tracker.db")

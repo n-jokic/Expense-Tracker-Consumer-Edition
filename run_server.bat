@@ -19,19 +19,33 @@ echo    Private networks.
 echo  ============================================================
 echo.
 
-rem Activate the virtual environment if it exists
-if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
+rem Activate the canonical virtual environment (.venv-clean); fall back to
+rem .venv for checkouts that have not migrated yet.
+if exist ".venv-clean\Scripts\activate.bat" call ".venv-clean\Scripts\activate.bat"
+if not exist ".venv-clean\Scripts\activate.bat" if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
 
 rem Install dependencies if Streamlit is missing
 python -c "import streamlit" >nul 2>nul
 if errorlevel 1 (
     echo Installing dependencies...
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
     if errorlevel 1 (
         echo Failed to install dependencies. Check your Python installation.
         pause
         exit /b 1
     )
+)
+
+rem The local-AI runtime (llama-cpp-python) is OPTIONAL — warn, never fail.
+python -c "import llama_cpp" >nul 2>nul
+if errorlevel 1 (
+    echo.
+    echo    NOTE: the optional local-AI runtime ^(llama-cpp-python^) is not
+    echo    installed. The app works without it - the Local AI provider in
+    echo    Settings will show a "runtime missing" notice.
+    echo    To enable it, run:
+    echo      .venv-clean\Scripts\python.exe -m pip install -r requirements-ai.txt
+    echo.
 )
 
 rem TLS is OPT-IN: set EXPENSE_TRACKER_TLS=1 to serve HTTPS with a self-signed

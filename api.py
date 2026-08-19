@@ -147,8 +147,8 @@ if __name__ == "__main__":
     import uvicorn
     kwargs = {"host": "0.0.0.0", "port": 8502}
     if os.environ.get("EXPENSE_TRACKER_TLS") == "1":
-        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "data", "certs")
+        from app_paths import state_dir
+        cert_dir = os.path.join(state_dir(), "certs")
         cert = os.path.join(cert_dir, "cert.pem")
         key = os.path.join(cert_dir, "key.pem")
         if os.path.exists(cert) and os.path.exists(key):

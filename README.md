@@ -35,15 +35,16 @@ the same database, so there is nothing to sync and no conflicts.
 
 ```bat
 :: one-time setup
-python -m venv .venv
-.venv\Scripts\activate
+python -m venv .venv-clean
+.venv-clean\Scripts\activate
 pip install -r requirements.txt
 
 :: every time you want to use the app
 run_server.bat
 ```
 
-`run_server.bat` (or `run_server.ps1`) activates the venv, installs missing
+`run_server.bat` (or `run_server.ps1`) activates `.venv-clean` automatically
+(falling back to `.venv` when present), installs missing
 dependencies, and starts the server on `0.0.0.0:8501` over plain **HTTP**.
 
 Open **http://localhost:8501** on the PC.
@@ -53,19 +54,18 @@ Open **http://localhost:8501** on the PC.
 > keep it safe (see [Security notes](#security-notes)): it is deliberately
 > never included in backups, and losing it means losing your data.
 
-### 🖥️ Desktop launcher (optional — no terminal needed)
+### 🖥️ Windows installer (optional — no terminal needed)
 
-Build a double-clickable `ExpenseTracker.exe` once:
+Build `dist\installer\ExpenseTracker-Setup.exe` once (Python 3.12 and Inno Setup 6 required):
 
 ```bat
 build_exe.bat
 ```
 
-Copy `ExpenseTracker.exe` wherever you like (even the Desktop) and
-double-click it — it starts the server (plus the phone-sync API) and opens
-your browser automatically. The first time it runs from a new location it
-asks for the project folder once and remembers it. Rebuild after updates
-with `build_exe.bat` again.
+Run the installer — it bundles Python, Streamlit, SQLCipher, and the Vulkan
+llama.cpp runtime, installs under Program Files, and starts the app plus the
+phone-sync API without a system Python. User data is kept in
+`%LOCALAPPDATA%\ExpenseTracker` and survives uninstall.
 
 > The desktop launcher always serves **plain HTTP** on your home network.
 > Want HTTPS instead? Use `run_server.bat` / `run_server.ps1` with
@@ -96,8 +96,9 @@ netsh advfirewall firewall add rule name="Expense Tracker 8501" dir=in action=al
 stays the same forever.
 
 > The server must be running on the PC for the phone to connect. Data lives in
-> `data/expense_tracker.db` on the PC — back it up in **Settings → Data**
-> (automatic daily backups are saved to `data/backups/`).
+> `%LOCALAPPDATA%\ExpenseTracker\expense_tracker.db` for the installed app
+> (automatic daily backups are saved to `backups/`). Source installs continue
+> to use `data/`.
 
 ## 🌍 Using the app outside your home network
 
@@ -559,25 +560,35 @@ templates — nothing else changes. Configure it in
 
 **Local Gemma (recommended — private, free, runs in < 4 GB VRAM)**
 
-1. Install llama-cpp-python (optional dependency):
-   `pip install llama-cpp-python` — CPU wheels install directly; if you want
-   GPU acceleration, use the CUDA wheels from the project's GitHub releases.
-2. Download a GGUF model from HuggingFace (`bartowski`) and place the
-   recommended file at `models\google_gemma-3-1b-it-Q4_K_M.gguf`:
+1. The Windows installer already includes the pinned Vulkan runtime. For a
+   source install, the local-AI runtime is **optional** and installed
+   separately:
+
+   ```bat
+   .venv-clean\Scripts\python.exe -m pip install -r requirements-ai.txt
+   ```
+
+   (`requirements-ai.txt` pins llama-cpp-python 0.3.34 with the Vulkan wheel
+   index.) The rest of the app never needs it — without it, the UI shows an
+   actionable "runtime missing" notice instead of failing.
+2. Download a GGUF model from HuggingFace (`bartowski`) — or run the helper
+   `python tasks\download_model.py`, which downloads the recommended Gemma 3
+   1B Q4_K_M GGUF into `data\models\` with resume support:
    - **Gemma 3 1B Q4_K_M** (~0.9 GB — the default recommendation):
      `bartowski/google_gemma-3-1b-it-GGUF` → `google_gemma-3-1b-it-Q4_K_M.gguf`
    - alternative **Gemma 2 2B Q4_K_M** (~1.6 GB):
      `bartowski/google_gemma-2-2b-it-GGUF`
-   The app auto-detects the recommended file in `models\`; for another model,
-   paste its full `.gguf` path instead.
+   A source install auto-detects the recommended file at
+   `data\models\google_gemma-3-1b-it-Q4_K_M.gguf` (in the repo folder); the
+   installed app auto-detects it at
+   `%LOCALAPPDATA%\ExpenseTracker\models\google_gemma-3-1b-it-Q4_K_M.gguf`.
+   For another model, paste its full `.gguf` path instead.
 3. In the app: Settings → Notifications → AI assistant → provider **Local
    Gemma model**. **GPU layers**: `-1` puts everything on the GPU (2 GB VRAM
    is plenty for the 1B model); `0` runs on CPU (a few seconds per summary).
 4. Press **Test summary** to verify.
 
-The `models\*.gguf` files are intentionally ignored by Git. The desktop
-launcher keeps the project folder beside the executable, so the model remains
-available there without being embedded into the launcher.
+GGUF model weights are never included in the installer.
 
 **External API key**
 
@@ -665,7 +676,7 @@ Connect it to OpenClaw (run once):
 
 ```bat
 openclaw mcp add expense-tracker ^
-  --command C:\path\to\Expense-Tracker-Consumer-Edition\.venv\Scripts\python.exe ^
+  --command C:\path\to\Expense-Tracker-Consumer-Edition\.venv-clean\Scripts\python.exe ^
   --arg C:\path\to\Expense-Tracker-Consumer-Edition\mcp_server.py ^
   --cwd C:\path\to\Expense-Tracker-Consumer-Edition
 openclaw mcp doctor expense-tracker --probe
@@ -873,7 +884,7 @@ make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # UI pages (Budgets, Rewards & badges, Ask your data, …)
-tests/                  # 376 pytest regression/AppTest suites
+tests/                  # 397 pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -883,7 +894,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The suite (376 tests) covers the currency engine, loan amortization edge
+The suite (397 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
 date), backups, notifications, bank import, forecast/anomaly/categorizer
 behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry

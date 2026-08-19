@@ -7,6 +7,8 @@ network.
 """
 
 from datetime import date
+import sys
+import types
 
 import pytest
 
@@ -33,7 +35,11 @@ def test_user():
 
 # ── Provider resolution ───────────────────────────────────────────────────────
 
-def test_resolve_provider():
+def test_resolve_provider(monkeypatch):
+    # Deterministic: discovery is patched out — whether a bundled model sits in
+    # data\models\ must not change the resolution logic (it is tested separately
+    # in test_local_provider_discovers_app_model).
+    monkeypatch.setattr(llm, "find_bundled_model", lambda: None)
     assert llm.resolve_provider({}) == "none"
     assert llm.resolve_provider({"ai_provider": "bogus"}) == "none"
     # local without a model path is off; with one it is on
@@ -47,11 +53,11 @@ def test_resolve_provider():
 
 
 def test_local_provider_discovers_app_model(tmp_path, monkeypatch):
-    model_dir = tmp_path / "models"
-    model_dir.mkdir()
-    model = model_dir / "google_gemma-3-1b-it-Q4_K_M.gguf"
+    models = tmp_path / "models"
+    models.mkdir()
+    model = models / "google_gemma-3-1b-it-Q4_K_M.gguf"
     model.write_bytes(b"not-a-real-model")
-    monkeypatch.setattr(llm, "__file__", str(tmp_path / "llm.py"))
+    monkeypatch.setenv("EXPENSE_TRACKER_DATA_DIR", str(tmp_path))
 
     assert llm.find_bundled_model() == str(model)
     assert llm.resolve_provider({"ai_provider": "local"}) == "local"
@@ -176,6 +182,171 @@ def test_local_provider_errors_return_none(monkeypatch):
     assert llm.generate_summary({"total_eur": 10.0},
                                 {"ai_provider": "local",
                                  "ai_local_model": "x.gguf"}) is None
+
+
+def _reset_local_state():
+    """Clear the module-level local cache/diagnostic between scenarios."""
+    llm._local_cache = ()
+    llm._last_result = None
+
+
+def test_local_model_preserves_zero_gpu_layers_and_reports_missing_file(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": 0}) is not None
+    assert calls[-1]["n_gpu_layers"] == 0
+
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(tmp_path / "missing.gguf")}) is None
+    assert "does not exist" in llm.local_diagnostic().lower()
+
+
+def test_local_model_retries_cpu_after_vulkan_load_failure(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["n_gpu_layers"])
+            if len(calls) == 1:
+                raise RuntimeError("Vulkan initialization failed")
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": -1}) is not None
+    assert calls == [-1, 0]
+    assert "CPU fallback" in llm.local_diagnostic()
+
+
+# ── llm.py hardening (A2) ─────────────────────────────────────────────────────
+
+def _oserrmod():
+    """A fake 'llama_cpp' module whose attribute access raises OSError — the
+    DLL-load failure mode (missing Vulkan/MSVC redist) that used to crash the
+    app because only ImportError was caught."""
+    class _Broken:
+        def __getattr__(self, name):
+            raise OSError("DLL load failed: %1 is not a valid Win32 application")
+    return _Broken()
+
+
+def test_local_import_oserror_is_caught(tmp_path, monkeypatch):
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    monkeypatch.setitem(sys.modules, "llama_cpp", _oserrmod())
+    _reset_local_state()
+    # Must return None, never raise.
+    assert llm._get_local_model({"ai_local_model": str(model_path)}) is None
+    diag = llm.local_diagnostic()
+    assert "pip install" in diag  # source-run install hint, not a stack trace
+
+
+def test_local_import_importerror_message_source_vs_frozen(tmp_path, monkeypatch):
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+
+    class _Missing:
+        def __getattr__(self, name):
+            raise ImportError("No module named 'llama_cpp'")
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", _Missing())
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(model_path)}) is None
+    assert "pip install" in llm.local_diagnostic()  # source run → exact command
+
+    # Frozen (installed) build → the "reinstall" message instead.
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(model_path)}) is None
+    assert "Reinstall Expense Tracker" in llm.local_diagnostic()
+
+
+def test_stale_diagnostic_cleared_on_successful_reload(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
+    model_path = tmp_path / "model.gguf"
+    _reset_local_state()
+    # Missing file first → diagnostic set.
+    assert llm._get_local_model({"ai_local_model": str(model_path)}) is None
+    assert "does not exist" in llm.local_diagnostic().lower()
+    # Create the file, reload → stale diagnostic must be cleared by the
+    # top-of-function reset (no manual reset here — that is the A2.3 bug).
+    model_path.write_bytes(b"GGUF")
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": 0}) is not None
+    assert llm.local_diagnostic() == ""
+
+
+def test_local_cache_key_includes_gpu_layers(tmp_path, monkeypatch):
+    # Changing the GPU-layers setting must take effect without an app restart:
+    # the cache is keyed on (path, gpu_layers), not just path.
+    calls = []
+
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["n_gpu_layers"])
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    _reset_local_state()
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": 0}) is not None
+    # Same settings → cached, no second construction.
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": 0}) is not None
+    assert calls == [0]
+    # Different gpu_layers → fresh construction.
+    assert llm._get_local_model({"ai_local_model": str(model_path),
+                                 "ai_local_gpu_layers": -1}) is not None
+    assert calls == [0, -1]
+
+
+def test_local_runtime_status(tmp_path, monkeypatch):
+    # No path at all → actionable "choose a model" message. (Patch the auto-
+    # detection: a bundled model may or may not exist on the dev machine.)
+    monkeypatch.setattr(llm, "find_bundled_model", lambda: None)
+    ok, diag = llm.local_runtime_status({"ai_provider": "local"})
+    assert ok is False and "Choose a GGUF model file" in diag
+
+    # Explicit missing file → "does not exist".
+    missing = str(tmp_path / "nope.gguf")
+    ok, diag = llm.local_runtime_status({"ai_provider": "local",
+                                         "ai_local_model": missing})
+    assert ok is False and "does not exist" in diag
+
+    # Real file + broken runtime → install hint, no crash.
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF")
+    monkeypatch.setitem(sys.modules, "llama_cpp", _oserrmod())
+    ok, diag = llm.local_runtime_status({"ai_provider": "local",
+                                         "ai_local_model": str(model_path)})
+    assert ok is False and "pip install" in diag
+
+    # Real file + working runtime → ready.
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            pass
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
+    ok, diag = llm.local_runtime_status({"ai_provider": "local",
+                                         "ai_local_model": str(model_path)})
+    assert ok is True and diag == ""
 
 
 # ── Weekly email integration ──────────────────────────────────────────────────

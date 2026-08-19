@@ -19,7 +19,7 @@ from utils import (
     CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     QUADRANT_COLORS, classify_quadrant,
     fmt, fmt_row, to_eur, get_currency_symbol,
-    help_expander, sortable_grouped_ids,
+    help_expander, draggable_card_board,
 )
 
 user_id  = st.session_state.user_id
@@ -320,22 +320,43 @@ if not active.empty:
     category_order = [category for category in CAT_LIST if category in categories]
     category_order += sorted(categories - set(category_order))
     groups = {}
+    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
     for category in category_order:
         rows = active[active["category"] == category].copy()
         rows["_sort"] = pd.to_numeric(rows["sort_order"], errors="coerce").fillna(0)
         rows = rows.sort_values(["_sort", "created_at", "name"], na_position="last")
-        groups[category] = [
-            (str(row["id"]), str(row["name"])) for _, row in rows.iterrows()
-        ]
-
-    st.caption("Drag items to reorder them or move them between categories.")
-    ordered = sortable_grouped_ids(groups, f"big_purchase_order_{user_id}")
+        cards = []
+        for _, row in rows.iterrows():
+            work = (f" · ≈ {float(row['price_eur']) / hourly_rate:,.0f} h of work"
+                    if hourly_rate > 0 and row["price_eur"] > 0 else "")
+            cards.append({"id": str(row["id"]), "title": str(row["name"]),
+                "details": f"importance {int(row['importance'])}/5 · use {float(row['usage_hours']):,.1f} h/mo{work}",
+                "amount": fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates),
+                "actions": [
+                    {"type": "select", "label": "Status", "action": "status",
+                     "value": str(row["status"]), "options": BIG_STATUSES},
+                    {"label": "Bought → log expense", "action": "buy"},
+                    {"label": "Edit", "action": "edit"}, {"label": "Delete", "action": "delete"}]})
+        groups[category] = cards
+    st.caption("Drag complete cards between categories. Use Alt+Up / Alt+Down to move by keyboard.")
+    ordered, action = draggable_card_board(groups, f"big_purchase_order_{user_id}")
     _persist_grouped_order(ordered, active)
-    rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
-    for category in ordered:
-        with st.expander(f"{category} ({len(ordered[category])})", expanded=True):
-            for item_id in ordered[category]:
-                _render_purchase_card(rows_by_id[item_id])
+    if action:
+        row = rows_by_id[action["id"]]
+        if action["action"] == "status" and action["value"] in BIG_STATUSES:
+            update_big_purchase(user_id, str(row["id"]), {"status": action["value"]})
+            q.bump_db_version()
+            st.rerun()
+        elif action["action"] == "buy":
+            confirm_purchase_dialog(user_id, str(row["id"]), str(row["name"]),
+                str(row["category"]), float(row["price"]), str(row["currency"]),
+                float(row["price_eur"]), str(row.get("notes", "")))
+        elif action["action"] == "edit":
+            edit_purchase_dialog(user_id, row)
+        elif action["action"] == "delete":
+            delete_big_purchase(user_id, row["id"])
+            q.bump_db_version()
+            st.rerun()
 else:
     st.info("All wishlist items are archived. Add a new item above or restore one below.")
 

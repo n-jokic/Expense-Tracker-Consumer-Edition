@@ -24,6 +24,7 @@ import os
 import base64
 import hashlib
 import logging
+from app_paths import state_dir
 
 log = logging.getLogger("crypto")
 
@@ -51,8 +52,7 @@ def _env_secret() -> bytes | None:
 
 
 def _file_secret() -> bytes | None:
-    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "data", ".secret_key")
+    key_path = os.path.join(state_dir(), ".secret_key")
     if os.path.exists(key_path):
         with open(key_path, "rb") as f:
             data = f.read().strip()
@@ -75,8 +75,7 @@ def _streamlit_secret() -> bytes | None:
 def _generate_and_store_file_key() -> bytes:
     from cryptography.fernet import Fernet
     key = Fernet.generate_key()
-    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "data", ".secret_key")
+    key_path = os.path.join(state_dir(), ".secret_key")
     os.makedirs(os.path.dirname(key_path), exist_ok=True)
     # Best-effort restrictive permissions (meaningful on POSIX; Windows
     # relies on the per-user %APPDATA%-equivalent project folder).

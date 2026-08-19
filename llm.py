@@ -18,12 +18,15 @@ HTML-escape it before embedding.
 """
 
 import logging
+import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
 
 from crypto import decrypt_str
+from app_paths import model_dir
 
 log = logging.getLogger("llm")
 
@@ -31,17 +34,36 @@ DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_API_MODEL = "google/gemma-3-12b-it"
 DEFAULT_LOCAL_MODEL_FILENAME = "google_gemma-3-1b-it-Q4_K_M.gguf"
 
-# One local generation at a time; the model is loaded once per path.
+# The exact command a source run needs to install the optional llama.cpp
+# runtime (Vulkan wheel, pinned) — shown verbatim in UI diagnostics.
+LOCAL_RUNTIME_INSTALL_HINT = (
+    "The llama.cpp runtime is not installed. Run in the project folder: "
+    "`.venv-clean\\Scripts\\python.exe -m pip install --extra-index-url "
+    "https://abetlen.github.io/llama-cpp-python/whl/vulkan "
+    "llama-cpp-python==0.3.34`"
+)
+
+
+@dataclass
+class LocalResult:
+    """Outcome of one generation attempt: the text (or None) plus an
+    actionable diagnostic for the UI when it failed."""
+    text: str | None
+    diagnostic: str = ""
+
+
+# One local generation at a time; the model is loaded once per
+# (path, gpu_layers) pair.
 _local_lock = threading.Lock()
-_local_cache: tuple = (None, None)  # (model_path, llama instance)
+_local_cache: tuple = ()  # (model_path, gpu_layers, llama instance) or ()
+_last_result: LocalResult | None = None  # backing store for local_diagnostic()
 
 
 # ── Provider resolution ───────────────────────────────────────────────────────
 
 def find_bundled_model() -> str | None:
     """Return the app-local Gemma path when the optional GGUF is present."""
-    path = (Path(__file__).resolve().parent / "models"
-            / DEFAULT_LOCAL_MODEL_FILENAME)
+    path = model_dir() / DEFAULT_LOCAL_MODEL_FILENAME
     return str(path) if path.is_file() else None
 
 
@@ -58,33 +80,102 @@ def resolve_provider(settings: dict) -> str:
 
 # ── Local (llama-cpp) ─────────────────────────────────────────────────────────
 
+def _runtime_missing_diagnostic() -> str:
+    """Environment-aware "runtime unavailable" message: a frozen (installed)
+    build can only be fixed by reinstalling; a source run gets the exact
+    pip command."""
+    if getattr(sys, "frozen", False):
+        return "The bundled llama.cpp runtime is unavailable. Reinstall Expense Tracker."
+    return LOCAL_RUNTIME_INSTALL_HINT
+
+
 def _get_local_model(settings: dict):
     """Load (once) and return the llama-cpp model for the configured path."""
-    global _local_cache
+    global _local_cache, _last_result
+    _last_result = LocalResult(None, "")  # clear stale diagnostics (A2.3)
     path = (str(settings.get("ai_local_model") or "").strip()
             or find_bundled_model())
     if not path:
+        _last_result = LocalResult(None, "Choose a GGUF model file before testing Local AI.")
         return None
-    if _local_cache[0] == path and _local_cache[1] is not None:
-        return _local_cache[1]
+    if not Path(path).is_file():
+        _last_result = LocalResult(None, f"GGUF model file does not exist: {path}")
+        return None
     try:
-        from llama_cpp import Llama  # optional dependency, imported lazily
-        gpu_layers = int(settings.get("ai_local_gpu_layers") or -1)
+        # Non-numeric garbage must not escape the try below as a NameError.
+        gpu_layers = int(-1 if settings.get("ai_local_gpu_layers") is None
+                         else settings["ai_local_gpu_layers"])
+    except (TypeError, ValueError):
+        gpu_layers = -1
+    if (len(_local_cache) == 3 and _local_cache[0] == path
+            and _local_cache[1] == gpu_layers and _local_cache[2] is not None):
+        return _local_cache[2]
+    try:
+        # Optional dependency, imported lazily. Catch Exception (not just
+        # ImportError): missing Vulkan/MSVC DLLs raise OSError here and must
+        # surface as a diagnostic, never as a crash.
+        from llama_cpp import Llama
+    except Exception:
+        _last_result = LocalResult(None, _runtime_missing_diagnostic())
+        log.warning("llama_cpp import failed", exc_info=True)
+        return None
+    try:
         model = Llama(model_path=path, n_ctx=2048, n_gpu_layers=gpu_layers,
                       verbose=False)
     except Exception as e:
+        if gpu_layers != 0:
+            try:
+                model = Llama(model_path=path, n_ctx=2048, n_gpu_layers=0,
+                              verbose=False)
+                _last_result = LocalResult(None, (
+                    "Vulkan initialization failed; using CPU fallback. "
+                    f"Original error: {e}"))
+                _local_cache = (path, 0, model)
+                log.warning("local LLM Vulkan load failed; using CPU fallback: %s", e)
+                return model
+            except Exception as cpu_error:
+                _last_result = LocalResult(None, f"Could not load this GGUF model: {cpu_error}")
+        else:
+            _last_result = LocalResult(None, f"Could not load this GGUF model: {e}")
         log.warning("could not load local LLM model %r: %s", path, e)
         return None
-    _local_cache = (path, model)
+    _local_cache = (path, gpu_layers, model)
     log.info("loaded local LLM model %s", path)
     return model
 
 
-def _local_chat(settings: dict, system: str, user: str, max_tokens: int) -> str | None:
+def local_runtime_status(settings: dict) -> tuple[bool, str]:
+    """(ready, diagnostic) for the Local provider WITHOUT loading the model:
+    ready is True only when the llama_cpp package imports AND the resolved
+    GGUF path exists. The diagnostic is an actionable one-liner otherwise
+    ("" when ready). Used by the Ask page badge and the Settings indicator."""
+    path = (str(settings.get("ai_local_model") or "").strip()
+            or find_bundled_model())
+    if not path:
+        return False, "Choose a GGUF model file before testing Local AI."
+    if not Path(path).is_file():
+        return False, f"GGUF model file does not exist: {path}"
+    try:
+        from llama_cpp import Llama  # noqa: F401  — existence check only
+    except Exception:
+        msg = _runtime_missing_diagnostic()
+        global _last_result
+        _last_result = LocalResult(None, msg)
+        return False, msg
+    return True, ""
+
+
+def local_diagnostic() -> str:
+    """Most recent actionable Local AI load/generation status."""
+    return _last_result.diagnostic if _last_result else ""
+
+
+def _local_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalResult:
+    global _last_result
     with _local_lock:
         model = _get_local_model(settings)
         if model is None:
-            return None
+            return LocalResult(None, local_diagnostic())
         try:
             out = model.create_chat_completion(
                 messages=[{"role": "system", "content": system},
@@ -92,18 +183,26 @@ def _local_chat(settings: dict, system: str, user: str, max_tokens: int) -> str 
                 max_tokens=int(max_tokens), temperature=0.7, top_p=0.9,
             )
             text = out["choices"][0]["message"]["content"]
-            return text.strip() or None
+            result = LocalResult(text.strip() or None)
+            _last_result = result
+            return result
         except Exception as e:
             log.warning("local LLM generation failed: %s", e)
-            return None
+            result = LocalResult(None, f"Local model generation failed: {e}")
+            _last_result = result
+            return result
 
 
 # ── External OpenAI-compatible API ────────────────────────────────────────────
 
-def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> str | None:
+def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalResult:
+    global _last_result
     key = decrypt_str(settings.get("ai_api_key_enc") or "")
     if not key:
-        return None
+        result = LocalResult(None, "No API key configured — add it in "
+                                   "Settings → Notifications → AI assistant.")
+        _last_result = result
+        return result
     base = str(settings.get("ai_api_base") or DEFAULT_API_BASE).rstrip("/")
     model_name = str(settings.get("ai_api_model") or DEFAULT_API_MODEL)
     try:
@@ -119,22 +218,31 @@ def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> str | 
         )
         resp.raise_for_status()
         text = resp.json()["choices"][0]["message"]["content"]
-        return text.strip() or None
+        result = LocalResult(text.strip() or None)
+        _last_result = result
+        return result
     except Exception as e:
         # Never echo the key: the exception may carry the request URL only.
         log.warning("LLM API request failed (%s): %s", type(e).__name__, e)
-        return None
+        result = LocalResult(
+            None, "The API request failed — check the API key and base URL in "
+                  "Settings → Notifications → AI assistant.")
+        _last_result = result
+        return result
 
 
 # ── Public generators ─────────────────────────────────────────────────────────
 
-def _generate(settings: dict, system: str, user: str, max_tokens: int = 256) -> str | None:
+def _generate(settings: dict, system: str, user: str, max_tokens: int = 256) -> LocalResult:
+    """Run one generation and return a LocalResult (text + diagnostic).
+    Internal — the public generators unwrap .text and still return str | None;
+    callers that need the failure reason use local_diagnostic()."""
     provider = resolve_provider(settings)
     if provider == "local":
         return _local_chat(settings, system, user, max_tokens)
     if provider == "api":
         return _api_chat(settings, system, user, max_tokens)
-    return None
+    return LocalResult(None, "")
 
 
 def _sanitize_stat(value) -> str:
@@ -171,7 +279,7 @@ def generate_summary(stats: dict, settings: dict) -> str | None:
     if stats.get("fun_remaining") is not None:
         lines.append(f"Fun-money budget remaining this month: {_sanitize_stat(stats['fun_remaining'])} EUR")
     user = "\n".join(lines) + "\n\nWrite the summary now."
-    return _generate(settings, _SUMMARY_SYSTEM, user)
+    return _generate(settings, _SUMMARY_SYSTEM, user).text
 
 
 _NARRATIVE_SYSTEM = (
@@ -200,7 +308,7 @@ def generate_narrative(stats: dict, settings: dict) -> str | None:
     if stats.get("budget_remaining") is not None:
         lines.append(f"Budget remaining: {_sanitize_stat(stats['budget_remaining'])} EUR")
     user = "\n".join(lines) + "\n\nWrite the narrative now."
-    return _generate(settings, _NARRATIVE_SYSTEM, user)
+    return _generate(settings, _NARRATIVE_SYSTEM, user).text
 
 
 # ── Chat over your own data ───────────────────────────────────────────────────
@@ -347,7 +455,7 @@ def answer_query(user_id: int, question: str, settings: dict,
         context = build_data_context(user_id, settings)
         user = (f"{chat_so_far}DATA:\n{context}\n\nQUESTION:\n{q}\n\n"
                 "Answer the question now.")
-        return _generate(settings, _ASK_SYSTEM, user, max_tokens=300)
+        return _generate(settings, _ASK_SYSTEM, user, max_tokens=300).text
     except Exception as e:
         log.warning("answer_query failed: %s", e)
         return None

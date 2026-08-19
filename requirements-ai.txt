@@ -1,0 +1,11 @@
+# Optional local AI assistant runtime (llama.cpp with the Vulkan backend).
+#
+# Only needed for the "Local Gemma model" provider (Settings → Notifications →
+# AI assistant). The rest of the app never imports this package, so headless
+# installs (Docker, CI) can safely skip this file — the AI provider simply
+# shows an actionable "runtime missing" message in the UI.
+#
+# Install on Windows with:
+#   .venv-clean\Scripts\python.exe -m pip install -r requirements-ai.txt
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan
+llama-cpp-python==0.3.34

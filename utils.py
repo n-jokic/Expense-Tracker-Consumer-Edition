@@ -382,16 +382,6 @@ def compute_salary_cycle(today: _date, salary_day: int = 10,
     return period_start, period_end
 
 
-# ── Formatting helpers ────────────────────────────────────────────────────────
-
-def pbar(pct: float, color: str) -> str:
-    """Return an HTML progress bar string."""
-    width = min(max(pct, 0), 100)
-    return (f'<div class="pw">'
-            f'<div class="pb" style="width:{width:.1f}%;background:{color};"></div>'
-            f'</div>')
-
-
 # ── Fun money & travel pools ─────────────────────────────────────────────────
 
 def _pool_members(entries) -> tuple[list, list]:
@@ -492,45 +482,75 @@ def classify_quadrant(work_hours: float, usage_hours: float,
     return "Reconsider"
 
 
-def sortable_grouped_ids(groups: dict, key: str) -> dict:
-    """Return persisted-friendly IDs after optional category drag/drop.
+def validate_grouped_order(order: dict, expected: dict) -> dict | None:
+    """Accept one complete, non-duplicated board order or reject it."""
+    if not isinstance(order, dict) or set(order) != set(expected):
+        return None
+    wanted = [str(item_id) for ids in expected.values() for item_id in ids]
+    received = [str(item_id) for category in expected for item_id in order.get(category, [])]
+    if len(received) != len(wanted) or len(set(received)) != len(received):
+        return None
+    if set(received) != set(wanted):
+        return None
+    return {str(category): [str(item_id) for item_id in order[category]]
+            for category in expected}
 
-    The sortable component only transports strings, so each visible label gets
-    an invisible unique suffix. If the optional dependency is unavailable, the
-    original order is returned and the page remains usable.
-    """
-    original = {str(category): [str(item_id) for item_id, _ in items]
-                for category, items in groups.items()}
-    try:
-        from streamlit_sortables import sort_items
-    except Exception:
-        return original
 
-    marker = "\u2063"
-    payload = [{
-        "header": str(category),
-        "items": [f"{label}{marker}{item_id}" for item_id, label in items],
-    } for category, items in groups.items()]
-    try:
-        sorted_payload = sort_items(payload, multi_containers=True,
-                                    direction="vertical", key=key)
-    except Exception:
-        return original
+_CARD_BOARD = None
 
-    result = {}
-    for container in sorted_payload or []:
-        category = str(container.get("header", ""))
-        ids = []
-        for token in container.get("items", []) or []:
-            token = str(token)
-            if marker not in token:
-                return original
-            ids.append(token.rsplit(marker, 1)[1])
-        result[category] = ids
 
-    expected = {item_id for ids in original.values() for item_id in ids}
-    actual = {item_id for ids in result.values() for item_id in ids}
-    return result if expected == actual else original
+def draggable_card_board(groups: dict, key: str):
+    """Render full, accessible draggable cards and return (order, action)."""
+    global _CARD_BOARD
+    original = {str(category): [str(card["id"]) for card in cards]
+                for category, cards in groups.items()}
+    if _CARD_BOARD is None:
+        _CARD_BOARD = st.components.v2.component(
+            "expense_tracker_draggable_cards",
+            html="<div id='board'></div>",
+            css="""
+                .board{display:grid;gap:1rem}
+                .group{border:1px solid var(--st-border-color);border-radius:.5rem;padding:.75rem;background:var(--st-secondary-background-color)}
+                .group h3{margin:0 0 .5rem;font-size:1rem}
+                .drop{min-height:3rem;display:grid;gap:.5rem}
+                .card{display:grid;grid-template-columns:auto 1fr auto;gap:.75rem;align-items:start;padding:.75rem;border:1px solid var(--st-border-color);border-radius:.4rem;background:var(--st-background-color);color:var(--st-text-color)}
+                .card:focus{outline:2px solid var(--st-primary-color)}
+                .handle{cursor:grab;border:0;background:transparent;color:var(--st-text-color);font-size:1.1rem}
+                .meta{color:var(--st-secondary-text-color);font-size:.85rem}
+                .amount{font-weight:600;white-space:nowrap}
+                .actions{grid-column:2 / -1;display:flex;gap:.4rem;flex-wrap:wrap}
+                .actions button,.actions select{font:inherit;color:inherit;background:var(--st-secondary-background-color);border:1px solid var(--st-border-color);border-radius:.25rem;padding:.25rem .5rem}
+                @media(max-width:600px){.card{grid-template-columns:auto 1fr}.amount{grid-column:2}.actions{grid-column:1 / -1}}
+            """,
+            js="""
+export default function({data,parentElement,setStateValue,setTriggerValue}) {
+ const root=parentElement.querySelector('#board'); root.replaceChildren(); root.className='board';
+ let drag=null; const groups=data.groups || {};
+ const emit=()=>setStateValue('order',Object.fromEntries([...root.querySelectorAll('.group')].map(g=>[g.dataset.category,[...g.querySelectorAll('.card')].map(c=>c.dataset.id)])));
+ const move=(card,delta)=>{const cards=[...card.parentElement.children],i=cards.indexOf(card),to=i+delta;if(to<0||to>=cards.length)return; card.parentElement.insertBefore(card,delta<0?cards[to]:cards[to].nextSibling);emit();card.focus();};
+ for(const [category,cards] of Object.entries(groups)){
+  const group=document.createElement('section');group.className='group';group.dataset.category=category;const title=document.createElement('h3');title.textContent=category;const drop=document.createElement('div');drop.className='drop';group.append(title,drop);
+  drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();if(drag){drop.append(drag);emit();}};
+  for(const dataCard of cards){const card=document.createElement('article');card.className='card';card.dataset.id=dataCard.id;card.tabIndex=0;card.draggable=true;card.ondragstart=()=>drag=card;card.ondragend=()=>drag=null;
+   card.onkeydown=e=>{if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();move(card,e.key==='ArrowUp'?-1:1);}};
+   const handle=document.createElement('button');handle.className='handle';handle.type='button';handle.textContent='↕';handle.title='Drag, or Alt+Up / Alt+Down to move';handle.setAttribute('aria-label','Move '+dataCard.title);
+   const body=document.createElement('div');const name=document.createElement('strong');name.textContent=dataCard.title;const meta=document.createElement('div');meta.className='meta';meta.textContent=dataCard.details;body.append(name,meta);
+   const amount=document.createElement('div');amount.className='amount';amount.textContent=dataCard.amount;const actions=document.createElement('div');actions.className='actions';
+   for(const action of dataCard.actions||[]){if(action.type==='select'){const select=document.createElement('select');select.setAttribute('aria-label',action.label);for(const value of action.options){const option=document.createElement('option');option.value=value;option.textContent=value;option.selected=value===action.value;select.append(option);}select.onchange=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:select.value});actions.append(select);}else{const button=document.createElement('button');button.type='button';button.textContent=action.label;button.onclick=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:action.value||null});actions.append(button);}}
+   card.append(handle,body,amount,actions);drop.append(card);
+  } root.append(group);
+ } return ()=>{};
+}""",
+        )
+    result = _CARD_BOARD(data={"groups": groups}, key=key,
+                         default={"order": original}, on_order_change=lambda: None)
+    order = validate_grouped_order(getattr(result, "order", None), original) or original
+    action = getattr(result, "action", None)
+    if not isinstance(action, dict) or set(action) != {"id", "action", "value"}:
+        action = None
+    elif str(action["id"]) not in {item_id for ids in original.values() for item_id in ids}:
+        action = None
+    return order, action
 
 
 # Cells starting with these characters are treated as formulas when the
@@ -570,14 +590,6 @@ def safe_error(msg: str):
 
 def safe_warning(msg: str):
     st.warning(msg, icon=":material/warning:")
-
-
-def try_or_error(fn, fallback, friendly_msg: str):
-    try:
-        return fn()
-    except Exception as e:
-        safe_error(f"{friendly_msg} (Detail: {e})")
-        return fallback
 
 
 def help_expander(title: str, content: str):

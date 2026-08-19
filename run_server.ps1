@@ -21,8 +21,11 @@ Write-Host "   Private networks."
 Write-Host " ============================================================"
 Write-Host ""
 
-# Activate the virtual environment if it exists
-if (Test-Path ".venv\Scripts\Activate.ps1") {
+# Activate the canonical virtual environment (.venv-clean); fall back to
+# .venv for checkouts that have not migrated yet.
+if (Test-Path ".venv-clean\Scripts\Activate.ps1") {
+    . ".venv-clean\Scripts\Activate.ps1"
+} elseif (Test-Path ".venv\Scripts\Activate.ps1") {
     . ".venv\Scripts\Activate.ps1"
 }
 
@@ -38,12 +41,24 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 python -c "import streamlit" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing dependencies..."
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Failed to install dependencies. Check your Python installation." -ForegroundColor Red
         Read-Host "Press Enter to exit"
         exit 1
     }
+}
+
+# The local-AI runtime (llama-cpp-python) is OPTIONAL — warn, never fail.
+python -c "import llama_cpp" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "   NOTE: the optional local-AI runtime (llama-cpp-python) is not" -ForegroundColor Yellow
+    Write-Host "   installed. The app works without it - the Local AI provider in" -ForegroundColor Yellow
+    Write-Host "   Settings will show a 'runtime missing' notice." -ForegroundColor Yellow
+    Write-Host "   To enable it, run:" -ForegroundColor Yellow
+    Write-Host "     .venv-clean\Scripts\python.exe -m pip install -r requirements-ai.txt" -ForegroundColor Yellow
+    Write-Host ""
 }
 
 # TLS is OPT-IN: set EXPENSE_TRACKER_TLS=1 to serve HTTPS with a self-signed

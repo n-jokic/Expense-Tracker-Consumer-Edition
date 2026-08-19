@@ -21,6 +21,7 @@ from db import (
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
+from app_pages.settings_ai import render_ai_settings
 from rates import refresh_rates_if_due
 from utils import (
     SUPPORTED_CURRENCIES, get_currency_symbol,
@@ -121,6 +122,7 @@ with tab_cur:
 # ── Notifications tab ─────────────────────────────────────────────────────────
 with tab_notif:
     render_notification_settings(user_id, settings)
+    render_ai_settings(user_id, settings)
 
 # ── Account tab ───────────────────────────────────────────────────────────────
 with tab_acct:

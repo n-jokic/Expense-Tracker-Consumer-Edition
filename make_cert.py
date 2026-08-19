@@ -26,8 +26,9 @@ import ipaddress
 import os
 import socket
 from datetime import datetime, timedelta, timezone
+from app_paths import state_dir
 
-CERT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "certs")
+CERT_DIR  = os.path.join(state_dir(), "certs")
 CERT_FILE = os.path.join(CERT_DIR, "cert.pem")
 KEY_FILE  = os.path.join(CERT_DIR, "key.pem")
 
