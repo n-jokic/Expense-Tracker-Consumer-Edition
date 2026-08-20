@@ -470,7 +470,13 @@ def extract_transactions_from_pdf(pdf_bytes: bytes) -> pd.DataFrame:
     Returns the normalized DataFrame (date, description, amount, currency).
     """
     all_rows = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+    try:
+        pdf = pdfplumber.open(io.BytesIO(pdf_bytes))
+    except Exception as e:
+        import logging as _log
+        _log.getLogger(__name__).warning("PDF open failed: %s", e)
+        return pd.DataFrame(columns=["date", "description", "amount", "currency"])
+    with pdf:
         for page in pdf.pages:
             parsed_any = False
             for settings in _TABLE_SETTINGS:

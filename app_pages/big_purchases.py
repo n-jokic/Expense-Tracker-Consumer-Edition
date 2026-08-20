@@ -28,6 +28,14 @@ rates    = st.session_state.rates
 settings = st.session_state.settings
 today    = date.today()
 
+def _bp_update_status(item_id: str):
+    try:
+        update_big_purchase(user_id, item_id, {"status": st.session_state[f"bp_status_{item_id}"]})
+    except Exception as e:
+        st.error(f"Couldn't save: {e}")
+        return
+    q.bump_db_version()
+
 st.title(":material/shopping_cart: Big purchases")
 st.caption("Decide what's worth it: how many work-hours it costs vs how much you'll actually use it.")
 help_expander("How the matrix works",
@@ -84,16 +92,26 @@ with st.form("bp_form", clear_on_submit=True):
         elif float(bp_price) <= 0:
             st.error("Price must be greater than 0.")
         else:
+            _fresh_bp = q.big_purchases(user_id)
+            if not _fresh_bp.empty and (
+                (_fresh_bp["name"] == bp_name.strip()) & (_fresh_bp["category"] == bp_cat)
+            ).any():
+                st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                st.rerun()
             pe = to_eur(bp_price, bp_cur, rates)
-            add_big_purchase(user_id, {
-                "name": bp_name.strip(), "category": bp_cat,
-                "price": bp_price, "currency": bp_cur, "price_eur": pe,
-                "usage_hours": float(bp_use), "importance": int(bp_imp),
-                "status": "wishlist", "notes": bp_notes,
-            })
-            q.bump_db_version()
-            st.session_state["bp_flash"] = ("success", f"**{bp_name}** added to your wishlist.")
-            st.rerun()
+            try:
+                add_big_purchase(user_id, {
+                    "name": bp_name.strip(), "category": bp_cat,
+                    "price": bp_price, "currency": bp_cur, "price_eur": pe,
+                    "usage_hours": float(bp_use), "importance": int(bp_imp),
+                    "status": "wishlist", "notes": bp_notes,
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.session_state["bp_flash"] = ("success", f"**{bp_name}** added to your wishlist.")
+                st.rerun()
 
 # ── Matrix & list ─────────────────────────────────────────────────────────────
 dfb = q.big_purchases(user_id)
@@ -158,18 +176,28 @@ def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
     with c2:
         if st.button("Confirm & log expense", key=f"bp_confirm_{purchase_id}",
                      type="primary", width="stretch"):
-            update_big_purchase(uid, purchase_id, {"status": "bought"})
+            _fresh_bp2 = q.big_purchases(uid)
+            if not _fresh_bp2.empty:
+                _row = _fresh_bp2[_fresh_bp2["id"] == purchase_id]
+                if not _row.empty and str(_row.iloc[0]["status"]) == "bought":
+                    st.toast("Already bought — duplicate prevented.", icon=":material/check:")
+                    st.rerun()
             # Recompute the EUR value at confirm time with the CURRENT rates —
             # the snapshotted price_eur may be stale if rates changed since
             # the item was added/edited.
-            ae = to_eur(float(amount), str(currency), rates)
-            add_expense(uid, {
-                "date": today, "category": category, "subcategory": "",
-                "description": f"{name} (big purchase)",
-                "amount": float(amount), "currency": str(currency),
-                "amount_eur": ae,
-                "recurring": False, "notes": str(notes) or "Big purchase",
-            })
+            try:
+                ae = to_eur(float(amount), str(currency), rates)
+                add_expense(uid, {
+                    "date": today, "category": category, "subcategory": "",
+                    "description": f"{name} (big purchase)",
+                    "amount": float(amount), "currency": str(currency),
+                    "amount_eur": ae,
+                    "recurring": False, "notes": str(notes) or "Big purchase",
+                })
+                update_big_purchase(uid, purchase_id, {"status": "bought"})
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.session_state["bp_flash"] = ("toast", f"Logged **{name}** as an expense.")
             st.rerun()
@@ -216,12 +244,16 @@ def edit_purchase_dialog(uid: int, row):
                 st.error("Please give the item a name.")
             else:
                 pe = to_eur(float(e_price), e_cur, rates)
-                update_big_purchase(uid, str(row["id"]), {
-                    "name": e_name.strip(), "category": e_cat,
-                    "price": float(e_price), "currency": e_cur, "price_eur": pe,
-                    "usage_hours": float(e_use), "importance": int(e_imp),
-                    "notes": e_notes,
-                })
+                try:
+                    update_big_purchase(uid, str(row["id"]), {
+                        "name": e_name.strip(), "category": e_cat,
+                        "price": float(e_price), "currency": e_cur, "price_eur": pe,
+                        "usage_hours": float(e_use), "importance": int(e_imp),
+                        "notes": e_notes,
+                    })
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                    return
                 q.bump_db_version()
                 st.toast(f"**{e_name.strip()}** updated.", icon="✏️")
                 st.rerun()
@@ -248,8 +280,12 @@ def _persist_grouped_order(groups, rows):
                              or int(current_order) != int(updates["sort_order"]))
             category_changed = "category" in updates
             if order_changed or category_changed:
-                update_big_purchase(user_id, str(item_id), updates)
-                changed = True
+                try:
+                    update_big_purchase(user_id, str(item_id), updates)
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    changed = True
     if changed:
         q.bump_db_version()
         st.rerun()
@@ -278,22 +314,23 @@ def _render_purchase_card(row, archived=False):
                 st.caption("Bought · archived")
                 if st.button("Restore", icon=":material/undo:", key=f"bp_restore_{row['id']}",
                              width="stretch"):
-                    update_big_purchase(user_id, str(row["id"]),
-                                        {"status": "wishlist"})
-                    q.bump_db_version()
-                    st.rerun()
+                    try:
+                        update_big_purchase(user_id, str(row["id"]),
+                                            {"status": "wishlist"})
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.rerun()
             else:
                 st.selectbox(
                     "Status", BIG_STATUSES,
                     index=BIG_STATUSES.index(row["status"])
                     if row["status"] in BIG_STATUSES else 0,
                     key=f"bp_status_{row['id']}", label_visibility="collapsed",
-                    on_change=lambda i=row["id"]: (
-                        update_big_purchase(user_id, i, {
-                            "status": st.session_state[f"bp_status_{i}"]}),
-                        q.bump_db_version(),
-                    ),
+                    on_change=lambda i=row["id"]: _bp_update_status(i),
                 )
+                # on_change already handles DB save via _bp_update_status
                 if row["status"] != "bought" and st.button(
                         "Bought → log expense", icon=":material/check_circle:",
                         key=f"bp_buy_{row['id']}", width="stretch"):
@@ -309,9 +346,13 @@ def _render_purchase_card(row, archived=False):
                 edit_purchase_dialog(user_id, row)
             if st.button("Delete", icon=":material/delete:", key=f"bp_del_{row['id']}",
                          width="stretch"):
-                delete_big_purchase(user_id, row["id"])
-                q.bump_db_version()
-                st.rerun()
+                try:
+                    delete_big_purchase(user_id, row["id"])
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    st.rerun()
 
 
 active = dfb[dfb["status"] != "bought"].copy()
@@ -344,9 +385,13 @@ if not active.empty:
     if action:
         row = rows_by_id[action["id"]]
         if action["action"] == "status" and action["value"] in BIG_STATUSES:
-            update_big_purchase(user_id, str(row["id"]), {"status": action["value"]})
-            q.bump_db_version()
-            st.rerun()
+            try:
+                update_big_purchase(user_id, str(row["id"]), {"status": action["value"]})
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.rerun()
         elif action["action"] == "buy":
             confirm_purchase_dialog(user_id, str(row["id"]), str(row["name"]),
                 str(row["category"]), float(row["price"]), str(row["currency"]),
@@ -354,9 +399,13 @@ if not active.empty:
         elif action["action"] == "edit":
             edit_purchase_dialog(user_id, row)
         elif action["action"] == "delete":
-            delete_big_purchase(user_id, row["id"])
-            q.bump_db_version()
-            st.rerun()
+            try:
+                delete_big_purchase(user_id, row["id"])
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.rerun()
 else:
     st.info("All wishlist items are archived. Add a new item above or restore one below.")
 

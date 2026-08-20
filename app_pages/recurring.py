@@ -79,6 +79,25 @@ def edit_template_dialog(uid: int, row):
     with c1:
         if st.button("Cancel", width="stretch"):
             st.rerun()
+    with c2:
+        if st.button("Save changes", type="primary", width="stretch"):
+            n_eur = to_eur(n_amt, n_cur, rates)
+            try:
+                update_recurring(uid, str(row["id"]), {
+                    "category": n_cat,
+                    "subcategory": n_sub if n_sub != "—" else "",
+                    "description": n_desc.strip() or row["description"],
+                    "amount": n_amt, "currency": n_cur, "amount_eur": n_eur,
+                    "due_day": int(n_due) if int(n_due) > 0 else None,
+                    "start_month": f"{n_start.year:04d}-{n_start.month:02d}",
+                    "notes": n_notes, "active": bool(n_active),
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
+            q.bump_db_version()
+            st.toast("Template updated — past logs are untouched.", icon="✏️")
+            st.rerun()
 
 
 @st.dialog("Log recurring expense")
@@ -92,27 +111,23 @@ def log_template_dialog(row):
                              max_value=MAX_AMOUNT, step=0.50, format="%.2f",
                              key=f"lr_a_{rid}")
     if st.button("Log it", icon=":material/check:", type="primary", key=f"lr_c_{rid}"):
-        add_expense(user_id, {"date": paid_on, "category": row["category"],
-            "subcategory": row["subcategory"], "description": row["description"],
-            "amount": amount, "currency": cur, "amount_eur": to_eur(amount, cur, rates),
-            "recurring": True, "rec_template_id": rid, "notes": str(row.get("notes", ""))})
+        _fresh_exp = q.expenses(user_id)
+        if not _fresh_exp.empty and "rec_template_id" in _fresh_exp.columns and (
+            (_fresh_exp["rec_template_id"].astype(str) == rid)
+            & (_fresh_exp["date"].dt.date == paid_on)
+        ).any():
+            st.toast("Already logged this template today — duplicate prevented.", icon=":material/check:")
+            st.rerun()
+        try:
+            add_expense(user_id, {"date": paid_on, "category": row["category"],
+                "subcategory": row["subcategory"], "description": row["description"],
+                "amount": amount, "currency": cur, "amount_eur": to_eur(amount, cur, rates),
+                "recurring": True, "rec_template_id": rid, "notes": str(row.get("notes", ""))})
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.rerun()
-    with c2:
-        if st.button("Save changes", type="primary", width="stretch"):
-            n_eur = to_eur(n_amt, n_cur, rates)
-            update_recurring(uid, str(row["id"]), {
-                "category": n_cat,
-                "subcategory": n_sub if n_sub != "—" else "",
-                "description": n_desc.strip() or row["description"],
-                "amount": n_amt, "currency": n_cur, "amount_eur": n_eur,
-                "due_day": int(n_due) if int(n_due) > 0 else None,
-                "start_month": f"{n_start.year:04d}-{n_start.month:02d}",
-                "notes": n_notes, "active": bool(n_active),
-            })
-            q.bump_db_version()
-            st.toast("Template updated — past logs are untouched.", icon="✏️")
-            st.rerun()
 
 
 with st.expander("Add new template", icon=":material/add:"):
@@ -145,19 +160,31 @@ with st.expander("Add new template", icon=":material/add:"):
             elif ramt <= 0:
                 st.error("Typical amount must be greater than 0.")
             else:
+                _fresh_rec = q.recurring(user_id)
+                if not _fresh_rec.empty and (
+                    (_fresh_rec["description"] == rdesc)
+                    & (_fresh_rec["amount_eur"].round(2) == round(to_eur(ramt, rc, rates), 2))
+                    & (_fresh_rec["category"] == rcat)
+                ).any():
+                    st.toast("Already saved — duplicate template prevented.", icon=":material/check:")
+                    st.rerun()
                 re_eur = to_eur(ramt, rc, rates)
-                add_recurring(user_id, {
-                    "category": rcat,
-                    "subcategory": rsub if rsub != "—" else "",
-                    "description": rdesc, "amount": ramt,
-                    "currency": rc, "amount_eur": re_eur,
-                    "due_day": int(rdue) if rdue and int(rdue) > 0 else None,
-                    "start_month": f"{rstart.year:04d}-{rstart.month:02d}",
-                    "notes": rnotes, "active": True,
-                })
-                q.bump_db_version()
-                st.session_state["rec_flash"] = f"**{rdesc}** saved as a template."
-                st.rerun()
+                try:
+                    add_recurring(user_id, {
+                        "category": rcat,
+                        "subcategory": rsub if rsub != "—" else "",
+                        "description": rdesc, "amount": ramt,
+                        "currency": rc, "amount_eur": re_eur,
+                        "due_day": int(rdue) if rdue and int(rdue) > 0 else None,
+                        "start_month": f"{rstart.year:04d}-{rstart.month:02d}",
+                        "notes": rnotes, "active": True,
+                    })
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    st.session_state["rec_flash"] = f"**{rdesc}** saved as a template."
+                    st.rerun()
 
 dfr    = q.recurring(user_id)
 active = dfr[dfr["active"] == True] if not dfr.empty else pd.DataFrame()

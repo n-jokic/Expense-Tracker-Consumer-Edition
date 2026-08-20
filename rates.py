@@ -104,7 +104,9 @@ def refresh_rates_if_due(user_id: int, settings: dict,
     if not fresh:
         return settings, False
 
-    current = dict(settings.get("currency_rates") or {})
+    from db import get_settings as _fresh_get_settings
+    fresh_settings = _fresh_get_settings(user_id) or settings
+    current = dict(fresh_settings.get("currency_rates") or {})
     current.update(fresh)
     new_settings = q.save_settings(user_id, {
         "currency_rates": current,

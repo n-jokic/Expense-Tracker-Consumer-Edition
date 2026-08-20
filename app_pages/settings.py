@@ -60,7 +60,11 @@ def revoke_device_dialog(uid: int, device_id: str, name: str):
         if st.button("Cancel", width="stretch"):
             st.rerun()
         if st.button("Revoke", type="primary", width="stretch"):
-            revoke_device(uid, device_id)
+            try:
+                revoke_device(uid, device_id)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             st.toast("Device revoked.", icon=":material/lock:")
             st.rerun()
 
@@ -91,12 +95,16 @@ with tab_cur:
                 st.error("❌ Exchange rates must be positive numbers greater "
                          "than zero. Fix the highlighted rates and save again.")
             else:
-                q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
-                # Let the sidebar selectbox re-initialise from the new default
-                # (its keyed widget state would otherwise keep the old value).
-                st.session_state.pop("dc_sidebar", None)
-                st.success("✅ Saved — rates updated for every page.")
-                st.rerun()
+                try:
+                    q.save_settings(user_id, {"default_currency": dc2, "currency_rates": new_rates})
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    # Let the sidebar selectbox re-initialise from the new default
+                    # (its keyed widget state would otherwise keep the old value).
+                    st.session_state.pop("dc_sidebar", None)
+                    st.success("✅ Saved — rates updated for every page.")
+                    st.rerun()
 
     last = settings.get("rates_updated_at")
     if last is not None:
@@ -132,12 +140,16 @@ with tab_acct:
         new_name = st.text_input("Display name", value=display_name)
         if st.form_submit_button("Update name", type="primary", icon=":material/save:"):
             if new_name.strip():
-                update_user_display_name(user_id, new_name.strip())
-                st.session_state.display_name = new_name.strip()
-                # Household member lists / combined views cache display names.
-                q.bump_db_version()
-                st.success("✅ Name updated!")
-                st.rerun()
+                try:
+                    update_user_display_name(user_id, new_name.strip())
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    st.session_state.display_name = new_name.strip()
+                    # Household member lists / combined views cache display names.
+                    q.bump_db_version()
+                    st.success("✅ Name updated!")
+                    st.rerun()
 
     st.subheader("Change password")
     with st.form("pw_form"):
@@ -161,11 +173,15 @@ with tab_acct:
         confirm = st.text_input("Type DELETE to confirm")
         if st.button("Delete account permanently", type="secondary"):
             if confirm == "DELETE":
-                from forecasting import clear_categorizers
-                clear_categorizers()  # drop the cached ML model for this user
-                delete_user_account(user_id)
-                logout()
-                st.rerun()
+                try:
+                    from forecasting import clear_categorizers
+                    clear_categorizers()  # drop the cached ML model for this user
+                    delete_user_account(user_id)
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    logout()
+                    st.rerun()
             else:
                 safe_error("Please type DELETE exactly to confirm.")
 
@@ -296,9 +312,13 @@ with tab_data:
         if gh_token:
             from crypto import encrypt_str
             updates["gh_token_enc"] = encrypt_str(gh_token)
-        q.save_settings(user_id, updates)
-        st.success("GitHub backup configuration saved.", icon=":material/check:")
-        st.rerun()
+        try:
+            q.save_settings(user_id, updates)
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            st.success("GitHub backup configuration saved.", icon=":material/check:")
+            st.rerun()
 
     if run_gh:
         import threading
@@ -342,8 +362,12 @@ with tab_sync:
 
     st.markdown("**Pair a new device**")
     if st.button(":material/add: Generate pairing code", width="stretch"):
-        dev_id, code = create_pairing_device(user_id)
-        st.session_state.pair_code = code
+        try:
+            dev_id, code = create_pairing_device(user_id)
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            st.session_state.pair_code = code
     pair_code = st.session_state.get("pair_code")
     if pair_code:
         st.success(f"Pairing code: **`{pair_code}`** — valid for 10 minutes. "
@@ -372,18 +396,27 @@ with tab_sync:
             b1, b2 = st.columns(2)
             with b1:
                 if st.button("Keep device value", key=f"kdev_{c['id']}", width="stretch"):
-                    ok = apply_record_fields(user_id, c["table_name"], c["record_id"],
-                                             c["device_value"] or {})
-                    if ok:
-                        resolve_sync_conflict(user_id, c["id"])
-                        q.bump_db_version()
-                        st.toast("Device value applied and conflict resolved.", icon=":material/check:")
-                        st.rerun()
+                    try:
+                        ok = apply_record_fields(user_id, c["table_name"], c["record_id"],
+                                                 c["device_value"] or {})
+                        if ok:
+                            resolve_sync_conflict(user_id, c["id"])
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
                     else:
-                        st.error("Could not apply the device value (record missing?).")
+                        if ok:
+                            q.bump_db_version()
+                            st.toast("Device value applied and conflict resolved.", icon=":material/check:")
+                            st.rerun()
+                        else:
+                            st.error("Could not apply the device value (record missing?).")
             with b2:
                 if st.button("Keep server value", key=f"ksrv_{c['id']}", width="stretch"):
-                    resolve_sync_conflict(user_id, c["id"])
-                    q.bump_db_version()
-                    st.toast("Conflict resolved — server value kept.", icon=":material/check:")
-                    st.rerun()
+                    try:
+                        resolve_sync_conflict(user_id, c["id"])
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.toast("Conflict resolved — server value kept.", icon=":material/check:")
+                        st.rerun()

@@ -52,12 +52,16 @@ with st.expander("My fixed salary", icon=":material/work:"):
             s_active = st.toggle("Active", value=bool(settings.get("salary_active", False)))
         if st.form_submit_button("Save salary", type="primary", width="stretch",
                                  icon=":material/save:"):
-            q.save_settings(user_id, {
-                "salary_amount": float(s_amt), "salary_currency": s_cur,
-                "salary_day": int(s_day), "salary_active": bool(s_active),
-            })
-            st.success("Fixed salary saved!", icon=":material/check:")
-            st.rerun()
+            try:
+                q.save_settings(user_id, {
+                    "salary_amount": float(s_amt), "salary_currency": s_cur,
+                    "salary_day": int(s_day), "salary_active": bool(s_active),
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                st.success("Fixed salary saved!", icon=":material/check:")
+                st.rerun()
 
 salary_amount   = float(settings.get("salary_amount") or 0.0)
 salary_currency = settings.get("salary_currency", "EUR")
@@ -85,16 +89,26 @@ if salary_active and salary_amount > 0:
             month_len = calendar.monthrange(today.year, today.month)[1]
             pay_date  = date(today.year, today.month, min(salary_day, month_len))
             ae = to_eur(salary_amount, salary_currency, rates)
-            add_income(user_id, {
-                "date": pay_date, "source": "Salary", "income_type": "Salary",
-                "hours": None, "rate": None,
-                "budgeted": salary_amount, "actual": salary_amount,
-                "currency": salary_currency, "budgeted_eur": ae, "actual_eur": ae,
-                "notes": "Fixed salary",
-            })
-            q.bump_db_version()
-            st.toast(f"Salary logged for {calendar.month_name[pay_date.month]}", icon=":material/work:")
-            st.rerun()
+            _fresh_sal = q.income(user_id)
+            if not _fresh_sal.empty and (
+                (_fresh_sal["date"].dt.date == pay_date) & (_fresh_sal["income_type"] == "Salary")
+            ).any():
+                st.toast("Salary already logged this month.", icon=":material/check:")
+                st.rerun()
+            try:
+                add_income(user_id, {
+                    "date": pay_date, "source": "Salary", "income_type": "Salary",
+                    "hours": None, "rate": None,
+                    "budgeted": salary_amount, "actual": salary_amount,
+                    "currency": salary_currency, "budgeted_eur": ae, "actual_eur": ae,
+                    "notes": "Fixed salary",
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.toast(f"Salary logged for {calendar.month_name[pay_date.month]}", icon=":material/work:")
+                st.rerun()
 
 # ── Entry form ────────────────────────────────────────────────────────────────
 oc1, oc2 = st.columns([1, 1.5])
@@ -163,22 +177,32 @@ if saved:
 
     be = to_eur(budgeted_val, cur, rates)
     ae = to_eur(actual_val,   cur, rates)
-    add_income(user_id, {
-        "date": inc_date, "source": inc_type, "income_type": inc_type,
-        "hours": hours_val, "rate": rate_val,
-        "budgeted": budgeted_val, "actual": actual_val,
-        "currency": cur, "budgeted_eur": be, "actual_eur": ae, "notes": notes,
-    })
-
-    if inc_type == "Salary" and raise_cb:
-        q.save_settings(user_id, {
-            "salary_amount": actual_val, "salary_currency": cur,
-            "salary_active": True,
+    _fresh_inc = q.income(user_id)
+    if not _fresh_inc.empty and (
+        (_fresh_inc["date"].dt.date == inc_date)
+        & (_fresh_inc["income_type"] == inc_type)
+        & (_fresh_inc["actual_eur"].round(2) == round(ae, 2))
+    ).any():
+        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+        st.rerun()
+    try:
+        add_income(user_id, {
+            "date": inc_date, "source": inc_type, "income_type": inc_type,
+            "hours": hours_val, "rate": rate_val,
+            "budgeted": budgeted_val, "actual": actual_val,
+            "currency": cur, "budgeted_eur": be, "actual_eur": ae, "notes": notes,
         })
-        st.toast("Raise recorded — fixed salary updated!", icon=":material/trending_up:")
-
-    q.bump_db_version()
-    st.success(f"{inc_type} — {fmt_dual(actual_val, cur, ae)}", icon=":material/check:")
+        if inc_type == "Salary" and raise_cb:
+            q.save_settings(user_id, {
+                "salary_amount": actual_val, "salary_currency": cur,
+                "salary_active": True,
+            })
+            st.toast("Raise recorded — fixed salary updated!", icon=":material/trending_up:")
+    except Exception as e:
+        st.error(f"Couldn't save: {e}")
+    else:
+        q.bump_db_version()
+        st.success(f"{inc_type} — {fmt_dual(actual_val, cur, ae)}", icon=":material/check:")
 
 # ── Edit income entry ─────────────────────────────────────────────────────────
 @st.dialog("Edit income entry")
@@ -220,12 +244,16 @@ def edit_income_dialog(uid: int, row):
         if st.button("Save", type="primary", key=f"inc_edit_save_{row['id']}", width="stretch"):
             ae = to_eur(float(e_actual), e_cur, rates)
             be = to_eur(float(e_budgeted), e_cur, rates)
-            update_income(uid, str(row["id"]), {
-                "date": e_date, "source": e_source, "income_type": e_type,
-                "actual": float(e_actual), "budgeted": float(e_budgeted),
-                "currency": e_cur, "actual_eur": ae, "budgeted_eur": be,
-                "notes": e_notes,
-            })
+            try:
+                update_income(uid, str(row["id"]), {
+                    "date": e_date, "source": e_source, "income_type": e_type,
+                    "actual": float(e_actual), "budgeted": float(e_budgeted),
+                    "currency": e_cur, "actual_eur": ae, "budgeted_eur": be,
+                    "notes": e_notes,
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.toast("Income entry updated.", icon=":material/edit:")
             st.rerun()
@@ -257,10 +285,14 @@ if not dfi.empty:
                                format_func=lambda i: del_labels[i], key="inc_del_sel")
         if st.button("Move to trash", type="secondary", key="inc_del_btn", width="stretch",
                      icon=":material/delete:"):
-            soft_delete_income(user_id, del_ids[sel_idx])
-            q.bump_db_version()
-            st.toast("Income entry moved to trash.", icon=":material/delete:")
-            st.rerun()
+            try:
+                soft_delete_income(user_id, del_ids[sel_idx])
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.toast("Income entry moved to trash.", icon=":material/delete:")
+                st.rerun()
 
     with st.expander("Edit an income entry", icon=":material/edit:"):
         edit_ids = dfi["id"].tolist()
@@ -282,10 +314,14 @@ if not dfi.empty:
                 with rc3:
                     if st.button("Restore", key=f"rst_inc_{row['id']}", width="stretch",
                                  icon=":material/undo:"):
-                        restore_income(user_id, row["id"])
-                        q.bump_db_version()
-                        st.toast("Income entry restored!", icon=":material/undo:")
-                        st.rerun()
+                        try:
+                            restore_income(user_id, row["id"])
+                        except Exception as e:
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.toast("Income entry restored!", icon=":material/undo:")
+                            st.rerun()
 
     with st.expander("Export", icon=":material/download:"):
         st.download_button("Download income.xlsx", data=to_excel(dfi),

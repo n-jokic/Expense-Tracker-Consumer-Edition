@@ -446,21 +446,30 @@ def _queue_fun_bonus(user_id: int, bonus: float, settings: dict) -> None:
     nxt_m = today.month + 1 if today.month < 12 else 1
     nxt_y = today.year if today.month < 12 else today.year + 1
     nxt_key = f"{nxt_y:04d}-{nxt_m:02d}"
-    fresh = _db_get_settings(user_id) or {}
-    bonuses = dict(fresh.get("fun_bonuses") or {})
-    legacy_month = fresh.get("fun_bonus_month")
-    legacy_amt = float(fresh.get("fun_bonus_amount") or 0.0)
-    if legacy_amt != legacy_amt:  # NaN must not enter the map
-        legacy_amt = 0.0
-    if legacy_month and legacy_amt > 0 and legacy_month not in bonuses:
-        bonuses[legacy_month] = round(legacy_amt, 4)
-    bonuses[nxt_key] = round(bonuses.get(nxt_key, 0.0) + bonus, 4)
-    q.save_settings(user_id, {
-        "fun_bonuses": bonuses,
-        # Legacy single-value view (older code paths / readers).
-        "fun_bonus_amount": bonuses[nxt_key],
-        "fun_bonus_month": nxt_key,
-    })
+    from db import atomic_update_setting_json as _atomic_json
+    # Atomically merge into fun_bonuses so concurrent milestone awards don't
+    # drop a bonus. The legacy single-value columns are updated afterwards.
+    def _upd_bonuses(cur: dict) -> dict:
+        # Seed legacy single-pair if still relevant.
+        fresh_for_legacy = _db_get_settings(user_id) or {}
+        lm = fresh_for_legacy.get("fun_bonus_month")
+        la = float(fresh_for_legacy.get("fun_bonus_amount") or 0.0)
+        if la != la:
+            la = 0.0
+        if lm and la > 0 and lm not in cur:
+            cur[lm] = round(la, 4)
+        cur[nxt_key] = round(cur.get(nxt_key, 0.0) + bonus, 4)
+        return cur
+
+    bonuses = _atomic_json(user_id, "fun_bonuses", _upd_bonuses)
+    # Keep legacy columns in sync (best-effort, not racy for readers).
+    try:
+        q.save_settings(user_id, {
+            "fun_bonus_amount": bonuses.get(nxt_key, 0.0),
+            "fun_bonus_month": nxt_key,
+        })
+    except Exception:
+        pass
 
 
 def award_new_milestones(user_id: int, earned: list[dict], settings: dict):
@@ -600,9 +609,10 @@ def render_gamification_sidebar(expenses_df: pd.DataFrame, income_df: pd.DataFra
 
     # Badge grid
     if earned:
+        import html as _html
         st.markdown("**🏅 Badges earned:**")
         badge_html = " ".join(
-            f'<span class="badge" title="{m["desc"]}">{m["icon"]} {m["title"]}</span>'
+            f'<span class="badge" title="{_html.escape(m["desc"], quote=True)}">{_html.escape(m["icon"])} {_html.escape(m["title"])}</span>'
             for m in earned
         )
         st.markdown(badge_html, unsafe_allow_html=True)

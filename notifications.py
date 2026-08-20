@@ -201,17 +201,18 @@ def _persist_marker(user_id: int, kind: str, month_key: str,
                     item_key: str) -> dict:
     """Record that an alert was sent (survives session loss / restarts).
 
-    Always merges into the LATEST markers read fresh from the DB — never the
-    caller's possibly-stale settings snapshot — so multiple checkers running
-    in the same page load can't clobber each other's markers.
+    Uses an atomic JSON merge so concurrent delivery callbacks cannot clobber
+    each other's markers.
     """
-    fresh = _db_get_settings(user_id) or {}
-    markers = dict(fresh.get("sent_markers") or {})
-    items = set(markers.get(kind + "_" + month_key, []))
-    items.add(str(item_key))
-    markers[kind + "_" + month_key] = sorted(items)
-    _db_save_settings(user_id, {"sent_markers": markers})
-    return markers
+    from db import atomic_update_setting_json
+
+    def _upd(cur: dict) -> dict:
+        items = set(cur.get(kind + "_" + month_key, []))
+        items.add(str(item_key))
+        cur[kind + "_" + month_key] = sorted(items)
+        return cur
+
+    return atomic_update_setting_json(user_id, "sent_markers", _upd)
 
 
 def _marker_on_delivery(user_id: int, kind: str, month_key: str, item_key: str):
@@ -311,19 +312,27 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
         act_val = float(ca.get(cat, 0))
         if bud_val <= 0:
             continue
-        if act_val >= bud_val * NEAR_LIMIT_THRESHOLD and cat not in alerted:
-            alerted.add(cat)
+        over = act_val > bud_val
+        level = "exceeded" if over else "near"
+        key = f"{cat}:{level}"
+        already = key in alerted or (level == "near" and cat in alerted)
+        if act_val >= bud_val * NEAR_LIMIT_THRESHOLD and not already:
+            alerted.add(key)
             st.session_state[alerted_key] = alerted
-            over = act_val > bud_val
             icon = "🔴" if over else "🟡"
             msg  = (f"{icon} **{cat}** budget {'exceeded' if over else 'nearly full'}: "
                     f"{fmt(act_val, DC, rates)} of {fmt(bud_val, DC, rates)}")
             st.toast(msg, icon="⚠️")
 
             # Send email if configured (background thread — never blocks the UI).
-            # The "sent" marker is persisted only after confirmed delivery.
+            # Dedup marker is persisted immediately (prevents re-send every session
+            # when SMTP is down); delivery confirmation is best-effort.
             if (settings.get("email_alerts") and settings.get("alert_email") and
                     settings.get("smtp_host") and settings.get("smtp_user")):
+                try:
+                    _persist_marker(user_id, "budget", month_key, cat)
+                except Exception:
+                    pass
                 html = build_budget_alert_email(
                     st.session_state.get("display_name", ""),
                     cat, act_val, bud_val, rates.get("RSD", 117.0)
@@ -538,7 +547,10 @@ def check_and_send_weekly_summary(user_id: int, expenses_df: pd.DataFrame,
 
     def _on_delivered(ok: bool, err: str):
         if ok:
-            _db_save_settings(user_id, {"weekly_summary_last_sent": today})
+            try:
+                _db_save_settings(user_id, {"weekly_summary_last_sent": today})
+            except Exception:
+                pass
         else:
             log.warning("weekly summary not delivered: %s — will retry", err)
 

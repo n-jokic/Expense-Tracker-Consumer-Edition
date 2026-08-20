@@ -113,16 +113,35 @@ if personal_view:
             with col:
                 if st.button(f"{label} · {fmt(amt, DC, rates)}",
                              key=f"qa_{desc.lower()}", width="stretch"):
-                    add_expense(user_id, {
-                        "date": today, "category": cat, "subcategory": sub,
-                        "description": desc, "amount": amt, "currency": "EUR",
-                        "amount_eur": amt, "recurring": False,
-                        "notes": "Quick-add",
-                    })
-                    q.bump_db_version()
-                    st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
-                             icon=":material/check:")
-                    st.rerun()
+                    _qa_key = f"qa_{desc}_{today.isoformat()}"
+                    if st.session_state.get(_qa_key):
+                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                        st.rerun()
+                    _fresh_qa = q.expenses(user_id)
+                    if not _fresh_qa.empty and (
+                        (_fresh_qa["date"].dt.date == today)
+                        & (_fresh_qa["description"] == desc)
+                        & (_fresh_qa["amount_eur"].round(2) == round(amt, 2))
+                    ).any():
+                        st.session_state[_qa_key] = True
+                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                        st.rerun()
+                    st.session_state[_qa_key] = True
+                    try:
+                        add_expense(user_id, {
+                            "date": today, "category": cat, "subcategory": sub,
+                            "description": desc, "amount": amt, "currency": "EUR",
+                            "amount_eur": amt, "recurring": False,
+                            "notes": "Quick-add",
+                        })
+                    except Exception as e:
+                        st.session_state.pop(_qa_key, None)
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
+                                 icon=":material/check:")
+                        st.rerun()
 
     # Recent activity: the 5 most recent expenses.
     with st.container(border=True):

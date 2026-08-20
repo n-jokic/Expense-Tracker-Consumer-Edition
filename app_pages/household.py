@@ -32,11 +32,15 @@ def _confirm_leave_household():
     st.write("Are you sure you want to leave this household?")
     if st.button("Leave household", type="primary", icon=":material/logout:",
                  width="stretch"):
-        # Bump BEFORE leaving: bump_data_revision(include_household=True)
-        # invalidates every member's cached household readers, and that only
-        # reaches the other members while this user is still in the household.
-        q.bump_db_version()
-        leave_household(user_id)
+        try:
+            # Bump BEFORE leaving: bump_data_revision(include_household=True)
+            # invalidates every member's cached household readers, and that only
+            # reaches the other members while this user is still in the household.
+            q.bump_db_version()
+            leave_household(user_id)
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         st.session_state.household_id = None
         st.toast("You left the household.", icon=":material/waving_hand:")
         st.rerun()
@@ -50,30 +54,42 @@ if not hh_id:
             hh_name = st.text_input("Household name", placeholder="e.g. The Smiths")
             if st.form_submit_button("Create household", type="primary"):
                 if hh_name.strip():
-                    new_hh_id, code = create_household(user_id, hh_name.strip())
-                    st.session_state.household_id = new_hh_id
-                    q.bump_db_version()
-                    st.success("Household created!", icon=":material/check_circle:")
-                    st.code(code)
-                    st.caption("Share this code with your partner.")
-                    st.rerun()
+                    if st.session_state.get("household_id"):
+                        st.toast("Already in a household — duplicate prevented.", icon=":material/check:")
+                        st.rerun()
+                    try:
+                        new_hh_id, code = create_household(user_id, hh_name.strip())
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        st.session_state.household_id = new_hh_id
+                        q.bump_db_version()
+                        st.success("Household created!", icon=":material/check_circle:")
+                        st.code(code)
+                        st.caption("Share this code with your partner.")
+                        st.rerun()
                 else:
                     safe_error("Please enter a household name.")
     with tab_join:
         with st.form("hh_join"):
             code_in = st.text_input("Invite code", placeholder="e.g. AB12CD34")
             if st.form_submit_button("Join household", type="primary"):
-                if join_household(user_id, code_in):
-                    # Refresh session state immediately (previously needed a re-login)
-                    u = get_user_by_username(st.session_state.username)
-                    st.session_state.household_id = u["household_id"] if u else None
-                    # The joiner is now a member: bump so the OTHER members'
-                    # cached member lists / combined views refresh too.
-                    q.bump_db_version()
-                    st.success("Joined household!", icon=":material/check_circle:")
-                    st.rerun()
+                try:
+                    _joined = join_household(user_id, code_in)
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
                 else:
-                    safe_error("Invalid invite code. Please check and try again.")
+                    if _joined:
+                        # Refresh session state immediately (previously needed a re-login)
+                        u = get_user_by_username(st.session_state.username)
+                        st.session_state.household_id = u["household_id"] if u else None
+                        # The joiner is now a member: bump so the OTHER members'
+                        # cached member lists / combined views refresh too.
+                        q.bump_db_version()
+                        st.success("Joined household!", icon=":material/check_circle:")
+                        st.rerun()
+                    else:
+                        safe_error("Invalid invite code. Please check and try again.")
 else:
     members = q.household_members(hh_id)
     st.subheader(f"{len(members)} {'member' if len(members) == 1 else 'members'}")
@@ -90,12 +106,16 @@ else:
         if st.button("Regenerate invite code", icon=":material/refresh:",
                      key="hh_regen_code"):
             from db import regenerate_invite_code
-            new_code = regenerate_invite_code(user_id)
-            if new_code:
-                q.bump_db_version()
-                st.toast("Invite code rotated — the old one no longer works.",
-                         icon=":material/refresh:")
-                st.rerun()
+            try:
+                new_code = regenerate_invite_code(user_id)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                if new_code:
+                    q.bump_db_version()
+                    st.toast("Invite code rotated — the old one no longer works.",
+                             icon=":material/refresh:")
+                    st.rerun()
 
     if st.button("Leave household", type="secondary", icon=":material/logout:"):
         _confirm_leave_household()

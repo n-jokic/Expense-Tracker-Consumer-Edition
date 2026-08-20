@@ -61,12 +61,16 @@ with st.expander("Travel budget settings", icon=":material/settings:"):
                                 all_pairs,
                                 default=[p for p in current_display if p in all_pairs])
         if st.form_submit_button("Save", type="primary", width="stretch", icon=":material/save:"):
-            q.save_settings(user_id, {
-                "travel_budget": float(t_amt),
-                "travel_categories": [p.replace(" › (all)", " › ") for p in t_cats],
-            })
-            st.session_state["travel_flash"] = "Travel budget saved."
-            st.rerun()
+            try:
+                q.save_settings(user_id, {
+                    "travel_budget": float(t_amt),
+                    "travel_categories": [p.replace(" › (all)", " › ") for p in t_cats],
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                st.session_state["travel_flash"] = "Travel budget saved."
+                st.rerun()
 
 budget = float(settings.get("travel_budget") or 0.0)
 pairs  = settings.get("travel_categories") or DEFAULT_TRAVEL_CATEGORIES

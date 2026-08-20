@@ -272,8 +272,15 @@ def portfolio_metrics(holdings: list) -> dict:
     for h in holdings:
         qty = float(h.get("quantity") or 0.0)
         price_eur = float(h.get("last_price_eur") or 0.0)
+        cost = float(h.get("cost_eur") or 0.0)
+        if not math.isfinite(qty):
+            qty = 0.0
+        if not math.isfinite(price_eur):
+            price_eur = 0.0
+        if not math.isfinite(cost):
+            cost = 0.0
         value += qty * price_eur
-        invested += float(h.get("cost_eur") or 0.0)
+        invested += cost
         if price_eur > 0:
             live_count += 1
     gain = value - invested

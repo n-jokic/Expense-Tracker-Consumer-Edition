@@ -915,6 +915,20 @@ def bump_data_revision(user_id: int, include_household: bool = True) -> int:
                 ids = [m.id for m in s.query(User)
                        .filter(User.household_id == u.household_id).all()]
     engine = get_engine()
+    # Try RETURNING path first — single statement both bumps and returns.
+    try:
+        with engine.begin() as conn:
+            params = {f"id{i}": v for i, v in enumerate(ids)}
+            placeholders = ", ".join(f":id{i}" for i in range(len(ids)))
+            result = conn.execute(text(
+                "UPDATE users SET data_revision = COALESCE(data_revision, 0) + 1"
+                f" WHERE id IN ({placeholders}) RETURNING data_revision"), params)
+            row = result.fetchone()
+            if row is not None:
+                return int(row[0])
+    except Exception:
+        pass
+    # Fallback: plain UPDATE then read back via separate connection.
     with engine.begin() as conn:
         params = {f"id{i}": v for i, v in enumerate(ids)}
         placeholders = ", ".join(f":id{i}" for i in range(len(ids)))
@@ -1480,14 +1494,29 @@ def add_budget(user_id, row):
             log_audit(s, user_id, "UPDATE", "budgets", obj.id, row)
             s.flush()
             return obj.id
-        obj = Budget(
-            user_id=user_id, year=year, month=month,
-            category=category, subcategory=subcategory,
-            budgeted_eur=value
-        )
-        s.add(obj)
-        log_audit(s, user_id, "CREATE", "budgets", "new", row)
-        s.flush()
+        try:
+            obj = Budget(
+                user_id=user_id, year=year, month=month,
+                category=category, subcategory=subcategory,
+                budgeted_eur=value
+            )
+            s.add(obj)
+            log_audit(s, user_id, "CREATE", "budgets", "new", row)
+            s.flush()
+        except Exception:
+            s.rollback()
+            # Race: another writer inserted same scope — update it instead.
+            obj = (s.query(Budget)
+                   .filter(Budget.user_id == user_id, Budget.year == year,
+                           Budget.month == month, Budget.category == category,
+                           Budget.subcategory == subcategory)
+                   .first())
+            if obj:
+                obj.budgeted_eur = value
+                log_audit(s, user_id, "UPDATE", "budgets", obj.id, row)
+                s.flush()
+                return obj.id
+            raise
         return obj.id
 
 
@@ -1766,8 +1795,17 @@ def add_holding_price(holding_id, price, when=None, quantity=None, rate=None):
     value_eur = quantity * price / rate (price is in the holding's currency).
     """
     when = when or date.today()
+    import math as _math
     qty = float(quantity) if quantity is not None else None
     rt = float(rate) if rate is not None else None
+    if qty is not None and not _math.isfinite(qty):
+        raise ValueError("quantity must be finite")
+    if rt is not None and not _math.isfinite(rt):
+        raise ValueError("rate must be finite")
+    if price is not None and not _math.isfinite(float(price)):
+        raise ValueError("price must be finite")
+    if rt == 0:
+        raise ValueError("rate must be non-zero")
     value = round(qty * float(price) / rt, 4) if (qty is not None and rt) else None
     with get_session() as s:
         existing = (s.query(HoldingPrice)
@@ -1789,8 +1827,9 @@ def add_holding_price(holding_id, price, when=None, quantity=None, rate=None):
         # Price snapshots are data too: audit them (background refreshes
         # would otherwise leave an invisible write trail).
         owner = s.query(Holding).filter(Holding.id == holding_id).first()
-        log_audit(s, owner.user_id if owner else 0, "UPDATE", "holding_prices",
-                  holding_id, {"price": float(price), "date": str(when)})
+        if owner is not None:
+            log_audit(s, owner.user_id, "UPDATE", "holding_prices",
+                      holding_id, {"price": float(price), "date": str(when)})
     return True
 
 
@@ -1822,6 +1861,42 @@ def get_settings(user_id):
         if not obj:
             return dict(_SETTINGS_DEFAULTS)
         return {k: getattr(obj, k, v) for k, v in _SETTINGS_DEFAULTS.items()}
+
+
+def atomic_update_setting_json(user_id: int, column: str, updater) -> dict:
+    """Atomically read-modify-write a JSON column in user_settings.
+
+    updater: callable(dict) -> dict ; receives current value (dict) and returns new value.
+    Runs in a single engine.begin() transaction so concurrent writers serialize
+    via SQLite's busy_timeout/WAL.
+    """
+    import json as _json
+    from sqlalchemy import text as _text
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            _text(f"SELECT {column} FROM user_settings WHERE user_id=:uid"),
+            {"uid": int(user_id)}).fetchone()
+        cur: dict = {}
+        if row and row[0] is not None:
+            raw = row[0]
+            if isinstance(raw, str):
+                try:
+                    cur = _json.loads(raw) if raw else {}
+                except Exception:
+                    cur = {}
+            elif isinstance(raw, dict):
+                cur = dict(raw)
+            else:
+                try:
+                    cur = dict(raw)
+                except Exception:
+                    cur = {}
+        new_val = updater(dict(cur))
+        conn.execute(
+            _text(f"UPDATE user_settings SET {column}=:val WHERE user_id=:uid"),
+            {"val": _json.dumps(new_val), "uid": int(user_id)})
+        return new_val
 
 
 def save_settings(user_id, settings_dict):
@@ -1876,8 +1951,15 @@ def create_household(user_id, name):
             # All retries collided (astronomically unlikely) — widen the space.
             code = _random_invite_code(8)
         hh = Household(name=name, invite_code=code)
-        s.add(hh)
-        s.flush()
+        try:
+            s.add(hh)
+            s.flush()
+        except Exception:
+            s.rollback()
+            code = _random_invite_code(8)
+            hh = Household(name=name, invite_code=code)
+            s.add(hh)
+            s.flush()
         user = s.query(User).filter(User.id == user_id).first()
         if user:
             user.household_id = hh.id
@@ -1903,6 +1985,14 @@ def regenerate_invite_code(user_id):
         else:
             code = _random_invite_code(8)
         hh.invite_code = code
+        try:
+            s.flush()
+        except Exception:
+            s.rollback()
+            hh = s.query(Household).filter(Household.id == u.household_id).first()
+            hh.invite_code = _random_invite_code(8)
+            s.flush()
+            code = hh.invite_code
         log_audit(s, user_id, "UPDATE", "households", hh.id,
                   {"invite_code_rotated": True})
         return code
@@ -2198,8 +2288,15 @@ def create_pairing_device(user_id):
             # All retries collided (astronomically unlikely) — widen the space.
             code = _random_invite_code(8)
         dev = Device(user_id=user_id, pairing_code=code)
-        s.add(dev)
-        s.flush()
+        try:
+            s.add(dev)
+            s.flush()
+        except Exception:
+            s.rollback()
+            code = _random_invite_code(8)
+            dev = Device(user_id=user_id, pairing_code=code)
+            s.add(dev)
+            s.flush()
         dev_id = dev.id
         log_audit(s, user_id, "CREATE", "devices", dev_id,
                   {"pairing_code_created": True})
@@ -2215,7 +2312,7 @@ def complete_pairing(code, device_name="Phone", token=None):
     """
     import hashlib
     code = (code or "").strip().upper()
-    token = token or uuid.uuid4().hex
+    token = token or __import__("secrets").token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     with get_session() as s:

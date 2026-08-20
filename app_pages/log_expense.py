@@ -92,12 +92,24 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                 if not (r_desc.strip() and float(r_amt) > 0):
                     safe_error("Please add a description and an amount before saving.")
                 else:
+                    _fresh_rcpt = q.expenses(user_id)
+                    dup_rcpt = False
+                    if not _fresh_rcpt.empty:
+                        dup_rcpt = (
+                            (_fresh_rcpt["date"].dt.date == r_date)
+                            & (_fresh_rcpt["description"] == r_desc.strip())
+                            & (_fresh_rcpt["amount_eur"].round(2) == round(to_eur(float(r_amt), DC, rates), 2))
+                        ).any()
+                    if dup_rcpt:
+                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                        st.rerun()
                     ae = to_eur(float(r_amt), DC, rates)
                     suggested_cat = result.get("category")
                     conf = float(result.get("confidence") or 0.0)
                     final_sub = r_sub if r_sub != "—" else ""
                     suggested_sub = result.get("subcategory") or ""
-                    add_expense(user_id, {
+                    try:
+                        add_expense(user_id, {
                         "date": r_date,
                         "category": r_cat,
                         "subcategory": final_sub,
@@ -114,12 +126,15 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                         "suggest_subcategory_confidence": result.get("subcategory_confidence"),
                         "suggest_subcategory_source": result.get("subcategory_source"),
                         "suggest_subcategory_accepted": (final_sub == suggested_sub) if suggested_sub else None,
-                    })
-                    q.bump_db_version()
-                    st.success(f"**{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}",
-                               icon=":material/check:")
-                    st.balloons()
-                    st.rerun()
+                        })
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.success(f"**{r_desc}** — {fmt_dual(float(r_amt), DC, ae)}",
+                                   icon=":material/check:")
+                        st.balloons()
+                        st.rerun()
             if r_rej:
                 st.toast("Receipt discarded — nothing was saved.", icon=":material/delete:")
                 st.rerun()
@@ -152,27 +167,46 @@ if saved:
     elif amount <= 0:
         safe_error("Amount must be greater than 0.")
     else:
+        _fresh_dup = q.expenses(user_id)
+        if not _fresh_dup.empty and (
+            (_fresh_dup["date"].dt.date == exp_date)
+            & (_fresh_dup["description"] == desc)
+            & (_fresh_dup["amount_eur"].round(2) == round(to_eur(amount, cur, rates), 2))
+        ).any():
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            st.rerun()
         ae = to_eur(amount, cur, rates)
         rec_id = None
-        if is_rec:
-            rec_id = add_recurring(user_id, {
-                "category": cat,
+        try:
+            if is_rec:
+                rec_id = add_recurring(user_id, {
+                    "category": cat,
+                    "subcategory": subcat if subcat != "—" else "",
+                    "description": desc, "amount": amount,
+                    "currency": cur, "amount_eur": ae,
+                    "notes": notes, "active": True,
+                })
+            add_expense(user_id, {
+                "date": exp_date, "category": cat,
                 "subcategory": subcat if subcat != "—" else "",
                 "description": desc, "amount": amount,
                 "currency": cur, "amount_eur": ae,
-                "notes": notes, "active": True,
+                "recurring": is_rec, "rec_template_id": rec_id,
+                "notes": notes,
             })
-        add_expense(user_id, {
-            "date": exp_date, "category": cat,
-            "subcategory": subcat if subcat != "—" else "",
-            "description": desc, "amount": amount,
-            "currency": cur, "amount_eur": ae,
-            "recurring": is_rec, "rec_template_id": rec_id,
-            "notes": notes,
-        })
-        q.bump_db_version()
-        st.success(f"**{desc}** — {fmt_dual(amount, cur, ae)}", icon=":material/check:")
-        st.balloons()
+        except Exception as e:
+            # If the recurring template was created but the expense save failed,
+            # recycle the orphan template (mark it inactive) so it is not left active.
+            if rec_id:
+                try:
+                    update_recurring(user_id, rec_id, {"active": False})
+                except Exception:
+                    pass
+            st.error(f"Couldn't save: {e}")
+        else:
+            q.bump_db_version()
+            st.success(f"**{desc}** — {fmt_dual(amount, cur, ae)}", icon=":material/check:")
+            st.balloons()
 
 # ── Expense history ───────────────────────────────────────────────────────────
 st.subheader("Expense history")
@@ -279,6 +313,7 @@ if not df_exp.empty:
     if save_changes:
         changed = 0
         rejected = 0
+        save_error = None
         for _, row in edited.iterrows():
             rid  = str(row["id"])
             orig = df_exp[df_exp["id"] == rid]
@@ -302,9 +337,15 @@ if not df_exp.empty:
                 amt = float(upd.get("amount", orig["amount"]))
                 cur2 = str(upd.get("currency", orig["currency"]))
                 upd["amount_eur"] = to_eur(amt, cur2, rates)
-            update_expense(user_id, rid, upd)
+            try:
+                update_expense(user_id, rid, upd)
+            except Exception as e:
+                save_error = str(e)
+                break
             changed += 1
-        if changed:
+        if save_error:
+            st.error(f"Couldn't save: {save_error}")
+        elif changed:
             q.bump_db_version()
             st.toast(f"{changed} row(s) updated", icon=":material/check:")
             st.rerun()
@@ -315,11 +356,18 @@ if not df_exp.empty:
 
     if trash_selected:
         removed = 0
+        trash_error = None
         for _, row in edited.iterrows():
             if bool(row["trash"]):
-                soft_delete_expense(user_id, str(row["id"]))
+                try:
+                    soft_delete_expense(user_id, str(row["id"]))
+                except Exception as e:
+                    trash_error = str(e)
+                    break
                 removed += 1
-        if removed:
+        if trash_error:
+            st.error(f"Couldn't save: {trash_error}")
+        elif removed:
             q.bump_db_version()
             st.toast(f"{removed} row(s) moved to trash — you can restore them below.", icon=":material/delete:")
             st.rerun()
@@ -338,10 +386,14 @@ if not df_exp.empty:
                 with rc3:
                     if st.button("Restore", key=f"rst_{row['id']}", width="stretch",
                                  icon=":material/undo:"):
-                        restore_expense(user_id, row["id"])
-                        q.bump_db_version()
-                        st.toast("Expense restored!", icon=":material/undo:")
-                        st.rerun()
+                        try:
+                            restore_expense(user_id, row["id"])
+                        except Exception as e:
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.toast("Expense restored!", icon=":material/undo:")
+                            st.rerun()
 
     with st.expander("Export", icon=":material/download:"):
         st.download_button("Download expenses.xlsx", data=to_excel(df_exp),

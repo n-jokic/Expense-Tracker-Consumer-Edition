@@ -82,10 +82,14 @@ with st.form("fun_form"):
                                                  or DEFAULT_FUN_CATEGORIES)
                                      if c in CAT_LIST])
     if st.form_submit_button("Save fun money", type="primary", icon=":material/save:"):
-        q.save_settings(user_id, {"fun_money": float(to_eur(f_amt, DC, rates)),
-                                  "fun_categories": f_cats})
-        st.success("✅ Fun money saved!")
-        st.rerun()
+        try:
+            q.save_settings(user_id, {"fun_money": float(to_eur(f_amt, DC, rates)),
+                                      "fun_categories": f_cats})
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            st.success("✅ Fun money saved!")
+            st.rerun()
 
 if bonuses_map:
     if month_key in bonuses_map:
@@ -139,6 +143,10 @@ def _render_milestones():
             if not cm_title.strip():
                 st.error("Please give the milestone a name.")
             else:
+                _fresh_ms = get_custom_milestones(user_id)
+                if not _fresh_ms.empty and (( _fresh_ms["title"] == cm_title.strip()).any()):
+                    st.toast("Already saved — duplicate milestone prevented.", icon=":material/check:")
+                    st.rerun()
                 try:
                     add_custom_milestone(user_id, {
                         "title": cm_title.strip(), "metric": cm_metric,
@@ -149,6 +157,8 @@ def _render_milestones():
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
 
     ms_rows = get_custom_milestones(user_id)
     if ms_rows.empty:
@@ -175,10 +185,14 @@ def _render_milestones():
         with c2:
             if st.button("Delete", key=f"cm_del_{row['id']}",
                          icon=":material/delete:", width="stretch"):
-                delete_custom_milestone(user_id, str(row["id"]))
-                q.bump_db_version()
-                st.toast("Milestone deleted.", icon=":material/delete:")
-                st.rerun()
+                try:
+                    delete_custom_milestone(user_id, str(row["id"]))
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    st.toast("Milestone deleted.", icon=":material/delete:")
+                    st.rerun()
 
 
 def _render_badges():

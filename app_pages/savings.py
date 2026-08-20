@@ -93,12 +93,24 @@ def deposit_dialog(uid: int, goal: str, tgt_eur: float, rate: float, gcur: str):
             st.error("Amount must be greater than 0.")
             return
         de = to_eur(float(amt), gcur, rates)
-        add_savings(uid, {
-            "date": d, "goal_name": goal, "target_eur": tgt_eur,
-            "deposited": float(amt), "currency": gcur,
-            "deposited_eur": de, "interest_rate": rate,
-            "balance_eur": 0.0, "notes": notes,
-        })
+        _fresh_dep = q.savings(uid)
+        if not _fresh_dep.empty and (
+            (_fresh_dep["date"].dt.date == d)
+            & (_fresh_dep["goal_name"] == goal)
+            & (_fresh_dep["deposited_eur"].round(2) == round(de, 2))
+        ).any():
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            st.rerun()
+        try:
+            add_savings(uid, {
+                "date": d, "goal_name": goal, "target_eur": tgt_eur,
+                "deposited": float(amt), "currency": gcur,
+                "deposited_eur": de, "interest_rate": rate,
+                "balance_eur": 0.0, "notes": notes,
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["sav_flash"] = (
             "success", f"**{fmt(de, DC, rates)}** added to **{goal}**")
@@ -126,12 +138,24 @@ def withdraw_dialog(uid: int, goal: str, bal_eur: float, tgt_eur: float,
             st.error("Amount must be greater than 0.")
             return
         de = to_eur(float(amt), gcur, rates)
-        add_savings(uid, {
-            "date": d, "goal_name": goal, "target_eur": tgt_eur,
-            "deposited": -float(amt), "currency": gcur,
-            "deposited_eur": -de, "interest_rate": rate,
-            "balance_eur": 0.0, "notes": notes or "Withdrawal",
-        })
+        _fresh_wd = q.savings(uid)
+        if not _fresh_wd.empty and (
+            (_fresh_wd["date"].dt.date == d)
+            & (_fresh_wd["goal_name"] == goal)
+            & (_fresh_wd["deposited_eur"].round(2) == round(-de, 2))
+        ).any():
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            st.rerun()
+        try:
+            add_savings(uid, {
+                "date": d, "goal_name": goal, "target_eur": tgt_eur,
+                "deposited": -float(amt), "currency": gcur,
+                "deposited_eur": -de, "interest_rate": rate,
+                "balance_eur": 0.0, "notes": notes or "Withdrawal",
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["sav_flash"] = (
             "success", f"**{fmt(de, DC, rates)}** withdrawn from **{goal}**")
@@ -168,14 +192,18 @@ def edit_goal_dialog(uid: int, goal: str):
             st.error("Please give the goal a name.")
             return
         tgt_eur = to_eur(float(e_tgt), DC, rates)
-        if new_name != goal:
-            if not rename_savings_goal(uid, goal, new_name):
-                st.error(f"A goal named **{new_name}** already exists — "
-                         "renaming would merge the two goals.")
-                return
-            goal = new_name
-        update_savings_goal(uid, goal, {"target_eur": tgt_eur,
-                                        "interest_rate": float(e_rate)})
+        try:
+            if new_name != goal:
+                if not rename_savings_goal(uid, goal, new_name):
+                    st.error(f"A goal named **{new_name}** already exists — "
+                             "renaming would merge the two goals.")
+                    return
+                goal = new_name
+            update_savings_goal(uid, goal, {"target_eur": tgt_eur,
+                                            "interest_rate": float(e_rate)})
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["sav_flash"] = ("toast", f"Goal **{goal}** updated.")
         st.rerun()
@@ -193,7 +221,11 @@ def delete_goal_dialog(uid: int, goal: str, n_entries: int, locked_eur: float):
             st.rerun()
     with c2:
         if st.button("Delete goal", key="dlg_goal_del_ok", type="primary", width="stretch"):
-            soft_delete_savings_goal(uid, goal)
+            try:
+                soft_delete_savings_goal(uid, goal)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.session_state["sav_flash"] = ("toast", f"Goal **{goal}** deleted.")
             st.rerun()
@@ -230,14 +262,18 @@ def withdraw_account_dialog(uid: int, row):
             st.session_state["sav_flash"] = ("toast", "This deposit was already withdrawn.")
             st.rerun()
         tgt, rate, _ = goal_attrs(goal_rows(dfs_all, str(row["goal_name"])))
-        add_savings(uid, {
-            "date": payout_date, "goal_name": str(row["goal_name"]),
-            "target_eur": tgt,
-            "deposited": to_display(val, gcur, rates), "currency": gcur,
-            "deposited_eur": val, "interest_rate": rate,
-            "balance_eur": 0.0, "notes": f"Withdrawal: {row['name']}",
-        })
-        update_savings_account(uid, str(row["id"]), {"status": "closed"})
+        try:
+            add_savings(uid, {
+                "date": payout_date, "goal_name": str(row["goal_name"]),
+                "target_eur": tgt,
+                "deposited": to_display(val, gcur, rates), "currency": gcur,
+                "deposited_eur": val, "interest_rate": rate,
+                "balance_eur": 0.0, "notes": f"Withdrawal: {row['name']}",
+            })
+            update_savings_account(uid, str(row["id"]), {"status": "closed"})
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["sav_flash"] = (
             "success", f"**{fmt(val, DC, rates)}** moved into **{row['goal_name']}**")
@@ -285,11 +321,15 @@ def edit_account_dialog(uid: int, row):
             st.error("Maturity date must be after the start date.")
             return
         ae = to_eur(float(e_amt), e_cur, rates)
-        update_savings_account(uid, str(row["id"]), {
-            "name": e_name.strip(), "amount": float(e_amt), "currency": e_cur,
-            "amount_eur": ae, "annual_rate": float(e_rate),
-            "start_date": e_start, "maturity_date": e_mat, "goal_name": e_goal,
-        })
+        try:
+            update_savings_account(uid, str(row["id"]), {
+                "name": e_name.strip(), "amount": float(e_amt), "currency": e_cur,
+                "amount_eur": ae, "annual_rate": float(e_rate),
+                "start_date": e_start, "maturity_date": e_mat, "goal_name": e_goal,
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["sav_flash"] = ("toast", "Term deposit updated.")
         st.rerun()
@@ -306,7 +346,11 @@ def delete_account_dialog(uid: int, acc_id: str, name: str):
     with c2:
         if st.button("Delete", key=f"dlg_acc_del_ok_{acc_id}", type="primary",
                      width="stretch"):
-            soft_delete_savings_account(uid, acc_id)
+            try:
+                soft_delete_savings_account(uid, acc_id)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.session_state["sav_flash"] = ("toast", "Term deposit deleted.")
             st.rerun()
@@ -354,13 +398,17 @@ def edit_savings_dialog(uid: int, row):
     with c2:
         if st.button("Save", type="primary", key=f"sav_edit_save_{row['id']}", width="stretch"):
             de = to_eur(float(e_dep), e_cur, rates)
-            update_savings(uid, str(row["id"]), {
-                "date": e_date, "deposited": float(e_dep),
-                "currency": e_cur, "deposited_eur": de,
-                "target_eur": to_eur(float(e_tgt), DC, rates),
-                "interest_rate": float(e_ir),
-                "notes": e_notes,
-            })
+            try:
+                update_savings(uid, str(row["id"]), {
+                    "date": e_date, "deposited": float(e_dep),
+                    "currency": e_cur, "deposited_eur": de,
+                    "target_eur": to_eur(float(e_tgt), DC, rates),
+                    "interest_rate": float(e_ir),
+                    "notes": e_notes,
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.toast("Savings entry updated.", icon="✏️")
             st.rerun()
@@ -420,25 +468,37 @@ if saved:
             te, use_rate, _ = goal_attrs(_rows)
             current_bal = float(_rows.iloc[-1]["balance_eur"]) if not _rows.empty else 0.0
         de = to_eur(float(dep), cur, rates)
+        _fresh_sav = q.savings(user_id)
+        if not _fresh_sav.empty and (
+            (_fresh_sav["date"].dt.date == sd)
+            & (_fresh_sav["goal_name"] == goal_name)
+            & (_fresh_sav["deposited_eur"].round(2) == round(de, 2))
+        ).any():
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            st.rerun()
         if de < 0 and abs(de) > current_bal + 1e-9:
             st.error(f"Withdrawal exceeds the goal balance "
                      f"({fmt(current_bal, DC, rates)}) — the balance cannot go negative.")
         else:
-            add_savings(user_id, {
-                "date": sd, "goal_name": goal_name, "target_eur": te,
-                "deposited": float(dep), "currency": cur,
-                "deposited_eur": de, "interest_rate": use_rate,
-                "balance_eur": 0.0, "notes": notes,
-            })
-            q.bump_db_version()
-            fresh = q.savings(user_id)
-            _nrows = goal_rows(fresh, goal_name)
-            nb = float(_nrows.iloc[-1]["balance_eur"]) if not _nrows.empty else de
-            action = "withdrawn from" if dep < 0 else "saved to"
-            st.success(f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
-                       f"balance: {fmt(nb, DC, rates)}")
-            dfs_all = fresh
-            goals = sorted(set(dfs_all["goal_name"].dropna()))
+            try:
+                add_savings(user_id, {
+                    "date": sd, "goal_name": goal_name, "target_eur": te,
+                    "deposited": float(dep), "currency": cur,
+                    "deposited_eur": de, "interest_rate": use_rate,
+                    "balance_eur": 0.0, "notes": notes,
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                fresh = q.savings(user_id)
+                _nrows = goal_rows(fresh, goal_name)
+                nb = float(_nrows.iloc[-1]["balance_eur"]) if not _nrows.empty else de
+                action = "withdrawn from" if dep < 0 else "saved to"
+                st.success(f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
+                           f"balance: {fmt(nb, DC, rates)}")
+                dfs_all = fresh
+                goals = sorted(set(dfs_all["goal_name"].dropna()))
 
 dfs = q.savings(user_id)
 accs = q.savings_accounts(user_id)
@@ -586,20 +646,32 @@ if not dfs.empty:
                     st.error("Maturity date must be after the start date.")
                 else:
                     ae = to_eur(float(a_amt), a_cur, rates)
-                    add_savings_account(user_id, {
-                        "goal_name": a_goal, "name": a_name.strip(),
-                        "amount": float(a_amt), "currency": a_cur, "amount_eur": ae,
-                        "annual_rate": float(a_rate), "start_date": a_start,
-                        "maturity_date": a_mat, "status": "active", "notes": a_notes,
-                    })
-                    q.bump_db_version()
-                    mat_val = maturity_value(ae, float(a_rate), a_start, a_mat)
-                    st.session_state["sav_flash"] = (
-                        "success",
-                        f"Term deposit **{a_name.strip()}** opened — "
-                        f"{fmt(ae, DC, rates)} → {fmt(mat_val, DC, rates)} at maturity",
-                    )
-                    st.rerun()
+                    _fresh_savacc = q.savings_accounts(user_id)
+                    if not _fresh_savacc.empty and (
+                        (_fresh_savacc["name"] == a_name.strip())
+                        & (_fresh_savacc["goal_name"] == a_goal)
+                        & (_fresh_savacc["amount_eur"].round(2) == round(ae, 2))
+                    ).any():
+                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                        st.rerun()
+                    try:
+                        add_savings_account(user_id, {
+                            "goal_name": a_goal, "name": a_name.strip(),
+                            "amount": float(a_amt), "currency": a_cur, "amount_eur": ae,
+                            "annual_rate": float(a_rate), "start_date": a_start,
+                            "maturity_date": a_mat, "status": "active", "notes": a_notes,
+                        })
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        mat_val = maturity_value(ae, float(a_rate), a_start, a_mat)
+                        st.session_state["sav_flash"] = (
+                            "success",
+                            f"Term deposit **{a_name.strip()}** opened — "
+                            f"{fmt(ae, DC, rates)} → {fmt(mat_val, DC, rates)} at maturity",
+                        )
+                        st.rerun()
 
     # Account cards render even when the user has no goal entries yet
     # (orphaned accounts stay manageable).
@@ -716,10 +788,14 @@ if not dfs.empty:
         with c2:
             if st.button("Move to trash", icon=":material/delete:",
                          key="sav_del_btn", width="stretch"):
-                soft_delete_savings(user_id, edit_ids[edit_idx])
-                q.bump_db_version()
-                st.toast("Savings entry moved to trash.", icon="🗑️")
-                st.rerun()
+                try:
+                    soft_delete_savings(user_id, edit_ids[edit_idx])
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    st.toast("Savings entry moved to trash.", icon="🗑️")
+                    st.rerun()
 
     df_deleted = q.savings(user_id, include_deleted=True)
     df_deleted = df_deleted[df_deleted["is_deleted"] == True]
@@ -734,20 +810,28 @@ if not dfs.empty:
                 with rc2: st.write(fmt(row["deposited_eur"], DC, rates))
                 with rc3:
                     if st.button("Restore", icon=":material/undo:", key=f"rst_sav_{row['id']}", width="stretch"):
-                        restore_savings(user_id, row["id"])
-                        q.bump_db_version()
-                        st.toast("Savings entry restored!", icon="↩️")
-                        st.rerun()
+                        try:
+                            restore_savings(user_id, row["id"])
+                        except Exception as e:
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.toast("Savings entry restored!", icon="↩️")
+                            st.rerun()
             for _, row in accs_deleted.iterrows():
                 rc1, rc2, rc3 = st.columns([3, 2, 1])
                 with rc1: st.write(f"🔒 {row['name']} — {row['goal_name']}")
                 with rc2: st.write(fmt(row["amount_eur"], DC, rates))
                 with rc3:
                     if st.button("Restore", icon=":material/undo:", key=f"rst_acc_{row['id']}", width="stretch"):
-                        restore_savings_account(user_id, row["id"])
-                        q.bump_db_version()
-                        st.toast("Term deposit restored!", icon="↩️")
-                        st.rerun()
+                        try:
+                            restore_savings_account(user_id, row["id"])
+                        except Exception as e:
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.toast("Term deposit restored!", icon="↩️")
+                            st.rerun()
 
     with st.expander("Export", icon=":material/download:"):
         st.download_button("Download savings.xlsx", icon=":material/download:", data=to_excel(dfs),

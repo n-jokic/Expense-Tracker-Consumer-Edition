@@ -111,18 +111,22 @@ def render_onboarding():
             elif amount <= 0:
                 st.error("Amount must be greater than 0.")
             else:
-                add_expense(user_id, {
-                    "date": exp_date, "category": cat, "subcategory": "",
-                    "description": desc, "amount": amount,
-                    "currency": "EUR", "amount_eur": amount,
-                    "recurring": False, "notes": "",
-                })
-                q.bump_db_version()
-            set_onboarding_complete(user_id)
-            st.session_state.onboarding_complete = True
-            st.success("🎉 You're all set! Welcome to your Expense Tracker.")
-            st.balloons()
-            st.rerun()
+                try:
+                    add_expense(user_id, {
+                        "date": exp_date, "category": cat, "subcategory": "",
+                        "description": desc, "amount": amount,
+                        "currency": "EUR", "amount_eur": amount,
+                        "recurring": False, "notes": "",
+                    })
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    set_onboarding_complete(user_id)
+                    st.session_state.onboarding_complete = True
+                    st.success("🎉 You're all set! Welcome to your Expense Tracker.")
+                    st.balloons()
+                    st.rerun()
 
         if skipped:
             set_onboarding_complete(user_id)

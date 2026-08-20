@@ -884,7 +884,7 @@ make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # UI pages (Budgets, Rewards & badges, Ask your data, …)
-tests/                  # 397 pytest regression/AppTest suites
+tests/                  # 397 pytest regression/AppTest suites (updated for reliability hardening)
 ```
 
 ## Running tests
@@ -949,4 +949,7 @@ integration, the optional local-Gemma/API assistant (weekly emails, Insights
 narrative, MCP Insights narrative, and the ask-your-data chat), dedicated Budgets and
 Rewards & badges pages, user-created custom milestones with fun-money rewards,
 category-grouped ordered commitments/wishlists, automatic income-based hourly
-rates, and loan early-repayment surcharge tracking.
+rates, loan early-repayment surcharge tracking, and reliability hardening
+(recurring dialogs, error boundaries on all DB sinks, multi-write atomicity,
+double-submit guards, atomic JSON settings merges, budget-scope correction,
+and NaN/FK guards).

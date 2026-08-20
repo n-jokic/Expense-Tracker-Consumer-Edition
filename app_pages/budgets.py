@@ -14,7 +14,8 @@ import streamlit as st
 import queries as q
 from db import add_budget, delete_budget
 from utils import (CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
-                   fmt, to_eur, to_display, get_currency_symbol)
+                   fmt, to_eur, to_display, get_currency_symbol,
+                   effective_category_budgets)
 
 user_id  = st.session_state.user_id
 DC       = st.session_state.dc
@@ -32,7 +33,11 @@ def budget_delete_dialog(uid: int, bid: int, category: str, subcategory: str):
         if st.button("Cancel", width="stretch"):
             st.rerun()
         if st.button("Delete row", type="primary", width="stretch"):
-            delete_budget(uid, bid)
+            try:
+                delete_budget(uid, bid)
+            except Exception as e:
+                st.error(f"Couldn't delete budget row: {e}")
+                return
             q.bump_db_version()
             st.toast("Budget row deleted.", icon=":material/delete:")
             st.rerun()
@@ -70,9 +75,13 @@ with st.form("overall_bud_form"):
     ob_eur = to_eur(ob_amt, DC, rates)
     st.caption(f"≈ {fmt(ob_eur, 'EUR', {'EUR': 1.0})} — stored as the EUR base value.")
     if st.form_submit_button("Save budget", type="primary", icon=":material/save:"):
-        q.save_settings(user_id, {"monthly_budget": round(ob_eur, 4)})
-        st.success(f"✅ Budget set to {fmt(ob_eur, DC, rates)}")
-        st.rerun()
+        try:
+            q.save_settings(user_id, {"monthly_budget": round(ob_eur, 4)})
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            st.success(f"✅ Budget set to {fmt(ob_eur, DC, rates)}")
+            st.rerun()
 
 # ── Category budgets ──────────────────────────────────────────────────────────
 st.subheader(":material/tune: Category budgets")
@@ -95,14 +104,18 @@ with st.form("cat_bud_form"):
                              max_value=MAX_SAVINGS_TARGET, step=10.0, format="%.2f")
     if st.form_submit_button("Save", type="primary", icon=":material/save:"):
         be = to_eur(ba, bcur, rates)
-        add_budget(user_id, {
-            "year": int(by), "month": int(bm), "category": bcat,
-            "subcategory": bsub if bsub != "(entire category)" else "",
-            "budgeted_eur": be,
-        })
-        q.bump_db_version()
-        st.success("✅ Budget saved")
-        st.rerun()
+        try:
+            add_budget(user_id, {
+                "year": int(by), "month": int(bm), "category": bcat,
+                "subcategory": bsub if bsub != "(entire category)" else "",
+                "budgeted_eur": be,
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            q.bump_db_version()
+            st.success("✅ Budget saved")
+            st.rerun()
 
 dfb = q.budgets(user_id)
 
@@ -113,7 +126,13 @@ if not dfb.empty:
         st.subheader(":material/insights: This month's category progress")
         exp = dfe[(dfe["date"].dt.year == _today.year)
                   & (dfe["date"].dt.month == _today.month)] if not dfe.empty else dfe
+        eff_budgets = effective_category_budgets(cur_rows)
+        cats_with_sub = set(cur_rows[cur_rows["subcategory"].fillna("").astype(str).str.strip() != ""]
+                            ["category"].unique())
         for _, r in cur_rows.iterrows():
+            if str(r["subcategory"]) == "" and r["category"] in cats_with_sub:
+                continue  # subcategory rows are authoritative for this category
+            b = float(eff_budgets.get(r["category"], r["budgeted_eur"]))
             if str(r["subcategory"]) == "":
                 spent = float(exp[exp["category"] == r["category"]]["amount_eur"].sum()) \
                     if not exp.empty else 0.0
@@ -123,7 +142,6 @@ if not dfb.empty:
                                   & (exp["subcategory"] == r["subcategory"])]
                               ["amount_eur"].sum()) if not exp.empty else 0.0
                 lbl = f"{r['category']} › {r['subcategory']}"
-            b = float(r["budgeted_eur"])
             if b > 0:
                 pct = min(spent / b, 1.0)
                 st.markdown(f"**{lbl}** — {fmt(spent, DC, rates)} of "

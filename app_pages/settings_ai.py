@@ -104,9 +104,13 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
             })
             if ai_key:
                 updates["ai_api_key_enc"] = _encrypt(ai_key)
-        q.save_settings(user_id, updates)
-        st.success("AI settings saved.", icon=":material/check:")
-        st.rerun()
+        try:
+            q.save_settings(user_id, updates)
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            st.success("AI settings saved.", icon=":material/check:")
+            st.rerun()
 
     if ai_test:
         merged = dict(settings)

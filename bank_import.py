@@ -312,7 +312,9 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
     ae = _to_eur_amount(row_amount, row_currency, rates)
     if not (ae > 0) or ae > MAX_AMOUNT:  # also rejects NaN amounts
         return "skipped"
-    key = (d, str(row["description"]).strip().lower(), round(ae, 2))
+    import re as _re
+    norm_desc = _re.sub(r"\s+", " ", str(row["description"])).strip().lower()
+    key = (d, norm_desc, round(ae, 2))
     if key in existing_keys:
         return "skipped"
 
@@ -399,8 +401,12 @@ def render_bank_import_page(user_id: int, rates: dict):
         - Rows that match an expense you already logged are skipped automatically.
         """)
 
+    MAX_UPLOAD_MB = 20
     uploaded = st.file_uploader("Upload your bank statement", type=["csv", "pdf"])
     if not uploaded:
+        return
+    if getattr(uploaded, "size", 0) and uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(f"File too large — limit is {MAX_UPLOAD_MB} MB.")
         return
 
     raw = None
@@ -598,9 +604,10 @@ def render_bank_import_page(user_id: int, rates: dict):
         existing = q.expenses(user_id)
         existing_keys = set()
         if not existing.empty:
+            import re as _re2
             existing_keys = set(zip(
                 existing["date"].dt.date,
-                existing["description"].str.strip().str.lower(),
+                existing["description"].apply(lambda s: _re2.sub(r"\s+", " ", str(s)).strip().lower()),
                 existing["amount_eur"].round(2),
             ))
 

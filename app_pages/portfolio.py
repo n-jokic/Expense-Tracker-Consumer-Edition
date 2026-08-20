@@ -48,7 +48,7 @@ if not df_hold.empty:
     with rc2:
         if st.button("Refresh prices", icon=":material/refresh:", width="stretch", key="pf_refresh"):
             with st.spinner("Fetching prices..."):
-                n, ok = refresh_prices_if_due(user_id, force=True)
+                n, ok = refresh_prices_if_due(user_id, force=True, cached=False)
             if ok:
                 q.bump_db_version()
                 st.success(f"✅ Updated {n} holding(s)")
@@ -75,21 +75,32 @@ with st.form("hold_form", clear_on_submit=True):
             sym = h_symbol.strip().upper()
             cost_eur = to_eur(h_cost, h_cur, rates)
             # try to fetch a starting price right away
-            price = _fetch_cached(sym)
+            try:
+                price = _fetch_cached(sym)
+            except Exception:
+                price = None
+            _fresh_hold = q.holdings(user_id)
+            if not _fresh_hold.empty and ((_fresh_hold["symbol"] == sym).any()):
+                st.toast("Already saved — duplicate holding prevented.", icon=":material/check:")
+                st.rerun()
             import datetime as _dt
-            add_holding(user_id, {
-                "symbol": sym, "name": h_name.strip(),
-                "quantity": float(h_qty), "currency": h_cur,
-                "cost_total": float(h_cost), "cost_eur": cost_eur,
-                "last_price": price if price else 0.0,
-                "last_price_date": _dt.datetime.now(_dt.timezone.utc) if price else None,
-            })
-            q.bump_db_version()
-            st.session_state["pf_flash"] = (
-                f"**{sym}** added"
-                + (f" (price {price:,.2f})" if price else " (price will be fetched on refresh)")
-            )
-            st.rerun()
+            try:
+                add_holding(user_id, {
+                    "symbol": sym, "name": h_name.strip(),
+                    "quantity": float(h_qty), "currency": h_cur,
+                    "cost_total": float(h_cost), "cost_eur": cost_eur,
+                    "last_price": price if price else 0.0,
+                    "last_price_date": _dt.datetime.now(_dt.timezone.utc) if price else None,
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.session_state["pf_flash"] = (
+                    f"**{sym}** added"
+                    + (f" (price {price:,.2f})" if price else " (price will be fetched on refresh)")
+                )
+                st.rerun()
         else:
             st.error("Please enter a symbol.")
 
@@ -224,7 +235,11 @@ def remove_holding_dialog(uid, holding_id, symbol, quantity):
     with c2:
         if st.button("Delete holding", key=f"hold_confirm_{holding_id}",
                      type="primary", width="stretch"):
-            delete_holding(uid, holding_id)
+            try:
+                delete_holding(uid, holding_id)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.toast(f"Holding **{symbol}** removed.", icon=":material/delete:")
             st.rerun()
@@ -243,9 +258,13 @@ with st.expander("Manage holdings", icon=":material/edit:"):
                                  key=f"hold_q_{r['id']}", label_visibility="collapsed")
         with mc3:
             if st.button("Save", icon=":material/save:", key=f"hold_s_{r['id']}", width="stretch"):
-                update_holding(user_id, r["id"], {"quantity": float(nq)})
-                q.bump_db_version()
-                st.rerun()
+                try:
+                    update_holding(user_id, r["id"], {"quantity": float(nq)})
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                else:
+                    q.bump_db_version()
+                    st.rerun()
         if st.button("Remove holding", icon=":material/delete:", key=f"hold_d_{r['id']}",
                      type="secondary", width="stretch"):
             remove_holding_dialog(user_id, r["id"], r["symbol"], float(r["quantity"]))

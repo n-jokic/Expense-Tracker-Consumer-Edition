@@ -109,6 +109,12 @@ with st.sidebar:
     dc_default = settings.get("default_currency", "EUR")
     dc_idx    = cur_list.index(dc_default) if dc_default in cur_list else 0
     DC = st.selectbox("Display currency", cur_list, index=dc_idx, key="dc_sidebar")
+    if DC != dc_default:
+        try:
+            q.save_settings(user_id, {"default_currency": DC})
+            settings = st.session_state.settings
+        except Exception as e:
+            st.warning(f"Couldn't persist display currency: {e}")
     st.session_state.dc = DC
 
     with st.form("rate_form"):
@@ -122,10 +128,15 @@ with st.sidebar:
         if not (float(rsd_val) > 0 and float(rsd_val) == float(rsd_val)):
             st.error("The exchange rate must be a positive number greater than 0.")
         else:
-            new_rates = dict(st.session_state.settings.get("currency_rates") or {})
-            new_rates["RSD"] = float(rsd_val)
-            q.save_settings(user_id, {"currency_rates": new_rates})
-            st.rerun()
+            from db import get_settings as _db_get_settings
+            fresh_rates = dict((_db_get_settings(user_id) or {}).get("currency_rates") or {})
+            fresh_rates["RSD"] = float(rsd_val)
+            try:
+                q.save_settings(user_id, {"currency_rates": fresh_rates})
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                st.rerun()
     st.caption(f"1 EUR = {rates['RSD']:.2f} din · other rates in Settings")
 
     # Gamification
@@ -149,7 +160,9 @@ with st.sidebar:
                 file_name="expense_tracker_qr.png", mime="image/png",
                 key="dl_qr", icon=":material/download:", width="stretch",
             )
-        except Exception:
+        except Exception as e:
+            import logging as _log
+            _log.getLogger(__name__).warning("QR failed: %s", e)
             # A QR failure must never take the whole shell down.
             st.caption("QR code unavailable — open the address above manually.")
         st.caption("Scan with your phone camera — same Wi-Fi network.")

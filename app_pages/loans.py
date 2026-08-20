@@ -10,7 +10,8 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import add_loan, update_loan, delete_loan, add_expense
+from db import (add_loan, update_loan, delete_loan, add_expense,
+                soft_delete_expense)
 from finance import (annuity_payment, loan_schedule, _first_due, _next_due,
                      calculate_early_repayment_surcharge)
 from utils import (
@@ -75,22 +76,33 @@ with st.form("loan_form", clear_on_submit=True):
         elif float(l_principal) <= 0:
             st.error("Principal must be greater than 0.")
         else:
+            _fresh_loans = q.loans(user_id)
+            if not _fresh_loans.empty and (
+                (_fresh_loans["name"] == l_name.strip())
+                & (_fresh_loans["principal_eur"].round(2) == round(to_eur(l_principal, l_cur, rates), 2))
+            ).any():
+                st.toast("Already saved — duplicate loan prevented.", icon=":material/check:")
+                st.rerun()
             pe = to_eur(l_principal, l_cur, rates)
-            add_loan(user_id, {
-                "name": l_name.strip(), "principal": l_principal, "currency": l_cur,
-                "principal_eur": pe, "annual_rate": l_rate,
-                "start_date": l_start, "term_months": int(l_term),
-                "payment_day": int(l_day), "status": "active", "notes": l_notes,
-                "early_repayment_surcharge_type": l_surcharge_type,
-                "early_repayment_surcharge_value": float(l_surcharge_value),
-            })
-            q.bump_db_version()
-            st.session_state["loan_flash"] = (
-                "success",
-                f"Loan **{l_name}** saved "
-                f"(monthly payment ~{fmt(annuity_payment(pe, l_rate, int(l_term)), DC, rates)})",
-            )
-            st.rerun()
+            try:
+                add_loan(user_id, {
+                    "name": l_name.strip(), "principal": l_principal, "currency": l_cur,
+                    "principal_eur": pe, "annual_rate": l_rate,
+                    "start_date": l_start, "term_months": int(l_term),
+                    "payment_day": int(l_day), "status": "active", "notes": l_notes,
+                    "early_repayment_surcharge_type": l_surcharge_type,
+                    "early_repayment_surcharge_value": float(l_surcharge_value),
+                })
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                q.bump_db_version()
+                st.session_state["loan_flash"] = (
+                    "success",
+                    f"Loan **{l_name}** saved "
+                    f"(monthly payment ~{fmt(annuity_payment(pe, l_rate, int(l_term)), DC, rates)})",
+                )
+                st.rerun()
 
 
 @st.dialog("Delete loan?")
@@ -106,7 +118,11 @@ def delete_loan_dialog(uid, loan_id, name, remaining):
     with c2:
         if st.button("Delete loan", key=f"loan_confirm_{loan_id}",
                      type="primary", width="stretch"):
-            delete_loan(uid, loan_id)
+            try:
+                delete_loan(uid, loan_id)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
             q.bump_db_version()
             st.session_state["loan_flash"] = ("toast", "Loan deleted (payments remain as expenses).")
             st.rerun()
@@ -179,15 +195,19 @@ def edit_loan_dialog(uid: int, row):
                 st.error("Please give the loan a name.")
             else:
                 pe = to_eur(float(e_principal), e_cur, rates)
-                update_loan(uid, str(row["id"]), {
-                    "name": e_name.strip(), "principal": float(e_principal),
-                    "currency": e_cur, "principal_eur": pe,
-                    "annual_rate": float(e_rate), "start_date": e_start,
-                    "term_months": int(e_term), "payment_day": int(e_day),
-                    "status": e_status, "notes": e_notes,
-                    "early_repayment_surcharge_type": e_surcharge_type,
-                    "early_repayment_surcharge_value": float(e_surcharge_value),
-                })
+                try:
+                    update_loan(uid, str(row["id"]), {
+                        "name": e_name.strip(), "principal": float(e_principal),
+                        "currency": e_cur, "principal_eur": pe,
+                        "annual_rate": float(e_rate), "start_date": e_start,
+                        "term_months": int(e_term), "payment_day": int(e_day),
+                        "status": e_status, "notes": e_notes,
+                        "early_repayment_surcharge_type": e_surcharge_type,
+                        "early_repayment_surcharge_value": float(e_surcharge_value),
+                    })
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+                    return
                 q.bump_db_version()
                 st.session_state["loan_flash"] = ("toast", f"Loan **{e_name.strip()}** updated.")
                 st.rerun()
@@ -243,25 +263,42 @@ def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
             st.error("Choose today or an earlier date.")
             return
         total_eur = principal_eur + surcharge_eur
+        _pf_early = q.loan_payments(uid, str(row["id"]))
+        if not _pf_early.empty and (
+            (_pf_early["date"].dt.date == p_date) & (_pf_early["amount_eur"].round(2) == round(total_eur, 2))
+        ).any():
+            st.toast("Already saved — duplicate payment prevented.", icon=":material/check:")
+            st.rerun()
         record = {"date": p_date, "amount_eur": total_eur,
                   "surcharge_eur": surcharge_eur}
-        add_expense(uid, {
-            "date": p_date, "category": "Loans & Debt",
-            "subcategory": "Loan Repayment",
-            "description": f"{row['name']} early repayment",
-            "amount": float(principal + surcharge), "currency": lcur,
-            "amount_eur": total_eur, "recurring": False, "loan_id": str(row["id"]),
-            "loan_payment_type": "early", "loan_surcharge_eur": surcharge_eur,
-            "notes": "Early repayment",
-        })
-        projected = loan_schedule(
-            float(row["principal_eur"]), float(row["annual_rate"]),
-            int(row["term_months"]),
-            row["start_date"].date() if pd.notna(row["start_date"]) else today,
-            int(row["payment_day"]), payments + [record], today,
-        )
-        if projected["remaining_balance"] <= 0.005:
-            update_loan(uid, str(row["id"]), {"status": "paid_off"})
+        try:
+            exp_id = add_expense(uid, {
+                "date": p_date, "category": "Loans & Debt",
+                "subcategory": "Loan Repayment",
+                "description": f"{row['name']} early repayment",
+                "amount": float(principal + surcharge), "currency": lcur,
+                "amount_eur": total_eur, "recurring": False, "loan_id": str(row["id"]),
+                "loan_payment_type": "early", "loan_surcharge_eur": surcharge_eur,
+                "notes": "Early repayment",
+            })
+            projected = loan_schedule(
+                float(row["principal_eur"]), float(row["annual_rate"]),
+                int(row["term_months"]),
+                row["start_date"].date() if pd.notna(row["start_date"]) else today,
+                int(row["payment_day"]), payments + [record], today,
+            )
+            if projected["remaining_balance"] <= 0.005:
+                update_loan(uid, str(row["id"]), {"status": "paid_off"})
+        except Exception as e:
+            # Compensate: if the follow-up write failed after the expense was
+            # created, try to remove the just-logged expense.
+            try:
+                if "exp_id" in locals():
+                    soft_delete_expense(uid, exp_id)
+            except Exception:
+                pass
+            st.error(f"Couldn't save: {e}")
+            return
         q.bump_db_version()
         st.session_state["loan_flash"] = ("success", f"Early repayment logged for {row['name']}")
         st.rerun()
@@ -355,32 +392,47 @@ else:
                             # the user-typed amount is already in the loan's currency
                             amount_in_cur = float(p_amt)
                             ae = to_eur(amount_in_cur, lcur, rates)
-                            add_expense(user_id, {
-                                "date": p_date,
-                                "category": "Loans & Debt",
-                                "subcategory": "Loan Repayment",
-                                "description": f"{row['name']} payment",
-                                "amount": amount_in_cur,
-                                "currency": lcur,
-                                "amount_eur": ae,
-                                "recurring": False,
-                                "loan_id": loan_id,
-                                "loan_payment_type": "regular",
-                                "loan_surcharge_eur": 0.0,
-                                "notes": "Loan payment",
-                            })
-                            projected = loan_schedule(
-                                _principal, _rate, int(row["term_months"]), start_date,
-                                int(row["payment_day"]), payments + [{
-                                    "date": p_date, "amount_eur": ae,
-                                    "surcharge_eur": 0.0,
-                                }], today,
-                            )
-                            if projected["remaining_balance"] <= 0.005:
-                                update_loan(user_id, loan_id, {"status": "paid_off"})
-                            q.bump_db_version()
-                            st.session_state["loan_flash"] = ("toast", f"Payment logged for {row['name']}")
-                            st.rerun()
+                            _pf_log = q.loan_payments(user_id, loan_id)
+                            if not _pf_log.empty and (
+                                (_pf_log["date"].dt.date == p_date) & (_pf_log["amount_eur"].round(2) == round(ae, 2))
+                            ).any():
+                                st.toast("Already saved — duplicate payment prevented.", icon=":material/check:")
+                                st.rerun()
+                            try:
+                                exp_id2 = add_expense(user_id, {
+                                    "date": p_date,
+                                    "category": "Loans & Debt",
+                                    "subcategory": "Loan Repayment",
+                                    "description": f"{row['name']} payment",
+                                    "amount": amount_in_cur,
+                                    "currency": lcur,
+                                    "amount_eur": ae,
+                                    "recurring": False,
+                                    "loan_id": loan_id,
+                                    "loan_payment_type": "regular",
+                                    "loan_surcharge_eur": 0.0,
+                                    "notes": "Loan payment",
+                                })
+                                projected = loan_schedule(
+                                    _principal, _rate, int(row["term_months"]), start_date,
+                                    int(row["payment_day"]), payments + [{
+                                        "date": p_date, "amount_eur": ae,
+                                        "surcharge_eur": 0.0,
+                                    }], today,
+                                )
+                                if projected["remaining_balance"] <= 0.005:
+                                    update_loan(user_id, loan_id, {"status": "paid_off"})
+                            except Exception as e:
+                                try:
+                                    if "exp_id2" in locals():
+                                        soft_delete_expense(user_id, exp_id2)
+                                except Exception:
+                                    pass
+                                st.error(f"Couldn't save: {e}")
+                            else:
+                                q.bump_db_version()
+                                st.session_state["loan_flash"] = ("toast", f"Payment logged for {row['name']}")
+                                st.rerun()
                     if st.button("Early repayment", key=f"loan_early_{loan_id}",
                                  icon=":material/payments:", width="stretch"):
                         early_repayment_dialog(user_id, row, sched, payments)
@@ -408,9 +460,13 @@ else:
                     st_lbl, st_icon = ("Mark paid off", ":material/check_circle:") \
                         if row["status"] == "active" else ("Reopen", ":material/undo:")
                     if st.button(st_lbl, icon=st_icon, key=f"loan_st_{loan_id}"):
-                        update_loan(user_id, loan_id, {"status": new_status})
-                        q.bump_db_version()
-                        st.rerun()
+                        try:
+                            update_loan(user_id, loan_id, {"status": new_status})
+                        except Exception as e:
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.rerun()
                     if st.button("Delete", icon=":material/delete:", key=f"loan_del_{loan_id}"):
                         delete_loan_dialog(user_id, loan_id, str(row["name"]),
                                            fmt(sched["remaining_balance"], DC, rates))
