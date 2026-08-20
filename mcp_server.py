@@ -31,7 +31,8 @@ from db import (init_db, get_session, User, get_user_by_username, get_settings,
                 add_expense as db_add_expense, add_income as db_add_income,
                 bump_data_revision)
 from utils import (CATEGORIES, CAT_LIST, INCOME_TYPES, SUPPORTED_CURRENCIES,
-                   MAX_AMOUNT, get_rates, to_eur, effective_category_budgets)
+                   MAX_AMOUNT, get_rates, to_eur)
+import services.finance_queries as fq  # canonical finance queries (shared with Streamlit + AI)
 
 server = MCPServer(
     name="expense-tracker",
@@ -168,76 +169,53 @@ def _in_month(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
 # ── Read tools ────────────────────────────────────────────────────────────────
 
 async def _expense_summary_impl(month: str) -> dict:
+    # Canonical finance via services/finance_queries (no duplicate arithmetic).
     uid = _resolve_user()
-    start, end = _month_bounds(month)
-    expenses = _in_month(get_expenses(uid), start, end)
-    income = _in_month(get_income(uid), start, end)
-    budgets = get_budgets(uid)
-    if not budgets.empty:
-        b = budgets[(budgets["year"] == start.year) & (budgets["month"] == start.month)]
-        budget_total = float(sum(effective_category_budgets(b).values())) if not b.empty else 0.0
-    else:
-        budget_total = 0.0
-    spent = float(expenses["amount_eur"].fillna(0).sum()) if not expenses.empty else 0.0
-    earned = float(income["actual_eur"].fillna(0).sum()) if not income.empty else 0.0
-    settings = get_settings(uid)
-    from insights import top_category_this_month
-    top = top_category_this_month(expenses, start.year, start.month)
+    result = fq.get_expense_summary(uid, month)
     return {
-        "ok": True, "month": f"{start.year}-{start.month:02d}",
-        "spent_eur": round(spent, 2), "income_eur": round(earned, 2),
-        "net_eur": round(earned - spent, 2),
-        "budget_total_eur": round(budget_total, 2),
-        "budget_remaining_eur": round(budget_total - spent, 2),
-        "top_category": {"category": top[0], "amount_eur": round(top[1], 2)} if top else None,
-        "fun_money_eur": settings.get("fun_money") or 0.0,
-        "monthly_budget_eur": settings.get("monthly_budget") or 0.0,
+        "ok": True,
+        "month": result["month"],
+        "spent_eur": result["spent_eur"],
+        "income_eur": result["income_eur"],
+        "net_eur": result["net_eur"],
+        "budget_total_eur": result["budget_total_eur"],
+        "budget_remaining_eur": result["budget_remaining_eur"],
+        "top_category": result["top_category"],
+        "fun_money_eur": result["fun_money_eur"],
+        "monthly_budget_eur": result["monthly_budget_eur"],
     }
 
 
 async def _list_expenses_impl(month: str, category: str | None, limit: int) -> dict:
-    uid = _resolve_user()
-    df = get_expenses(uid)
-    start, end = _month_bounds(month)
-    df = _in_month(df, start, end)
-    if category:
-        df = df[df["category"].str.lower() == category.strip().lower()]
-    total = float(df["amount_eur"].fillna(0).sum()) if not df.empty else 0.0
-    df = df.sort_values("date", ascending=False).head(max(1, min(int(limit), 500)))
+    res = fq.list_expenses(_resolve_user(), month, category, limit)
+    df = res["expenses"]
     cols = ["date", "category", "subcategory", "description", "amount",
             "currency", "amount_eur", "notes"]
-    return {"ok": True, "count": len(df), "total_eur": round(total, 2),
+    return {"ok": True, "count": len(df), "total_eur": res["total_eur"],
             "expenses": _records(df, cols)}
 
 
 async def _search_expenses_impl(query: str, limit: int) -> dict:
     uid = _resolve_user()
-    q = (query or "").strip().lower()
-    if not q:
-        return {"ok": False, "error": "query must not be empty"}
-    df = get_expenses(uid)
-    if df.empty:
+    # Canonical search via service (no duplicate mask logic). Map ValueError → error dict.
+    try:
+        res = fq.search_expenses(uid, query, limit)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if res["count"] == 0:
         return {"ok": True, "count": 0, "expenses": []}
-    mask = pd.Series(False, index=df.index)
-    for col in ("description", "category", "subcategory", "notes"):
-        if col in df.columns:
-            mask |= df[col].fillna("").astype(str).str.lower().str.contains(q, regex=False)
-    out = df[mask].sort_values("date", ascending=False).head(max(1, min(int(limit), 100)))
     cols = ["date", "category", "subcategory", "description", "amount",
             "currency", "amount_eur", "notes"]
-    return {"ok": True, "count": len(out), "expenses": _records(out, cols)}
+    return {"ok": True, "count": res["count"],
+            "expenses": _records(res["expenses"], cols)}
 
 
 async def _list_income_impl(month: str) -> dict:
-    uid = _resolve_user()
-    start, end = _month_bounds(month)
-    df = _in_month(get_income(uid), start, end)
-    total = float(df["actual_eur"].fillna(0).sum()) if not df.empty else 0.0
-    df = df.sort_values("date", ascending=False)
+    res = fq.list_income(_resolve_user(), month)
     cols = ["date", "income_type", "source", "actual", "currency",
             "actual_eur", "notes"]
-    return {"ok": True, "count": len(df), "total_eur": round(total, 2),
-            "income": _records(df, cols)}
+    return {"ok": True, "count": len(res["income"]), "total_eur": res["total_eur"],
+            "income": _records(res["income"], cols)}
 
 
 async def _list_budgets_impl() -> dict:
@@ -248,21 +226,14 @@ async def _list_budgets_impl() -> dict:
 
 async def _list_savings_goals_impl() -> dict:
     uid = _resolve_user()
-    goals = []
-    sv = get_savings(uid)
-    if not sv.empty:
-        sv = sv.sort_values("date")
-        for name in sv["goal_name"].fillna("").unique():
-            rows = sv[sv["goal_name"].fillna("") == name]
-            if rows.empty:
-                continue
-            last = rows.iloc[-1]
-            goals.append({
-                "goal_name": name,
-                "balance_eur": _clean(last.get("balance_eur")),
-                "target_eur": _clean(last.get("target_eur")),
-                "interest_rate_pct": _clean(last.get("interest_rate")),
-            })
+    summary = fq.get_savings_summary(uid)
+    goals = [
+        {"goal_name": g["goal_name"],
+         "balance_eur": _clean(g["balance_eur"]),
+         "target_eur": _clean(g["target_eur"]),
+         "interest_rate_pct": _clean(g["interest_rate_pct"])}
+        for g in summary["goals"]
+    ]
     accounts = get_savings_accounts(uid)
     term = _records(accounts, ["id", "goal_name", "name", "amount", "currency",
                                "amount_eur", "annual_rate", "start_date",
@@ -293,34 +264,32 @@ async def _get_milestones_impl() -> dict:
 
 
 async def _get_insights_impl() -> dict:
+    # Canonical analysis via services/finance_queries (no duplicate arithmetic).
     uid = _resolve_user()
     today = date.today()
     expenses = get_expenses(uid)
     income = get_income(uid)
     settings = get_settings(uid)
-    from insights import (month_over_month, top_category_this_month,
-                          unusual_expenses, days_until_budget_depleted,
-                          build_narrative_stats)
     out = {
         "ok": True,
-        "spending_mom": month_over_month(expenses, "amount_eur", today.year, today.month),
-        "income_mom": month_over_month(income, "actual_eur", today.year, today.month),
+        "spending_mom": fq.month_over_month(expenses, "amount_eur", today.year, today.month),
+        "income_mom": fq.month_over_month(income, "actual_eur", today.year, today.month),
     }
-    top = top_category_this_month(expenses, today.year, today.month)
+    top = fq.top_category_this_month(expenses, today.year, today.month)
     if top:
         out["top_category_this_month"] = {"category": top[0],
                                           "amount_eur": round(float(top[1]), 2)}
-    unusual = unusual_expenses(expenses).sort_values("amount_eur", ascending=False).head(5)
+    unusual = fq.unusual_expenses(expenses).sort_values("amount_eur", ascending=False).head(5)
     out["unusual_expenses"] = _records(unusual, ["date", "category", "description",
                                                  "amount_eur"])
     budget = float(settings.get("monthly_budget") or 0.0)
     if budget > 0:
-        out["days_until_budget_depleted"] = days_until_budget_depleted(
+        out["days_until_budget_depleted"] = fq.days_until_budget_depleted(
             expenses, budget, today.replace(day=1))
     try:
         from llm import generate_narrative
         narrative = generate_narrative(
-            build_narrative_stats(expenses, settings, today.year, today.month),
+            fq.build_narrative_stats(expenses, settings, today.year, today.month),
             settings)
         if narrative:
             out["narrative"] = narrative

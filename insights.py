@@ -17,19 +17,39 @@ from forecasting import detect_anomalies, detect_subscriptions
 import queries as q
 
 
+# ── Canonical analysis: delegated to services/finance_queries.py ─────────────
+# The pure math now lives in the shared service so MCP + Streamlit + AI share
+# one implementation. This module re-exports the canonical functions for
+# backwards compatibility (tests, callers that still import from insights).
+try:
+    from services.finance_queries import (  # type: ignore
+        month_over_month as _fq_month_over_month,
+        top_category_this_month as _fq_top_category,
+        unusual_expenses as _fq_unusual,
+        days_until_budget_depleted as _fq_days,
+        savings_projection as _fq_sav_proj,
+        build_narrative_stats as _fq_narrative_stats,
+    )
+    _HAS_FQ = True
+except Exception:  # pragma: no cover — import fails only in exotic test stubs
+    _HAS_FQ = False
+
 # ── Analysis functions ────────────────────────────────────────────────────────
 
 def month_over_month(df: pd.DataFrame, col: str, current_year: int, current_month: int) -> dict:
-    """Compare current month total vs previous month for the given column."""
+    """Compare current month total vs previous month for the given column.
+
+    Delegates to the canonical ``services.finance_queries`` implementation so
+    Streamlit + MCP + AI share one arithmetic path.
+    """
+    if _HAS_FQ:
+        return _fq_month_over_month(df, col, current_year, current_month)
     if df.empty or col not in df.columns:
         return {"current": 0.0, "previous": 0.0, "change_pct": 0.0, "trend": "same"}
-
     prev_month = current_month - 1 if current_month > 1 else 12
-    prev_year  = current_year if current_month > 1 else current_year - 1
-
-    cur  = df[(df["date"].dt.year == current_year) & (df["date"].dt.month == current_month)][col].sum()
-    prev = df[(df["date"].dt.year == prev_year)    & (df["date"].dt.month == prev_month)][col].sum()
-
+    prev_year = current_year if current_month > 1 else current_year - 1
+    cur = df[(df["date"].dt.year == current_year) & (df["date"].dt.month == current_month)][col].sum()
+    prev = df[(df["date"].dt.year == prev_year) & (df["date"].dt.month == prev_month)][col].sum()
     cur, prev = float(cur), float(prev)
     if prev == 0:
         change_pct = 100.0 if cur > 0 else 0.0
@@ -37,12 +57,13 @@ def month_over_month(df: pd.DataFrame, col: str, current_year: int, current_mont
     else:
         change_pct = ((cur - prev) / prev) * 100
         trend = "up" if cur > prev else ("down" if cur < prev else "same")
-
     return {"current": cur, "previous": prev, "change_pct": round(change_pct, 1), "trend": trend}
 
 
 def top_category_this_month(expenses_df: pd.DataFrame, year: int, month: int):
     """Return (category, amount_eur) for the biggest spending category this month."""
+    if _HAS_FQ:
+        return _fq_top_category(expenses_df, year, month)
     if expenses_df.empty:
         return None
     m = expenses_df[(expenses_df["date"].dt.year == year) & (expenses_df["date"].dt.month == month)]
@@ -55,8 +76,10 @@ def top_category_this_month(expenses_df: pd.DataFrame, year: int, month: int):
 
 def unusual_expenses(expenses_df: pd.DataFrame, multiplier: float = 2.0) -> pd.DataFrame:
     """Return expenses where amount > multiplier × that category's average."""
+    if _HAS_FQ:
+        return _fq_unusual(expenses_df, multiplier)
     if expenses_df.empty:
-        return expenses_df.iloc[0:0]  # schema-preserving empty frame (keeps amount_eur)
+        return expenses_df.iloc[0:0]
     avgs = expenses_df.groupby("category")["amount_eur"].mean()
     def is_unusual(row):
         avg = avgs.get(row["category"], 0)
@@ -67,13 +90,15 @@ def unusual_expenses(expenses_df: pd.DataFrame, multiplier: float = 2.0) -> pd.D
 def days_until_budget_depleted(expenses_df: pd.DataFrame, total_budget_eur: float,
                                 period_start: date) -> int | None:
     """Estimate how many days remain before budget runs out at current burn rate."""
+    if _HAS_FQ:
+        return _fq_days(expenses_df, total_budget_eur, period_start)
     if total_budget_eur <= 0 or expenses_df.empty:
         return None
     today = date.today()
     days_elapsed = max((today - period_start).days + 1, 1)
     period_exp = expenses_df[
         (expenses_df["date"].dt.date >= period_start)
-        & (expenses_df["date"].dt.date <= today)   # future-dated rows don't count yet
+        & (expenses_df["date"].dt.date <= today)
     ]
     if period_exp.empty:
         return None
@@ -89,53 +114,45 @@ def days_until_budget_depleted(expenses_df: pd.DataFrame, total_budget_eur: floa
 
 def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
     """Project when a savings goal will be reached."""
+    if _HAS_FQ:
+        return _fq_sav_proj(savings_df, goal_name)
     empty = {"current_balance": 0.0, "target": 0.0, "months_to_goal": None, "projected_date": None}
     if savings_df.empty:
         return empty
     rows = savings_df[savings_df["goal_name"] == goal_name].sort_values("date")
     if rows.empty:
         return empty
-
-    latest       = rows.iloc[-1]
-    balance      = float(latest["balance_eur"]) if pd.notna(latest["balance_eur"]) else 0.0
-    target       = float(rows["target_eur"].max()) if pd.notna(rows["target_eur"].max()) else 0.0
+    latest = rows.iloc[-1]
+    balance = float(latest["balance_eur"]) if pd.notna(latest["balance_eur"]) else 0.0
+    target = float(rows["target_eur"].max()) if pd.notna(rows["target_eur"].max()) else 0.0
     interest_rate = float(latest["interest_rate"]) if pd.notna(latest["interest_rate"]) else 0.0
-
     if target <= 0 or balance >= target:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": 0, "projected_date": date.today()}
-
-    # Average monthly deposit over the last 3 calendar months with deposits
     if len(rows) >= 2:
-        monthly = (rows.set_index("date")["deposited_eur"]
-                   .resample("MS").sum().dropna())
+        monthly = (rows.set_index("date")["deposited_eur"].resample("MS").sum().dropna())
         if monthly.empty:
             monthly_dep = float(rows["deposited_eur"].mean())
         else:
             monthly_dep = float(monthly.tail(3).mean())
     else:
         monthly_dep = float(rows["deposited_eur"].mean())
-
-    # Withdrawals (or zero/NaN deposits) can't reach the goal — no projection.
     if pd.isna(monthly_dep) or monthly_dep <= 0:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": None, "projected_date": None}
-
     monthly_rate = (interest_rate / 100) / 12
     cur_bal = balance
-    months  = 0
+    months = 0
     while cur_bal < target and months < 600:
         cur_bal = cur_bal * (1 + monthly_rate) + monthly_dep
         months += 1
-
     if months >= 600:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": None, "projected_date": None}
-
     today = date.today()
-    proj_year  = today.year + (today.month - 1 + months) // 12
+    proj_year = today.year + (today.month - 1 + months) // 12
     proj_month = (today.month - 1 + months) % 12 + 1
-    proj_date  = date(proj_year, proj_month, 1)
+    proj_date = date(proj_year, proj_month, 1)
     return {"current_balance": balance, "target": target,
             "months_to_goal": months, "projected_date": proj_date}
 
@@ -143,6 +160,8 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
 def build_narrative_stats(expenses_df: pd.DataFrame, settings: dict,
                           year: int, month: int) -> dict:
     """Build the sanitized-stat input shared by the page and MCP tool."""
+    if _HAS_FQ:
+        return _fq_narrative_stats(expenses_df, settings, year, month)
     mom = month_over_month(expenses_df, "amount_eur", year, month)
     stats = {"spent_eur": round(mom["current"], 2),
              "prev_spent_eur": round(mom["previous"], 2),
