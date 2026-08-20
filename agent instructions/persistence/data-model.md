@@ -134,13 +134,14 @@ Canonical defaults in `_SETTINGS_DEFAULTS` (`db.py:1838`):
 
 **Additive migrations** (`_migrate` → `_add_missing_columns` via `ALTER TABLE ADD COLUMN` per missing column, Postgres + SQLite compatible):
 
-- `user_settings` (currency, fun/travel, salary, notifications, backups, AI), `income` (income_type/hours/rate/updated_at), `recurring` (due_day/start_month/sort_order), `big_purchases` (sort_order), `expenses` (loan/ML/updated_at), `loans` (surcharge), `users` (data_revision), `holding_prices` (quantity/rate/value_eur), `devices` (token_expires_at), plus taxonomy rewrites (`_migrate_taxonomy`, `_migrate_budgets_taxonomy`, `_migrate_settings_taxonomy`), budget scope dedupe (`_enforce_budget_scopes`), pairing-code partial index (`_enforce_pairing_code_uniqueness`), milestone uniqueness (`_enforce_milestone_uniqueness`).
+- `user_settings` (currency, fun/travel, salary, notifications, backups, AI), `income` (income_type/hours/rate/updated_at), `recurring` (due_day/start_month/sort_order), `big_purchases` (sort_order), `expenses` (loan/ML/updated_at), `loans` (surcharge), `users` (data_revision), `holding_prices` (quantity/rate/value_eur), `devices` (token_expires_at), plus `_backfill_soft_delete_nulls` (P3, T4-003), taxonomy rewrites (`_migrate_taxonomy`, `_migrate_budgets_taxonomy`, `_migrate_settings_taxonomy`), budget scope dedupe (`_enforce_budget_scopes`), pairing-code partial index (`_enforce_pairing_code_uniqueness`), milestone uniqueness (`_enforce_milestone_uniqueness`).
 
 **Soft-delete contract:**
 
-- Filter default: `WHERE is_deleted == False`.
+- Filter default: `WHERE is_deleted IS NOT TRUE` (`IS NOT TRUE` = 0 or NULL legacy → visible; only `True`/`1` hidden). Equivalent to `COALESCE(is_deleted,0)=0`. Prevents P3 sentinel-NULL history vanish (T4-003).
 - Trash views: `get_*(include_deleted=True)` returns everything.
 - `deleted_at = _utcnow()` on soft-delete, `None` on restore.
+- **Schema:** `is_deleted Boolean NOT NULL DEFAULT 0 server_default 0` (nullable=False since T4-003 fix); legacy NULLs backfilled by `_backfill_soft_delete_nulls` (`UPDATE ... SET is_deleted=COALESCE(is_deleted,0) WHERE is_deleted IS NULL`) in `_migrate` and sync missing `is_deleted` defaults to `False`.
 - Budgets/loans/holdings use hard delete; devices/milestones use status/resolved flags.
 
 **Test harnesses:** `tests/test_db.py` covers round-trip, soft-delete/restore, detached-instance read, and loan payment metadata; `tests/conftest.py` isolation is forced (not `setdefault`) so ambient `DB_PATH` cannot point the suite at the live DB.

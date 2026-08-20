@@ -325,14 +325,8 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
             st.toast(msg, icon="⚠️")
 
             # Send email if configured (background thread — never blocks the UI).
-            # Dedup marker is persisted immediately (prevents re-send every session
-            # when SMTP is down); delivery confirmation is best-effort.
             if (settings.get("email_alerts") and settings.get("alert_email") and
                     settings.get("smtp_host") and settings.get("smtp_user")):
-                try:
-                    _persist_marker(user_id, "budget", month_key, cat)
-                except Exception:
-                    pass
                 html = build_budget_alert_email(
                     st.session_state.get("display_name", ""),
                     cat, act_val, bud_val, rates.get("RSD", 117.0)
@@ -342,7 +336,7 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                     settings["smtp_user"], _decrypt(settings.get("smtp_password_enc") or ""),
                     settings["alert_email"],
                     f"Budget Alert: {cat} at {int(act_val/bud_val*100)}%", html,
-                    on_done=_marker_on_delivery(user_id, "budget", month_key, cat),
+                    on_done=_marker_on_delivery(user_id, "budget", month_key, key),
                 )
 
 

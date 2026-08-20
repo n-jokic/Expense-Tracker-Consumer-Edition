@@ -74,9 +74,10 @@ def render_onboarding():
                         "monthly_budget": budget,
                     }
                     if dc != "EUR":
-                        new_rates = dict(rates)
-                        new_rates[dc] = float(rate_val)
-                        updates["currency_rates"] = new_rates
+                        from db import get_settings as _db_get_settings
+                        fresh_rates = dict((_db_get_settings(user_id) or {}).get("currency_rates") or {})
+                        fresh_rates[dc] = float(rate_val)
+                        updates["currency_rates"] = fresh_rates
                     q.save_settings(user_id, updates)
                     st.session_state.onboarding_step = 2
                     st.rerun()

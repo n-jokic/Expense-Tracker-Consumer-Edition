@@ -16,9 +16,14 @@ from db import init_db, _raw_connect, _file_is_plaintext
 
 
 def _tmpdir() -> str:
-    # tempfile.mkdtemp rather than pytest's tmp_path: the sandboxed test
-    # runner cannot scandir the pytest temp root.
-    return tempfile.mkdtemp(prefix="expense_crypto_tests_")
+    # Workspace-write sandbox: system temp is blocked for SQLite/SQLCipher
+    # opens. Use data/_pytest_tmp so temp DB files are writable.
+    import pathlib, uuid
+    base = pathlib.Path(__file__).resolve().parent.parent / "data" / "_pytest_tmp"
+    base.mkdir(parents=True, exist_ok=True)
+    p = str(base / f"expense_crypto_tests_{uuid.uuid4().hex[:6]}")
+    os.makedirs(p, exist_ok=True)
+    return p
 
 
 def test_fresh_db_is_ciphertext_and_keyed_open_works():

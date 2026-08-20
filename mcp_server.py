@@ -31,7 +31,7 @@ from db import (init_db, get_session, User, get_user_by_username, get_settings,
                 add_expense as db_add_expense, add_income as db_add_income,
                 bump_data_revision)
 from utils import (CATEGORIES, CAT_LIST, INCOME_TYPES, SUPPORTED_CURRENCIES,
-                   MAX_AMOUNT, get_rates, to_eur)
+                   MAX_AMOUNT, get_rates, to_eur, effective_category_budgets)
 
 server = MCPServer(
     name="expense-tracker",
@@ -57,7 +57,13 @@ _USER_ID: int | None = None
 def _resolve_user() -> int:
     global _USER_ID
     if _USER_ID is not None:
-        return _USER_ID
+        try:
+            with get_session() as s:
+                if s.query(User).filter(User.id == _USER_ID).first() is not None:
+                    return _USER_ID
+        except Exception:
+            pass
+        _USER_ID = None
     if MCP_USERNAME:
         u = get_user_by_username(MCP_USERNAME)
         if not u:
@@ -73,6 +79,12 @@ def _resolve_user() -> int:
                 "(or set EXPENSE_TRACKER_MCP_USERNAME).")
     _USER_ID = int(u["id"] if isinstance(u, dict) else u.id)
     return _USER_ID
+
+
+def _invalidate_user_cache() -> None:
+    """Clear cached user id — called after account deletion in tests."""
+    global _USER_ID
+    _USER_ID = None
 
 
 def _clean(v):
@@ -163,7 +175,7 @@ async def _expense_summary_impl(month: str) -> dict:
     budgets = get_budgets(uid)
     if not budgets.empty:
         b = budgets[(budgets["year"] == start.year) & (budgets["month"] == start.month)]
-        budget_total = float(b["budgeted_eur"].fillna(0).sum())
+        budget_total = float(sum(effective_category_budgets(b).values())) if not b.empty else 0.0
     else:
         budget_total = 0.0
     spent = float(expenses["amount_eur"].fillna(0).sum()) if not expenses.empty else 0.0

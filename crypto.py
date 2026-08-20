@@ -51,8 +51,18 @@ def _env_secret() -> bytes | None:
     return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
+def _secret_key_path() -> str:
+    """Path for .secret_key — colocated with DB_PATH when overridden (T2-001)."""
+    db_path = os.environ.get("DB_PATH")
+    if db_path:
+        # When tests or users override DB_PATH, keep the secret beside that DB
+        # so different DBs do not share one state_dir() secret.
+        return os.path.join(os.path.dirname(os.path.abspath(db_path)), ".secret_key")
+    return os.path.join(state_dir(), ".secret_key")
+
+
 def _file_secret() -> bytes | None:
-    key_path = os.path.join(state_dir(), ".secret_key")
+    key_path = _secret_key_path()
     if os.path.exists(key_path):
         with open(key_path, "rb") as f:
             data = f.read().strip()
@@ -75,7 +85,7 @@ def _streamlit_secret() -> bytes | None:
 def _generate_and_store_file_key() -> bytes:
     from cryptography.fernet import Fernet
     key = Fernet.generate_key()
-    key_path = os.path.join(state_dir(), ".secret_key")
+    key_path = _secret_key_path()
     os.makedirs(os.path.dirname(key_path), exist_ok=True)
     # Best-effort restrictive permissions (meaningful on POSIX; Windows
     # relies on the per-user %APPDATA%-equivalent project folder).

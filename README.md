@@ -959,4 +959,7 @@ Future AI agents (and subagents) start at [`agent instructions/README.md`](./age
 
 ## QA Bug Map
 
-The latest validated QA dossier lives at [`qa/reports/final-qa-bug-map.md`](./qa/reports/final-qa-bug-map.md) (registries `qa/registry-findings.json` + `qa/registry-patterns.json`) — produced by a coordinator-controlled swarm (8 domain teams → 36 adversarial validators → 6 narrow pattern hunters → 3 boundary teams, 53 subagents, no production-code mutations). Summary: **36 candidates → 19 CONFIRMED + 1 HIGH-CONFIDENCE + 6 SUSPECTED + 10 NOT-A-BUG**; hunters add **18 analogous manifestations** (SYSTEMIC patterns P1–P6: unbounded whitelist, stale derived state, sentinel/NaN asymmetry, lock/memo divergence, time/EU heuristic drift, N+1 partial commit). See the report for causal chains, dynamic taxonomy, and remediation order.
+
+## Remediation Dossier
+
+Fixes for 26 authorized findings (20 CONFIRMED/HIGH-CONFIDENCE + 6 integration-distinct) are tracked in [`qa/reports/remediation-report.md`](./qa/reports/remediation-report.md) with `qa/registry-findings.json` (per-ID status) and `qa/new-leads.json` (4 UNVALIDATED leads). All patches preserve QA IDs; see the Remediation Dossier for per-fix validation and memory reconciliation. Source of truth is code; `agent instructions/` is synchronized Type A after each patch.

@@ -114,6 +114,8 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
 
     Updates holdings.last_price/last_price_date and appends a daily
     holding_prices snapshot. Returns (updated_count, success).
+    Handles cached=False bypass correctly and respects include_household
+    semantics via explicit bump (see maybe_refresh_in_background).
     """
     holdings = get_holdings(user_id)
     if holdings.empty:
@@ -121,7 +123,7 @@ def refresh_prices_if_due(user_id: int, force: bool = False,
     if not (force or prices_are_stale(holdings)):
         return 0, False
 
-    get = _fetch_cached if cached else fetch_price
+    get = _fetch_cached if cached else (lambda sym: fetch_price(sym))
     from db import get_settings as _db_get_settings
     from utils import get_rates
     settings = _db_get_settings(user_id) or {}

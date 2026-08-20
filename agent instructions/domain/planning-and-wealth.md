@@ -200,8 +200,11 @@ class SavingsAccount(Base):
 
 ### 7.2 Valuation math (`finance.py`)
 ```python
-def months_between(start, end):  # whole calendar months, 0 when end<=start
-    return (end.year-start.year)*12 + (end.month-start.month)
+def months_between(start, end):  # whole calendar months, day-aware, 0 when end<=start
+    months = (end.year-start.year)*12 + (end.month-start.month)
+    if end.day < start.day:
+        months -= 1
+    return max(months, 0)  # day-aware: Jan 10->Feb 09 = 0, Jan 31->Feb 01 = 0
 def compound_months(amount, annual_rate_pct, months):
     if amount<=0 or months<=0: return round(amount,2)
     return round(amount * (1+annual_rate_pct/100/12)**months, 2)

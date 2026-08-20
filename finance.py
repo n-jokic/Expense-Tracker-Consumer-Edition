@@ -230,10 +230,16 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
 # ── Term deposit math ─────────────────────────────────────────────────────────
 
 def months_between(start: date, end: date) -> int:
-    """Whole calendar months from start to end (0 when end is not later)."""
+    """Whole calendar months from start to end (0 when end is not later).
+
+    Day-aware: a partial month does not count. e.g. Jan 10 -> Feb 09 is 0,
+    Jan 10 -> Feb 10 is 1, Jan 31 -> Feb 01 is 0."""
     if end <= start:
         return 0
-    return (end.year - start.year) * 12 + (end.month - start.month)
+    months = (end.year - start.year) * 12 + (end.month - start.month)
+    if end.day < start.day:
+        months -= 1
+    return max(months, 0)
 
 
 def compound_months(amount: float, annual_rate_pct: float, months: int) -> float:

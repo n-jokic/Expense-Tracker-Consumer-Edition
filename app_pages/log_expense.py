@@ -3,6 +3,7 @@ Log expense page: entry form, searchable history with inline editing, trash & re
 """
 
 from datetime import date
+import re
 
 import pandas as pd
 import streamlit as st
@@ -167,17 +168,19 @@ if saved:
     elif amount <= 0:
         safe_error("Amount must be greater than 0.")
     else:
-        _fresh_dup = q.expenses(user_id)
-        if not _fresh_dup.empty and (
-            (_fresh_dup["date"].dt.date == exp_date)
-            & (_fresh_dup["description"] == desc)
-            & (_fresh_dup["amount_eur"].round(2) == round(to_eur(amount, cur, rates), 2))
-        ).any():
-            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
-            st.rerun()
-        ae = to_eur(amount, cur, rates)
         rec_id = None
         try:
+            _fresh_dup = q.expenses(user_id)
+            # T4-002: normalized dedup (reuse bank_import:316 pattern)
+            _norm = lambda s: re.sub(r"\s+", " ", str(s)).strip().lower()
+            if not _fresh_dup.empty and (
+                (_fresh_dup["date"].dt.date == exp_date)
+                & (_fresh_dup["description"].apply(_norm) == _norm(desc))
+                & (_fresh_dup["amount_eur"].round(2) == round(to_eur(amount, cur, rates), 2))
+            ).any():
+                st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                st.rerun()
+            ae = to_eur(amount, cur, rates)
             if is_rec:
                 rec_id = add_recurring(user_id, {
                     "category": cat,
@@ -200,6 +203,10 @@ if saved:
             if rec_id:
                 try:
                     update_recurring(user_id, rec_id, {"active": False})
+                except Exception:
+                    pass
+                try:
+                    q.bump_db_version()
                 except Exception:
                     pass
             st.error(f"Couldn't save: {e}")
@@ -292,7 +299,8 @@ if not df_exp.empty:
             "id": None,
             "date": st.column_config.DateColumn("Date"),
             "category": st.column_config.SelectboxColumn("Category", options=CAT_LIST),
-            "subcategory": st.column_config.SelectboxColumn("Subcategory", options=ALL_SUBCATS),
+            # T4-001: keep broad options for display but whitelist is enforced on save (per CATEGORIES[cat])
+            "subcategory": st.column_config.SelectboxColumn("Subcategory", options=["—"] + ALL_SUBCATS),
             "description": st.column_config.TextColumn("Description"),
             "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
             "currency": st.column_config.SelectboxColumn("Currency",
@@ -320,22 +328,54 @@ if not df_exp.empty:
             if orig.empty:
                 continue
             orig = orig.iloc[0]
+            # T4-004: NaN → '' coercion before diff (like bank_import:351) + str(nan) guard
+            # Work on a coerced copy so NaN/— never reaches DB / breaks comparisons
+            coerced = dict(row)
+            for _c in ("subcategory", "notes", "category", "currency"):
+                v = coerced.get(_c)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    coerced[_c] = ""
+                else:
+                    # guard "nan" string leaks
+                    sv = str(v).strip()
+                    coerced[_c] = "" if sv.lower() == "nan" else sv
+            # description is special: must not become "nan", empty is rejected
+            dv = coerced.get("description")
+            if dv is None or (isinstance(dv, float) and pd.isna(dv)):
+                coerced["description"] = ""
+            else:
+                sv = str(dv)
+                coerced["description"] = "" if sv.strip().lower() == "nan" else sv
+            # T4-001: "—" sentinel → ''
+            if coerced.get("subcategory") == "—":
+                coerced["subcategory"] = ""
             upd = {}
             for col in ["date","category","subcategory","description","amount","currency","notes"]:
-                if not _same(row[col], orig[col]):
-                    upd[col] = row[col]
+                if not _same(coerced[col], orig[col]):
+                    upd[col] = coerced[col]
             if not upd:
                 continue
+            # T4-001: whitelist guard — invalid sub for final category → ''
+            _final_cat = str(upd.get("category", orig["category"]))
+            _final_sub = str(upd.get("subcategory", orig.get("subcategory", "") or ""))
+            if _final_sub and _final_sub != "—" and _final_sub not in CATEGORIES.get(_final_cat, []):
+                upd["subcategory"] = ""
+            elif upd.get("subcategory") == "—":
+                upd["subcategory"] = ""
             # never write a cleared (NaN) amount or an empty description
-            if "amount" in upd and (pd.isna(row["amount"]) or float(row["amount"]) <= 0):
+            if "amount" in upd and (pd.isna(coerced["amount"]) or float(coerced["amount"]) <= 0):
                 rejected += 1
                 continue
-            if "description" in upd and not str(row["description"]).strip():
+            if "description" in upd and not str(coerced["description"]).strip():
                 rejected += 1
                 continue
             if "amount" in upd or "currency" in upd:
                 amt = float(upd.get("amount", orig["amount"]))
                 cur2 = str(upd.get("currency", orig["currency"]))
+                # T4-004 currency was already de-NaNed above; extra guard
+                if not cur2 or cur2.lower() == "nan":
+                    cur2 = "EUR"
+                    upd["currency"] = cur2
                 upd["amount_eur"] = to_eur(amt, cur2, rates)
             try:
                 update_expense(user_id, rid, upd)

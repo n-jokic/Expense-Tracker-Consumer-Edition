@@ -17,7 +17,7 @@ from datetime import datetime, date, timezone, timedelta
 import pandas as pd
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, JSON,
-    DateTime, Date, ForeignKey, Text, event, UniqueConstraint
+    DateTime, Date, ForeignKey, Text, event, UniqueConstraint, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -37,7 +37,9 @@ BASE_DIR = str(state_dir())
 # Tests override DB_PATH/BACKUP_DIR before importing this module (see
 # tests/conftest.py) so the live database is never touched by the suite.
 DB_PATH  = os.environ.get("DB_PATH") or os.path.join(BASE_DIR, "expense_tracker.db")
-BACKUP_DIR = os.environ.get("BACKUP_DIR") or os.path.join(BASE_DIR, "backups")
+_DB_DIR = os.path.dirname(os.path.abspath(DB_PATH))
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or os.path.join(
+    _DB_DIR if os.environ.get("DB_PATH") else BASE_DIR, "backups")
 
 # Override with e.g. postgresql+psycopg2://user:pass@host/db when hosting.
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -53,7 +55,7 @@ Base     = declarative_base()
 _ENCRYPT = os.environ.get("EXPENSE_TRACKER_NO_ENCRYPT", "").strip().lower() \
     not in ("1", "true", "yes", "on")
 _SQLITE_HEADER = b"SQLite format 3\x00"
-_ENCRYPTION_LOCK = os.path.join(BASE_DIR, ".db-encrypting")
+_ENCRYPTION_LOCK = os.path.join(_DB_DIR, ".db-encrypting")
 _ENCRYPTION_DONE = False
 
 
@@ -365,7 +367,7 @@ class Expense(Base):
     suggest_subcategory_confidence = Column(Float, nullable=True)
     suggest_subcategory_source     = Column(String, nullable=True)  # classifier | keywords
     suggest_subcategory_accepted   = Column(Boolean, nullable=True)
-    is_deleted   = Column(Boolean, default=False)
+    is_deleted   = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
     updated_at   = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -386,7 +388,7 @@ class Income(Base):
     budgeted_eur = Column(Float, default=0.0)
     actual_eur   = Column(Float, default=0.0)
     notes        = Column(String, default="")
-    is_deleted   = Column(Boolean, default=False)
+    is_deleted   = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
     updated_at   = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -405,7 +407,7 @@ class Savings(Base):
     interest_rate = Column(Float, default=0.0)
     balance_eur   = Column(Float, default=0.0)
     notes         = Column(String, default="")
-    is_deleted    = Column(Boolean, default=False)
+    is_deleted    = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at    = Column(DateTime, nullable=True)
     created_at    = Column(DateTime, default=_utcnow)
     updated_at    = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -427,7 +429,7 @@ class SavingsAccount(Base):
     maturity_date = Column(Date)
     status        = Column(String, default="active")  # active | closed
     notes         = Column(String, default="")
-    is_deleted    = Column(Boolean, default=False)
+    is_deleted    = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at    = Column(DateTime, nullable=True)
     created_at    = Column(DateTime, default=_utcnow)
     updated_at    = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -759,6 +761,7 @@ def _migrate(engine):
     _add_missing_columns(engine, "devices", {
         "token_expires_at": "TIMESTAMP",
     })
+    _backfill_soft_delete_nulls(engine)
     _migrate_taxonomy(engine)
     _migrate_settings_taxonomy()
     _enforce_budget_scopes(engine)
@@ -781,6 +784,26 @@ def _enforce_milestone_uniqueness(engine):
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_milestones"
             " ON user_milestones (user_id, milestone_id)"))
+
+
+def _backfill_soft_delete_nulls(engine):
+    """Backfill is_deleted=NULL legacy rows (P3 sentinel NULL — T4-003).
+
+    Rows created before the is_deleted column existed or inserted via raw
+    sync without the field are stored as NULL. Without COALESCE the default
+    filter WHERE is_deleted=0/==False excludes them (SQLite tri-valued
+    logic: NULL=0 -> NULL excluded), so history appears to vanish. This
+    migration normalizes them to 0 once, and new rows use server_default 0."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table in ("expenses", "income", "savings", "savings_accounts"):
+        if table not in insp.get_table_names():
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if "is_deleted" not in cols:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE {table} SET is_deleted=COALESCE(is_deleted,0) WHERE is_deleted IS NULL"))
 
 
 def _migrate_taxonomy(engine):
@@ -1012,7 +1035,7 @@ def get_expenses(user_id, include_deleted=False):
     with get_session() as s:
         q = s.query(Expense).filter(Expense.user_id == user_id)
         if not include_deleted:
-            q = q.filter(Expense.is_deleted == False)
+            q = q.filter(Expense.is_deleted.is_not(True))
         rows = q.order_by(Expense.date.desc()).all()
     df = _to_df(rows, _EXP_COLS)
     return _parse_dates(df, ["date", "created_at", "deleted_at"])
@@ -1052,10 +1075,58 @@ def update_expense(user_id, expense_id, updates):
         obj = s.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user_id).first()
         if not obj:
             return False
+        # T4-004: coerce NaN/"nan" strings to '' before setattr (mirrors bank_import:351)
+        import pandas as _pd
+        sanitized = {}
         for k, v in updates.items():
+            if k in ("subcategory", "notes", "category", "currency"):
+                if v is None or (isinstance(v, float) and _pd.isna(v)):
+                    v = ""
+                else:
+                    sv = str(v).strip()
+                    if sv.lower() == "nan" or sv == "—":
+                        v = ""
+                    else:
+                        v = sv
+            elif k == "description":
+                if v is None or (isinstance(v, float) and _pd.isna(v)):
+                    v = ""
+                else:
+                    sv = str(v)
+                    if sv.strip().lower() == "nan":
+                        v = ""
+                    else:
+                        v = sv
+            sanitized[k] = v
+        # T4-001: whitelist guard — invalid subcategory for final category → ''
+        if "subcategory" in sanitized:
+            _cat = str(sanitized.get("category", getattr(obj, "category", "") or ""))
+            # if category is also changing, sanitized already holds new category; else use object's
+            _sub = str(sanitized.get("subcategory") or "")
+            if _sub and _sub != "—":
+                try:
+                    from utils import CATEGORIES as _CATS
+                    if _sub not in _CATS.get(_cat, []):
+                        sanitized["subcategory"] = ""
+                except Exception:
+                    pass
+            elif _sub == "—":
+                sanitized["subcategory"] = ""
+        # T4-001 extra: if only category changed, existing sub may now be invalid
+        elif "category" in sanitized:
+            _new_cat = str(sanitized.get("category") or "")
+            _cur_sub = str(getattr(obj, "subcategory", "") or "")
+            if _cur_sub:
+                try:
+                    from utils import CATEGORIES as _CATS2
+                    if _cur_sub not in _CATS2.get(_new_cat, []):
+                        sanitized["subcategory"] = ""
+                except Exception:
+                    pass
+        for k, v in sanitized.items():
             if hasattr(obj, k):
                 setattr(obj, k, v)
-        log_audit(s, user_id, "UPDATE", "expenses", expense_id, updates)
+        log_audit(s, user_id, "UPDATE", "expenses", expense_id, sanitized)
     return True
 
 
@@ -1108,7 +1179,7 @@ def get_income(user_id, include_deleted=False):
     with get_session() as s:
         q = s.query(Income).filter(Income.user_id == user_id)
         if not include_deleted:
-            q = q.filter(Income.is_deleted == False)
+            q = q.filter(Income.is_deleted.is_not(True))
         rows = q.order_by(Income.date.desc()).all()
     df = _to_df(rows, _INC_COLS)
     df = _parse_dates(df, ["date", "created_at", "deleted_at"])
@@ -1181,7 +1252,7 @@ def get_savings(user_id, include_deleted=False):
     with get_session() as s:
         q = s.query(Savings).filter(Savings.user_id == user_id)
         if not include_deleted:
-            q = q.filter(Savings.is_deleted == False)
+            q = q.filter(Savings.is_deleted.is_not(True))
         rows = q.order_by(Savings.date.asc()).all()
     df = _to_df(rows, _SAV_COLS)
     df = _parse_dates(df, ["date", "created_at", "deleted_at"])
@@ -1321,14 +1392,14 @@ def rename_savings_goal(user_id, old_name, new_name):
         clash = (s.query(Savings)
                  .filter(Savings.user_id == user_id,
                          Savings.goal_name != old_name,
-                         Savings.is_deleted == False,
+                         Savings.is_deleted.is_not(True),
                          _func.lower(Savings.goal_name) == new_name.lower())
                  .first())
         if clash is None:
             clash = (s.query(SavingsAccount)
                      .filter(SavingsAccount.user_id == user_id,
                              SavingsAccount.goal_name != old_name,
-                             SavingsAccount.is_deleted == False,
+                             SavingsAccount.is_deleted.is_not(True),
                              _func.lower(SavingsAccount.goal_name) == new_name.lower())
                      .first())
         if clash is not None:
@@ -1355,7 +1426,7 @@ def update_savings_goal(user_id, goal_name, updates):
         rows = (s.query(Savings)
                 .filter(Savings.user_id == user_id,
                         Savings.goal_name == goal_name,
-                        Savings.is_deleted == False).all())
+                        Savings.is_deleted.is_not(True)).all())
         for obj in rows:
             for k, v in updates.items():
                 if hasattr(obj, k):
@@ -1372,7 +1443,7 @@ def soft_delete_savings_goal(user_id, goal_name):
         rows = (s.query(Savings)
                 .filter(Savings.user_id == user_id,
                         Savings.goal_name == goal_name,
-                        Savings.is_deleted == False).all())
+                        Savings.is_deleted.is_not(True)).all())
         for obj in rows:
             obj.is_deleted = True
             obj.deleted_at = _utcnow()
@@ -1380,7 +1451,7 @@ def soft_delete_savings_goal(user_id, goal_name):
         accs = (s.query(SavingsAccount)
                 .filter(SavingsAccount.user_id == user_id,
                         SavingsAccount.goal_name == goal_name,
-                        SavingsAccount.is_deleted == False).all())
+                        SavingsAccount.is_deleted.is_not(True)).all())
         for obj in accs:
             obj.is_deleted = True
             obj.deleted_at = _utcnow()
@@ -1400,7 +1471,7 @@ def get_savings_accounts(user_id, include_deleted=False):
     with get_session() as s:
         q = s.query(SavingsAccount).filter(SavingsAccount.user_id == user_id)
         if not include_deleted:
-            q = q.filter(SavingsAccount.is_deleted == False)
+            q = q.filter(SavingsAccount.is_deleted.is_not(True))
         rows = (q.order_by(SavingsAccount.maturity_date.asc().nullslast(),
                            SavingsAccount.created_at.asc()).all())
     df = _to_df(rows, _SAV_ACC_COLS)
@@ -1702,7 +1773,7 @@ def get_loan_payments(user_id, loan_id):
     with get_session() as s:
         rows = (s.query(Expense)
                 .filter(Expense.user_id == user_id, Expense.loan_id == loan_id,
-                        Expense.is_deleted == False)
+                        Expense.is_deleted.is_not(True))
                 .order_by(Expense.date.asc()).all())
     df = _to_df(rows, _EXP_COLS)
     return _parse_dates(df, ["date", "created_at", "deleted_at"])
@@ -2055,7 +2126,7 @@ def get_household_expenses(household_id, include_deleted=False):
                 .join(User, Expense.user_id == User.id)
                 .filter(User.household_id == household_id))
         if not include_deleted:
-            rows = rows.filter(Expense.is_deleted == False)
+            rows = rows.filter(Expense.is_deleted.is_not(True))
         rows = rows.order_by(Expense.date.desc()).all()
     data = []
     for exp, display_name, username in rows:

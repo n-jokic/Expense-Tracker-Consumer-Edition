@@ -43,21 +43,27 @@ def bump_data_revision(user_id: int, include_household: bool = True) -> int:
 
 ## 5. queries.py — db_version() & bump_db_version()
 
-`queries.py` (186 lines) — cached wrappers + version glue:
+`queries.py` (241 lines) — cached wrappers + version glue with per-rerun snapshot (T2-003, P2):
 
 ```python
-def db_version() -> int:
+def _run_id() -> int | None:  # per-rerun id via ScriptRunContext.cursors identity
+    ctx = get_script_run_ctx(suppress_warning=True)
+    return id(ctx.cursors) if ctx is not None else None  # cursors replaced each reset()
+
+def db_version() -> int:  # snapshot: one DB read per Streamlit rerun
     uid = st.session_state.get("user_id")
     if uid is None: return int(st.session_state.get("db_version", 0))
-    return _db_get_revision(int(uid))  # → db.get_data_revision
+    run_id = _run_id()
+    if run_id is not None and _snap_run_id == run_id and _snap_user_id == uid:
+        return _snap_version  # same rerun → same revision (no N+1 tear)
+    rev = _db_get_revision(int(uid))
+    _snap_run_id, _snap_user_id, _snap_version = run_id, uid, rev
+    return rev
 
-def bump_db_version() -> int:
-    uid = st.session_state.get("user_id")
-    if uid is None:
-        st.session_state.db_version = int(st.session_state.get("db_version", 0)) + 1
-        return st.session_state.db_version
-    rev = _db_bump_revision(int(uid))  # → db.bump_data_revision
+def bump_db_version() -> int:  # keeps snapshot coherent after write in same run
+    rev = _db_bump_revision(int(uid))
     st.session_state.db_version = rev
+    _snap_run_id, _snap_user_id, _snap_version = _run_id(), uid, rev
     return rev
 ```
 

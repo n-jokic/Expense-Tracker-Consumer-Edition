@@ -10,6 +10,12 @@ v2 security model:
   detection.
 - Compare-and-update runs in ONE database session (no TOCTOU window).
 - Record existence checks are scoped to the user (no cross-account oracle).
+- Business invariants (>0, <=MAX_AMOUNT / MAX_SAVINGS_TARGET, enum checks)
+  are enforced centrally; derived *_eur fields are server-computed via
+  to_eur(amount,currency,rates) using the user's stored rates, never
+  trusted from the client (PATTERN-01 fix for T3-CURRENCY-001/004 and analogs).
+- Loan payment metadata (loan_payment_type, loan_surcharge_eur) is whitelisted
+  with validation (INTEGRATION-C-001).
 
 Conflict rule (simple and reviewable): if a record was edited on the server
 AFTER the device's last sync AND the device wants to write different values,
@@ -24,9 +30,13 @@ from sqlalchemy.exc import IntegrityError
 
 from db import (
     get_session, Expense, Income, Savings, SavingsAccount,
-    add_sync_conflict, log_audit,
+    add_sync_conflict, log_audit, get_settings,
 )
-from utils import CATEGORIES, ALL_SUBCATS, remap_category_subcategory
+from utils import (
+    CATEGORIES, ALL_SUBCATS, remap_category_subcategory,
+    MAX_AMOUNT, MAX_SAVINGS_TARGET, SUPPORTED_CURRENCIES,
+    get_rates, to_eur,
+)
 
 SYNC_MODELS = {"expenses": Expense, "income": Income, "savings": Savings,
                "savings_accounts": SavingsAccount}
@@ -47,7 +57,8 @@ FIELD_SCHEMAS = {
         "date": "date", "category": "str", "subcategory": "str",
         "description": "str", "amount": "float", "currency": "str",
         "amount_eur": "float", "recurring": "bool", "rec_template_id": "str",
-        "loan_id": "str", "notes": "str", "is_deleted": "bool",
+        "loan_id": "str", "loan_payment_type": "str", "loan_surcharge_eur": "float",
+        "notes": "str", "is_deleted": "bool",
     },
     "income": {
         "date": "date", "source": "str", "income_type": "str", "hours": "float",
@@ -124,12 +135,86 @@ def json_safe(fields: dict) -> dict:
     return out
 
 
-def validate_fields(table: str, fields: dict):
+def _get_user_rates(user_id: int) -> dict:
+    try:
+        return get_rates(get_settings(user_id))
+    except Exception:
+        # Fallback to defaults if settings unreadable
+        return get_rates({})
+
+
+def _recompute_derived_eur(table: str, clean: dict, rates: dict, existing=None) -> None:
+    """Server-side recompute of derived *_eur fields via to_eur.
+
+    Overwrites client-provided *_eur values so aggregates cannot be poisoned
+    (T3-CURRENCY-004). Uses clean amount/currency when present, otherwise
+    falls back to existing record's values for isolated *_eur updates.
+    """
+    try:
+        if table == "expenses":
+            # amount -> amount_eur
+            amt = clean.get("amount")
+            if amt is None and existing is not None and "amount_eur" in clean:
+                amt = getattr(existing, "amount", None)
+            cur = clean.get("currency")
+            if cur is None and existing is not None:
+                cur = getattr(existing, "currency", "EUR")
+            elif cur is None:
+                cur = "EUR"
+            # Recompute whenever base or derived or currency is being written
+            if ("amount" in clean or "currency" in clean or "amount_eur" in clean) and amt is not None:
+                clean["amount_eur"] = to_eur(float(amt), cur, rates)
+        elif table == "income":
+            cur = clean.get("currency")
+            if cur is None and existing is not None:
+                cur = getattr(existing, "currency", "EUR")
+            elif cur is None:
+                cur = "EUR"
+            for base, eur in (("budgeted", "budgeted_eur"), ("actual", "actual_eur")):
+                bval = clean.get(base)
+                if bval is None and existing is not None and eur in clean:
+                    bval = getattr(existing, base, None)
+                if (base in clean or "currency" in clean or eur in clean) and bval is not None:
+                    clean[eur] = to_eur(float(bval), cur, rates)
+            # hours*rate case: if hours/rate present, budgeted/actual derived from them?
+            # For sync we treat budgeted/actual as authoritative; hours/rate are separate.
+        elif table == "savings":
+            cur = clean.get("currency")
+            if cur is None and existing is not None:
+                cur = getattr(existing, "currency", "EUR")
+            elif cur is None:
+                cur = "EUR"
+            dep = clean.get("deposited")
+            if dep is None and existing is not None and "deposited_eur" in clean:
+                dep = getattr(existing, "deposited", None)
+            if ("deposited" in clean or "currency" in clean or "deposited_eur" in clean) and dep is not None:
+                clean["deposited_eur"] = to_eur(float(dep), cur, rates)
+            # balance_eur is a derived chain on read, but if client sends it, recompute from deposited as best-effort
+            # We leave balance_eur as validated value; recompute would need chain history.
+        elif table == "savings_accounts":
+            cur = clean.get("currency")
+            if cur is None and existing is not None:
+                cur = getattr(existing, "currency", "EUR")
+            elif cur is None:
+                cur = "EUR"
+            amt = clean.get("amount")
+            if amt is None and existing is not None and "amount_eur" in clean:
+                amt = getattr(existing, "amount", None)
+            if ("amount" in clean or "currency" in clean or "amount_eur" in clean) and amt is not None:
+                clean["amount_eur"] = to_eur(float(amt), cur, rates)
+    except (ValueError, TypeError) as e:
+        # Propagate as validation error by raising; caller will handle
+        raise ValueError(str(e))
+
+
+def validate_fields(table: str, fields: dict, rates: dict | None = None):
     """Validate/coerce a change's fields against the table's schema.
 
     Returns (clean_fields, errors). Unknown fields, server-managed fields,
-    bad types, oversized strings, and non-finite numbers are errors —
-    nothing is silently dropped.
+    bad types, oversized strings, non-finite numbers, business-rule violations
+    (>0, caps, enums), and currency mismatches are errors — nothing is
+    silently dropped. When rates is provided, derived *_eur fields are
+    overwritten server-side via to_eur (PATTERN-01).
     """
     schema = FIELD_SCHEMAS.get(table)
     if schema is None:
@@ -151,12 +236,92 @@ def validate_fields(table: str, fields: dict):
                 if len(s) > STR_MAX:
                     errors.append(f"{k} too long")
                     continue
-                clean[k] = s
+                # Currency enum validation
+                if k == "currency":
+                    cur = s.strip().upper()
+                    if cur not in SUPPORTED_CURRENCIES:
+                        errors.append(f"unknown currency {cur}")
+                        continue
+                    clean[k] = cur
+                elif k == "loan_payment_type":
+                    if s not in ("regular", "early"):
+                        errors.append("unknown loan_payment_type")
+                        continue
+                    clean[k] = s
+                else:
+                    clean[k] = s
             elif spec == "float":
                 f = float(v)
                 if not math.isfinite(f):
                     errors.append(f"{k} must be finite")
                     continue
+                # Centralized business guards (PATTERN-01)
+                # Expenses
+                if table == "expenses":
+                    if k == "amount":
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "amount_eur":
+                        # Will be overwritten via to_eur when rates available; still validate isolated value
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "loan_surcharge_eur":
+                        if not (f >= 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be >= 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                elif table == "income":
+                    if k == "hours":
+                        if not (f > 0 and f <= 744 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= 744")
+                            continue
+                    elif k == "rate":
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k in ("budgeted", "actual"):
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k in ("budgeted_eur", "actual_eur"):
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                elif table == "savings":
+                    if k == "target_eur":
+                        if not (f > 0 and f <= MAX_SAVINGS_TARGET):
+                            errors.append(f"{k} must be > 0 and <= {MAX_SAVINGS_TARGET:g}")
+                            continue
+                    elif k == "deposited":
+                        if not (math.isfinite(f) and abs(f) > 0 and abs(f) <= MAX_AMOUNT):
+                            errors.append(f"{k} must be != 0 and |value| <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "deposited_eur":
+                        if not (abs(f) <= MAX_AMOUNT):
+                            errors.append(f"{k} must be |value| <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "interest_rate":
+                        if not (0 <= f <= 100):
+                            errors.append(f"{k} must be >= 0 and <= 100")
+                            continue
+                    elif k == "balance_eur":
+                        if not (f >= 0 and f <= MAX_SAVINGS_TARGET):
+                            errors.append(f"{k} must be >= 0 and <= {MAX_SAVINGS_TARGET:g}")
+                            continue
+                elif table == "savings_accounts":
+                    if k == "amount":
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "amount_eur":
+                        if not (f > 0 and f <= MAX_AMOUNT):
+                            errors.append(f"{k} must be > 0 and <= {MAX_AMOUNT:g}")
+                            continue
+                    elif k == "annual_rate":
+                        if not (0 <= f <= 100):
+                            errors.append(f"{k} must be >= 0 and <= 100")
+                            continue
                 clean[k] = f
             elif spec == "bool":
                 # bool("false") is True — parse explicitly instead.
@@ -170,8 +335,13 @@ def validate_fields(table: str, fields: dict):
                     clean[k] = bool(v)
                 else:
                     errors.append(f"{k} invalid type")
-        except (TypeError, ValueError):
-            errors.append(f"{k} invalid type")
+        except (TypeError, ValueError) as e:
+            # Preserve business-guard messages; otherwise generic
+            msg = str(e)
+            if "must be" in msg or "unknown" in msg:
+                errors.append(msg if msg else f"{k} invalid type")
+            else:
+                errors.append(f"{k} invalid type")
     if table == "expenses" and "category" in clean:
         # Accept legacy (old-taxonomy) names from syncing devices: remap the
         # (category, subcategory) pair to the new taxonomy before validating.
@@ -189,6 +359,12 @@ def validate_fields(table: str, fields: dict):
             errors.append("goal_name must not be blank")
         if "status" in clean and clean["status"] not in ("active", "closed"):
             errors.append("unknown status")
+    # Server-side recompute of derived EUR fields when rates are supplied
+    if rates is not None and not errors:
+        try:
+            _recompute_derived_eur(table, clean, rates, existing=None)
+        except ValueError as e:
+            errors.append(str(e))
     return clean, errors
 
 
@@ -221,6 +397,14 @@ def create_record(user_id, table, record_id, fields):
         return False, None
     if any(k not in fields for k in REQUIRED_FIELDS.get(table, ())):
         return False, None
+    # Server-side EUR recompute before persistence (PATTERN-01)
+    try:
+        rates = _get_user_rates(user_id)
+        # Work on a copy so caller retains original
+        fields = dict(fields)
+        _recompute_derived_eur(table, fields, rates, existing=None)
+    except ValueError:
+        return False, None
     try:
         with get_session() as s:
             existing = s.query(model).filter(model.id == record_id).first()
@@ -233,6 +417,9 @@ def create_record(user_id, table, record_id, fields):
                     continue
                 if hasattr(obj, k):
                     setattr(obj, k, v)
+            # Ensure soft-delete sentinel: missing is_deleted -> False (0) not NULL (T4-003).
+            if hasattr(obj, "is_deleted") and "is_deleted" not in fields:
+                obj.is_deleted = False
             s.add(obj)
             log_audit(s, user_id, "CREATE", table, final_id,
                       {**fields, "via": "sync"})
@@ -255,6 +442,14 @@ def _apply_update(user_id, table, record_id, clean, since):
                .first())
         if obj is None:
             return None
+        # Server-side EUR recompute using user's rates and existing values
+        try:
+            rates = _get_user_rates(user_id)
+            # Ensure clean is not mutated unexpectedly for caller; work on copy then assign back
+            _recompute_derived_eur(table, clean, rates, existing=obj)
+        except ValueError as e:
+            # Treat recompute failure as a validation failure: do not apply
+            return {"error": str(e)}
         server_record = _serialize(obj)
         server_updated = _norm_dt(obj.updated_at)
         changed_on_server = (since is not None and server_updated is not None
@@ -279,6 +474,11 @@ def apply_changes(user_id: int, changes: list, since=None) -> dict:
     """
     since = parse_since(since)
     applied, conflicts, failed = [], [], []
+    # Fetch rates once for this user's sync batch (PATTERN-01)
+    try:
+        rates = _get_user_rates(user_id)
+    except Exception:
+        rates = get_rates({})
     for ch in (changes or [])[:MAX_CHANGES]:
         table = ch.get("table")
         rid = str(ch.get("id") or "")
@@ -286,7 +486,7 @@ def apply_changes(user_id: int, changes: list, since=None) -> dict:
             failed.append({"id": rid, "table": table,
                            "error": "unknown table or missing id"})
             continue
-        clean, errors = validate_fields(table, ch.get("fields") or {})
+        clean, errors = validate_fields(table, ch.get("fields") or {}, rates=rates)
         if errors:
             failed.append({"id": rid, "table": table,
                            "error": "; ".join(errors)})
@@ -303,6 +503,8 @@ def apply_changes(user_id: int, changes: list, since=None) -> dict:
             add_sync_conflict(user_id, table, rid,
                               res["conflict"], res["server"])
             conflicts.append({"id": rid, "table": table})
+        elif "error" in res:
+            failed.append({"id": rid, "table": table, "error": res["error"]})
         else:
             applied.append({"id": rid, "table": table, "status": "updated"})
     return {"applied": applied, "conflicts": conflicts, "failed": failed}

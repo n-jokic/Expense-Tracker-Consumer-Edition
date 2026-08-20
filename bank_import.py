@@ -3,6 +3,8 @@ bank_import.py — Bank statement CSV importer for Expense Tracker v3.
 Supports Revolut, N26, Wise, and generic CSV formats.
 """
 
+import csv
+
 import pandas as pd
 import streamlit as st
 
@@ -155,7 +157,11 @@ def _pick(df: pd.DataFrame, names, fallback_idx: int) -> pd.Series:
 
 def _to_numeric_locale(series: pd.Series) -> pd.Series:
     """Locale-aware numeric parsing: handles '12,50', '1.234,56', '1,234.56'
-    and Serbian dot-thousands '1.234' (= 1234)."""
+    and Serbian dot-thousands '1.234' (= 1234).
+
+    Per-value heuristic: each token is examined independently so a column
+    mixing '1.200' (thousands) with '1.50' (decimal) parses correctly.
+    EU fallback is kept but applied per-value, never column-wide."""
     def _pure_dot_thousands(v):
         """True when the token is digits split ONLY into 3-digit dot groups
         (Serbian thousands), e.g. '1.234' or '12.345.678'."""
@@ -169,20 +175,15 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
                 and all(len(g) == 3 for g in groups[1:])
                 and groups[0].isdigit())
 
-    non_null = [v for v in series.tolist() if isinstance(v, str) and v.strip()]
-    if non_null and all(_pure_dot_thousands(v) for v in non_null):
-        # Every value is a pure dot-thousands number: dots are separators.
-        return pd.to_numeric(series.astype(str).str.replace(".", "", regex=False),
-                             errors="coerce")
-
-    num = pd.to_numeric(series, errors="coerce")
-    if num.notna().all():
-        return num
-
     def conv(v):
         if not isinstance(v, str):
             return v
         s = v.strip()
+        if not s:
+            return v
+        # Per-value Serbian thousands: pure dot-thousands -> strip dots
+        if _pure_dot_thousands(s):
+            return s.replace(".", "")
         if "," in s and "." in s:
             if s.rfind(",") > s.rfind("."):   # EU: dots are thousands
                 s = s.replace(".", "").replace(",", ".")
@@ -192,8 +193,12 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
             s = s.replace(",", ".")
         return s
 
+    # Per-value conversion (no column-wide all-or-nothing heuristic).
     alt = pd.to_numeric(series.map(conv), errors="coerce")
-    return num.fillna(alt)
+    # Keep direct numeric values where conv did not help
+    num = pd.to_numeric(series, errors="coerce")
+    # Prefer per-value converted result, fall back to direct numeric
+    return alt.fillna(num)
 
 
 def _parse_date_series(series: pd.Series) -> pd.Series:
@@ -424,7 +429,38 @@ def render_bank_import_page(user_id: int, rates: dict):
             return
     else:
         try:
-            raw = pd.read_csv(uploaded)
+            # Sniff delimiter (comma vs semicolon) for EU bank exports.
+            # We peek at the first bytes, sniff, then reset the upload pointer.
+            sniff_sep = ","
+            try:
+                pos = uploaded.tell()
+                sample = uploaded.read(4096)
+                if isinstance(sample, bytes):
+                    sample = sample.decode("utf-8", errors="ignore")
+                uploaded.seek(pos)
+                if sample:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+                    sniff_sep = dialect.delimiter
+            except Exception:
+                try:
+                    uploaded.seek(0)
+                except Exception:
+                    pass
+            if sniff_sep == ";":
+                raw = pd.read_csv(uploaded, sep=";", engine="python")
+            elif sniff_sep == "\t":
+                raw = pd.read_csv(uploaded, sep="\t", engine="python")
+            else:
+                # Also handle sep=None sniff via python engine as fallback for
+                # edge cases where comma sniff was ambiguous.
+                try:
+                    raw = pd.read_csv(uploaded, sep=None, engine="python")
+                except Exception:
+                    try:
+                        uploaded.seek(0)
+                    except Exception:
+                        pass
+                    raw = pd.read_csv(uploaded)
         except Exception as e:
             st.error(f"Could not read the file: {e}")
             return

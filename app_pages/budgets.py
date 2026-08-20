@@ -132,8 +132,19 @@ if not dfb.empty:
         for _, r in cur_rows.iterrows():
             if str(r["subcategory"]) == "" and r["category"] in cats_with_sub:
                 continue  # subcategory rows are authoritative for this category
-            b = float(eff_budgets.get(r["category"], r["budgeted_eur"]))
-            if str(r["subcategory"]) == "":
+            _raw = r["subcategory"]
+            try:
+                _is_nan = _raw is not None and _raw != _raw  # NaN != NaN (covers float & numpy)
+            except Exception:
+                _is_nan = False
+            _sub = "" if _raw is None or _is_nan else str(_raw).strip()
+            if _sub.lower() == "nan":
+                _sub = ""
+            if _sub != "":
+                b = float(r["budgeted_eur"])
+            else:
+                b = float(eff_budgets.get(r["category"], r["budgeted_eur"]))
+            if _sub == "":
                 spent = float(exp[exp["category"] == r["category"]]["amount_eur"].sum()) \
                     if not exp.empty else 0.0
                 lbl = str(r["category"])

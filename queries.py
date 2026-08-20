@@ -18,18 +18,60 @@ from db import (
 )
 
 
+def _run_id() -> int | None:
+    """Per-rerun identifier (P2 version-tear fix — T2-003).
+
+    Streamlit reuses one ScriptRunContext per browser session but resets
+    its per-run state each rerun (cursors dict is replaced, ThreadState is
+    re-initialized). Its identity therefore changes each rerun and can be
+    used as a cheap snapshot key so every q.* helper within ONE script
+    execution sees the SAME db_version, while the NEXT rerun (even in the
+    same session) fetches a fresh revision from the DB.
+    Outside a Streamlit run (tests, scripts) returns None -> no snapshot.
+    """
+    try:
+        from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
+        ctx = get_script_run_ctx(suppress_warning=True)
+        if ctx is not None:
+            # ctx.cursors is replaced with a new {} each ScriptRunContext.reset()
+            return id(ctx.cursors)
+    except Exception:
+        pass
+    return None
+
+
 def db_version() -> int:
-    """The shared data revision from the DB.
+    """The shared data revision from the DB (per-rerun snapshot).
 
     Every browser session, household member, and background job reads the
     SAME value, so a write in one session invalidates cached readers
     everywhere immediately — no waiting for per-session counters or TTLs.
     Falls back to a session-local counter before login.
+
+    Snapshot: within a single Streamlit script execution all callers share
+    one DB read (fixes N+1 tear across ~15 helpers in app.py and pages).
+    The NEXT rerun re-reads the DB so cross-session bumps are visible
+    without waiting for TTLs (G2, P2).
     """
     uid = st.session_state.get("user_id")
     if uid is None:
         return int(st.session_state.get("db_version", 0))
-    return _db_get_revision(int(uid))
+    uid = int(uid)
+    run_id = _run_id()
+    if run_id is not None:
+        snap_key = "_snap_version"
+        snap_run_key = "_snap_run_id"
+        snap_user_key = "_snap_user_id"
+        if (st.session_state.get(snap_run_key) == run_id
+                and st.session_state.get(snap_user_key) == uid
+                and snap_key in st.session_state):
+            return int(st.session_state[snap_key])
+        rev = _db_get_revision(uid)
+        st.session_state[snap_run_key] = run_id
+        st.session_state[snap_user_key] = uid
+        st.session_state[snap_key] = int(rev)
+        return int(rev)
+    return _db_get_revision(uid)
 
 
 def bump_db_version() -> int:
@@ -40,6 +82,17 @@ def bump_db_version() -> int:
         return st.session_state.db_version
     rev = _db_bump_revision(int(uid))
     st.session_state.db_version = rev
+    # Keep the per-rerun snapshot coherent within this same rerun: future
+    # q.* calls after the bump in the same script execution must see the
+    # NEW revision, not the stale snapshot taken before the write.
+    try:
+        run_id = _run_id()
+        if run_id is not None:
+            st.session_state["_snap_run_id"] = run_id
+            st.session_state["_snap_user_id"] = int(uid)
+            st.session_state["_snap_version"] = int(rev)
+    except Exception:
+        pass
     return rev
 
 

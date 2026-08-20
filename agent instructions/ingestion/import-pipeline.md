@@ -26,7 +26,7 @@ savings flows, market-price fetching.
 
 * Upload widget (`render_bank_import_page`): `st.file_uploader(..., type=["csv","pdf"])`, 20 MB limit (`MAX_UPLOAD_MB`).
 * PDF branch: `extract_transactions_from_pdf(uploaded.getvalue())` → same normalized frame as CSV; empty result → warning and early return.
-* CSV branch: `pd.read_csv(uploaded)` with pandas default dialect (comma). No explicit semicolon sniffing — generic files that use `;` must be re-exported with commas or they fail at `pd.read_csv`. Header detection is case-insensitive (`cols = [c.lower() for c in df.columns]`).
+* CSV branch: delimiter sniffed via `csv.Sniffer` (`,`, `;`, `\t`) with `sep=None, engine='python'` fallback — EU `;` + `,` decimal files parse without re-export. Header detection is case-insensitive (`cols = [c.lower() for c in df.columns]`).
 
 ### Header normalisation
 
@@ -40,10 +40,10 @@ savings flows, market-price fetching.
 
 Handles four notations in one path:
 
-1. **Pure dot-thousands** (Serbian `1.234`, `12.345.678`): every non-empty string splits into 3-digit dot groups and contains no comma → dots stripped then `pd.to_numeric`.
-2. **Both separators**: last separator is the decimal (`1.234,56` → EU, `1,234.56` → US).
-3. **Single comma**: `12,50` → `12.50`.
-4. **Fallback**: plain `pd.to_numeric(errors="coerce")` plus the manual `conv` fill.
+1. **Per-value pure dot-thousands** (Serbian `1.234`): each token examined independently — pure 3-digit dot groups → dots stripped (no column-wide all-or-nothing check that misparsed mixed `1.200`/`1.50`).
+2. **Both separators**: last separator is the decimal (`1.234,56` → EU, `1,234.56` → US) per token.
+3. **Single comma**: `12,50` → `12.50` per token.
+4. **Fallback**: `pd.to_numeric` on raw, filled by per-value `conv`.
 
 ### Date parsing (`_parse_date_series` → `pdf_import._parse_date_token`)
 
@@ -103,15 +103,15 @@ Covers English, Serbian (Latin), Macedonian (Cyrillic), German. Roles assigned p
 
 * Each amount cell is signed by its column role: `debit → -abs(a)`, `credit → abs(a)`, `amount → as-parsed`.
 * Cells in `description` columns are **never amount-parsed** (prevents `PAYMENT REF 1234` → 1234).
-* Headerless amount cells count only when `_is_pure_amount_cell(cell)` — whole cell, after stripping parentheses / trailing minus / currency symbols, matches `_AMOUNT_RE.fullmatch`.
-* Filters: `amount == 0` or `abs(amount) > 1_000_000` → dropped (same threshold as `MAX_AMOUNT`).
+* Headerless amount cells count only when `_is_pure_amount_cell(cell)` — whole cell, after iteratively stripping parentheses / trailing minus / currency symbols **and codes** (EUR/RSD/…), and rejecting dates, matches `_AMOUNT_RE.fullmatch`.
+* Filters: `amount == 0` or `abs(amount) > 1_000_000` → dropped (same threshold as `MAX_AMOUNT`). Amount core detection is per-value/per-cell, never column-wide, so mixed `1.200` (1200) and `1.50` (1.50) both parse correctly (INTEGRATION-B-001 fix).
 
 ### 4.5 Amount parsing (`_parse_amount_token` + `_parse_amount_core`)
 
 * Normalises typographic minus (`\u2212/\u2013/\u2014` → `-`), NBSP → space.
 * **Parenthesised negatives** `(45.00)` → `-45.00`.
 * **Trailing minus** `45.00-` → `-45.00` (accounting style).
-* Strips currency symbols from either end (`_CURRENCY_SYMBOLS = €$£¥₣₹₽₺₴₩₪₫₱₦﷼` plus codepoints).
+* Strips currency symbols **and codes** (`EUR`, `RSD`, `USD`, …) from either end (`_CURRENCY_SYMBOLS` + `_CURRENCY_CODE_STRIP_RE`) so headerless cells like `"1.234,56 EUR"` are recognised; iterative strip handles both orders.
 * **Date guard**: full ISO match or `_parse_date_token(m.group(0)) is not None` → not an amount (prevents `2025-01-02` → 2025).
 * Core numeric: same locale logic as CSV — both separators → last is decimal; single-dot with all trailing groups len 3 → thousands; single-comma likewise.
 

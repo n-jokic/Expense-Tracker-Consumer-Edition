@@ -52,11 +52,11 @@ See `crypto.py:93` (`get_master_bytes`) and `crypto.py:34/54/64`.
 
 `tests/test_crypto.py:test_master_key_env_precedence_and_passphrase_digest` pins hex vs passphrase behavior; hermetic suites set `EXPENSE_TRACKER_DB_KEY="9f2c8e6a…"` in `tests/conftest.py`.
 
-## 6. Source 2 — File (`data/.secret_key`)
+## 6. Source 2 — File (`data/.secret_key` or DB-colocated)
 
-`_file_secret() -> bytes | None` — `crypto.py:54`:
+`_secret_key_path()` → `_file_secret() -> bytes | None` — `crypto.py:54`:
 
-- Path: `os.path.join(state_dir(), ".secret_key")` — `state_dir()` respects `EXPENSE_TRACKER_DATA_DIR`, then frozen `%LOCALAPPDATA%/ExpenseTracker`, then `<repo>/data` (`app_paths.py:12`).
+- Path: when `DB_PATH` is overridden (tests, custom install) the secret is **colocated** with the DB: `dirname(abspath(DB_PATH))/.secret_key` (T2-001, P4 lock/memo fix); otherwise `os.path.join(state_dir(), ".secret_key")` — `state_dir()` respects `EXPENSE_TRACKER_DATA_DIR`, then frozen `%LOCALAPPDATA%/ExpenseTracker`, then `<repo>/data` (`app_paths.py:12`). This prevents different DBs sharing one `state_dir` secret/lock.
 - If the file exists, `f.read().strip()` non-empty → return **raw bytes**.
 - **Auto-generation:** `_generate_and_store_file_key()` → `Fernet.generate_key()`, `os.open(...,0o600)` + `fdopen`, fallback to plain `open` on Windows. Logs `generated new master key at …`.
 
@@ -110,7 +110,7 @@ def _file_is_plaintext(path) -> bool:
 
 ## 12. Migration & Concurrency — _migrate_plaintext_to_encrypted() + _wait_for_migration_lock()
 
-**Lock file:** `_ENCRYPTION_LOCK = <BASE_DIR>/.db-encrypting` — exclusive creation via `os.open(O_CREAT|O_EXCL|O_WRONLY,0o600)`, content = PID.
+**Lock file:** `_ENCRYPTION_LOCK = <_DB_DIR>/.db-encrypting` where `_DB_DIR = dirname(abspath(DB_PATH))` — colocation with the DB file (T2-001). Exclusive creation via `os.open(O_CREAT|O_EXCL|O_WRONLY,0o600)`, content = PID. Similarly `BACKUP_DIR` and `.last_backup` marker are cololated with `_DB_DIR` when `DB_PATH` is overridden (otherwise `<BASE_DIR>/backups`).
 
 - **_wait_for_migration_lock(timeout_s=600)** — busy-waits while the lock exists. If the lock is **>600 s stale** (`mtime` >600 s ago) it is removed (crashed migrator). Returns `True` when the caller may proceed, `False` when the lock is *freshly held* at the deadline — caller must NOT start its own migration (same temp files `*.migrating`, `*.enc-new`).
 - **Retry loop:** `_ensure_db_encrypted()` tries up to 2 attempts; `FileExistsError("database encryption is already running…")` causes a re-check after the other process finishes. Once another process produces ciphertext, waiting callers see `not _file_is_plaintext` and return without migrating.

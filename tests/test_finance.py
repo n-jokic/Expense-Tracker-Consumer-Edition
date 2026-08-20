@@ -309,7 +309,9 @@ def test_payoff_date_after_current_month_prepayment():
 
 def test_term_deposit_math():
     from finance import months_between, maturity_value, accrued_value
-    assert months_between(date(2026, 1, 10), date(2026, 2, 9)) == 1
+    assert months_between(date(2026, 1, 10), date(2026, 2, 9)) == 0
+    assert months_between(date(2026, 1, 10), date(2026, 2, 10)) == 1
+    assert months_between(date(2026, 1, 31), date(2026, 2, 1)) == 0
     assert months_between(date(2026, 1, 10), date(2026, 1, 11)) == 0
     # 1000 at 12% p.a. for 12 months -> 1000 * 1.01^12
     assert maturity_value(1000.0, 12.0, date(2026, 1, 1), date(2027, 1, 1)) \

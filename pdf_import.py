@@ -35,6 +35,9 @@ _AMOUNT_RE = re.compile(
 
 # Currency symbols stripped before amount parsing.
 _CURRENCY_SYMBOLS = "€$£¥₣₹₽₺₴₩₪₫₱₦﷼\u20ac\u20bd\u20a4\u20b9\u20ba"
+# Currency codes optionally appended/prepended to amounts (e.g. "1.234,56 EUR", "RSD 123").
+_CURRENCY_CODES_RE = re.compile(r"^(?:EUR|RSD|USD|GBP|CHF|HRK|BAM|HUF|RON|BGN|PLN|CZK)\b|\b(?:EUR|RSD|USD|GBP|CHF|HRK|BAM|HUF|RON|BGN|PLN|CZK)$", re.IGNORECASE)
+_CURRENCY_CODE_STRIP_RE = re.compile(r"^\s*(?:EUR|RSD|USD|GBP|CHF|HRK|BAM|HUF|RON|BGN|PLN|CZK)\s+|\s+(?:EUR|RSD|USD|GBP|CHF|HRK|BAM|HUF|RON|BGN|PLN|CZK)\s*$", re.IGNORECASE)
 
 # --- Column-role vocabulary --------------------------------------------------
 _BALANCE_WORDS = re.compile(
@@ -208,7 +211,11 @@ def _parse_amount_token(tok: str) -> float | None:
     if s.endswith("-"):
         sign *= -1.0
         s = s[:-1].strip()
-    # Strip currency symbols from either end.
+    # Strip currency codes (EUR/RSD/...) then symbols from either end.
+    s = _CURRENCY_CODE_STRIP_RE.sub("", s).strip()
+    s = s.strip(_CURRENCY_SYMBOLS + " \t")
+    # Codes may appear after stripping symbols (e.g. "1,234.56 EUR" -> strip symbol then code)
+    s = _CURRENCY_CODE_STRIP_RE.sub("", s).strip()
     s = s.strip(_CURRENCY_SYMBOLS + " \t")
     # A whole ISO date (e.g. "2025-01-02") is not an amount, even though its
     # year part matches the number pattern.
@@ -231,7 +238,12 @@ def _parse_amount_token(tok: str) -> float | None:
 def _is_pure_amount_cell(cell: str) -> bool:
     """True when a whole cell is nothing but a (possibly signed/parenthesised,
     possibly currency-prefixed) number — used for headerless tables where
-    description cells may contain digits (e.g. 'PAYMENT REF 1234')."""
+    description cells may contain digits (e.g. 'PAYMENT REF 1234').
+
+    Strips both currency symbols (€/$/...) and currency codes (EUR/RSD/...) on
+    either end so headerless amounts like "1.234,56 EUR" or "RSD 1.234,56"
+    are recognised (previously returned 0 rows). Per-value thousands heuristic
+    is handled by _parse_amount_core, not here."""
     s = str(cell or "").strip().replace("\u2212", "-").replace("\u00a0", " ")
     if not s:
         return False
@@ -239,8 +251,17 @@ def _is_pure_amount_cell(cell: str) -> bool:
         s = s[1:-1].strip()
     if s.endswith("-"):
         s = s[:-1].strip()
-    s = s.strip(_CURRENCY_SYMBOLS + " \t")
+    # Strip currency codes and symbols iteratively (either end, either order).
+    prev = None
+    while prev != s:
+        prev = s
+        s = _CURRENCY_CODE_STRIP_RE.sub("", s).strip()
+        s = s.strip(_CURRENCY_SYMBOLS + " \t")
+        s = _CURRENCY_CODE_STRIP_RE.sub("", s).strip()
+        s = s.strip(_CURRENCY_SYMBOLS + " \t")
     if not s or _DATE_ISO_RE.fullmatch(s):
+        return False
+    if _parse_date_token(s) is not None:
         return False
     return bool(_AMOUNT_RE.fullmatch(s))
 

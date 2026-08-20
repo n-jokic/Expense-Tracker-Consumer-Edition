@@ -170,7 +170,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict,
                     recurring_df: pd.DataFrame | None = None,
                     loans_df: pd.DataFrame | None = None,
-                    user_id: int | None = None):
+                    user_id: int | None = None,
+                    on_add_subscription=None):
     """Render the full insights page."""
     st.title(":material/lightbulb: Spending Insights")
     st.caption("Auto-generated observations about your finances — updated every time you open this page.")
@@ -456,7 +457,6 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
     # ── Subscription / recurring detection ────────────────────────────────────
     subs = detect_subscriptions(expenses_df)
     if not subs.empty:
-        from db import add_recurring
         st.subheader(":material/repeat: These look like subscriptions")
         st.caption("Regular monthly charges detected — add them as recurring "
                    "templates to get due-day reminders.")
@@ -470,18 +470,24 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     continue
                 if st.button("Add", icon=":material/add:",
                              key=f"sub_{idx}_{row.last_date}", width="stretch"):
-                    add_recurring(user_id, {
-                        "category": row.category, "subcategory": "",
-                        "description": str(row.description),
-                        "amount": float(row.amount_eur),
-                        "currency": "EUR", "amount_eur": float(row.amount_eur),
-                        "due_day": None, "notes": "Detected from your spending",
-                        "active": True,
-                    })
-                    q.bump_db_version()
-                    st.toast(f"Added '{row.description}' to Recurring",
-                             icon=":material/repeat:")
-                    st.rerun()
+                    if on_add_subscription is not None:
+                        on_add_subscription(user_id, row)
+                    else:
+                        # Fallback for direct callers (e.g. tests) — keeps insights pure by delegating
+                        # through the view in normal usage; this path preserves backwards compat.
+                        from db import add_recurring
+                        add_recurring(user_id, {
+                            "category": row.category, "subcategory": "",
+                            "description": str(row.description),
+                            "amount": float(row.amount_eur),
+                            "currency": "EUR", "amount_eur": float(row.amount_eur),
+                            "due_day": None, "notes": "Detected from your spending",
+                            "active": True,
+                        })
+                        q.bump_db_version()
+                        st.toast(f"Added '{row.description}' to Recurring",
+                                 icon=":material/repeat:")
+                        st.rerun()
 
     # ── Month-over-month table ────────────────────────────────────────────────
     st.subheader(":material/calendar_month: Month-over-month by category")

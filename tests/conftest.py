@@ -11,9 +11,19 @@ tables — at the live database.
 """
 
 import os
+import pathlib
 import tempfile
+import uuid
 
-_TMP = tempfile.mkdtemp(prefix="expense_tracker_tests_")
+# DSH harness runs with workspace-write sandbox: writes are only allowed
+# under the session workspace. System temp (via tempfile.mkdtemp default)
+# is blocked for SQLite opens (Permission denied). Use a workspace-backed
+# temp dir so DB files are writable under the sandbox (T2-001 mirror).
+_WS = pathlib.Path(__file__).resolve().parent.parent
+_TMP_BASE = _WS / "data" / "_pytest_tmp"
+_TMP_BASE.mkdir(parents=True, exist_ok=True)
+_TMP = str(_TMP_BASE / f"expense_tracker_tests_{uuid.uuid4().hex[:8]}")
+os.makedirs(_TMP, exist_ok=True)
 os.environ["DB_PATH"] = os.path.join(_TMP, "test_expense_tracker.db")
 os.environ["BACKUP_DIR"] = os.path.join(_TMP, "backups")
 # The suite exercises the real encryption path (SQLCipher). A fixed key keeps

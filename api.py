@@ -107,8 +107,8 @@ def pair(req: PairRequest, request: Request):
 def sync_v1(req: SyncRequest, authorization: Optional[str] = Header(default=None)):
     """DEPRECATED: client-supplied `since` is not trusted going forward.
     Use /api/v2/sync (server-issued cursor)."""
-    dev = _auth(authorization)
     init_db()
+    dev = _auth(authorization)
     since = sync_core.parse_since(req.since)
     result = sync_core.apply_changes(dev["user_id"],
                                      [c.model_dump() for c in req.changes], since)
@@ -128,8 +128,8 @@ def _bump_after_sync(user_id: int, result: dict) -> None:
 
 @app.post("/api/v2/sync")
 def sync_v2(req: SyncRequest, authorization: Optional[str] = Header(default=None)):
-    dev = _auth(authorization)
     init_db()
+    dev = _auth(authorization)
     # Server-issued cursor: the device's recorded last sync time. A client
     # cannot forge a null/future `since` to skip conflict detection.
     since = sync_core.parse_since(dev.get("last_sync_at"))

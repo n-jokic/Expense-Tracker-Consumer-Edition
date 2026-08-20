@@ -84,7 +84,7 @@ def forecast_next_month(expenses_df: pd.DataFrame) -> dict:
         "by_category": {}, "fallback": total is None,
         "history_months": _elapsed_months(_monthly_totals(expenses_df)),
     }
-    if total is None or expenses_df is None or expenses_df.empty:
+    if expenses_df is None or expenses_df.empty:
         return out
     for cat in expenses_df["category"].dropna().unique():
         sub = expenses_df[expenses_df["category"] == cat]

@@ -1,0 +1,41 @@
+{
+  "generated": "2026-08-20",
+  "leads": [
+    {
+      "id": "LEAD-001",
+      "observed_while": "T3-CURRENCY-001/004",
+      "location": "sync_core.py validate_fields isolated _eur",
+      "observation": "Sync create with only amount_eur (no amount/currency) passes cap and is stored verbatim without recompute",
+      "severity": "MEDIUM",
+      "relationship": "adjacent",
+      "status": "UNVALIDATED"
+    },
+    {
+      "id": "LEAD-002",
+      "observed_while": "T2-PERSISTENCE-001",
+      "location": "crypto.py _env_secret 64-hex precedence",
+      "observation": "64-char hex-like passphrase decoded as raw key not sha256 — system self-consistent but user expectation mismatch documented as UX not corruption",
+      "severity": "LOW",
+      "relationship": "adjacent",
+      "status": "UNVALIDATED"
+    },
+    {
+      "id": "LEAD-003",
+      "observed_while": "R4-TIME-INGEST",
+      "location": "bank_import _to_numeric_locale US 1,200",
+      "observation": "US comma thousands 1,200 parses as 1.2 in bank_import vs 1200 in pdf_import — pre-existing asymmetry not introduced by fix",
+      "severity": "LOW",
+      "relationship": "adjacent",
+      "status": "UNVALIDATED"
+    },
+    {
+      "id": "LEAD-004",
+      "observed_while": "R7-CONNECT",
+      "location": "tests/conftest.py temp DB",
+      "observation": "DB-backed test fixtures fail with sqlcipher unable to open file when temp dir permission restricted — infra not product bug but masks regression signal",
+      "severity": "LOW",
+      "relationship": "unrelated",
+      "status": "UNVALIDATED"
+    }
+  ]
+}

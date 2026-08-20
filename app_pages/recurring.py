@@ -112,12 +112,30 @@ def log_template_dialog(row):
                              key=f"lr_a_{rid}")
     if st.button("Log it", icon=":material/check:", type="primary", key=f"lr_c_{rid}"):
         _fresh_exp = q.expenses(user_id)
-        if not _fresh_exp.empty and "rec_template_id" in _fresh_exp.columns and (
-            (_fresh_exp["rec_template_id"].astype(str) == rid)
-            & (_fresh_exp["date"].dt.date == paid_on)
-        ).any():
-            st.toast("Already logged this template today — duplicate prevented.", icon=":material/check:")
-            st.rerun()
+        # T4-002: month-bucket dedup (not day) — reuse _unlogged_templates semantics
+        if not _fresh_exp.empty:
+            # normalize via month check: already logged this template in this month?
+            _m = _fresh_exp
+            if "rec_template_id" in _m.columns:
+                _month_logged = (
+                    (_m["rec_template_id"].astype(str) == rid)
+                    & (_m["date"].dt.year == paid_on.year)
+                    & (_m["date"].dt.month == paid_on.month)
+                ).any()
+            else:
+                _month_logged = False
+            # legacy fallback: description+amount_eur month gate
+            if not _month_logged and "recurring" in _m.columns:
+                _legacy = _m[_m["recurring"] == True]
+                _month_logged = (
+                    (_legacy["description"].astype(str).str.strip().str.lower() == str(row["description"]).strip().lower())
+                    & (_legacy["amount_eur"].round(2) == round(float(row["amount_eur"]) if pd.notna(row["amount_eur"]) else 0.0, 2))
+                    & (_legacy["date"].dt.year == paid_on.year)
+                    & (_legacy["date"].dt.month == paid_on.month)
+                ).any() if not _legacy.empty else False
+            if _month_logged:
+                st.toast("Already logged this template this month — duplicate prevented.", icon=":material/check:")
+                st.rerun()
         try:
             add_expense(user_id, {"date": paid_on, "category": row["category"],
                 "subcategory": row["subcategory"], "description": row["description"],
@@ -198,7 +216,7 @@ else:
 
     def _persist_grouped_order(groups, rows):
         by_id = {str(row["id"]): row for _, row in rows.iterrows()}
-        changed = False
+        pending = []
         for category, item_ids in groups.items():
             valid_subcategories = set(CATEGORIES.get(category, []))
             for position, item_id in enumerate(item_ids):
@@ -217,9 +235,34 @@ else:
                 category_changed = "category" in updates
                 subcategory_changed = "subcategory" in updates
                 if order_changed or category_changed or subcategory_changed:
-                    update_recurring(user_id, str(item_id), updates)
-                    changed = True
-        if changed:
+                    pending.append((str(item_id), updates))
+        if pending:
+            # T4-005+A-002: single transaction + single bump (was N+1)
+            try:
+                from db import Recurring as _RecModel, log_audit as _log_audit
+                from sqlalchemy.orm import sessionmaker as _sm
+                from db import get_engine as _get_engine
+                engine = _get_engine()
+                Session = _sm(bind=engine, expire_on_commit=False)
+                s = Session()
+                try:
+                    for tid, upd in pending:
+                        obj = s.query(_RecModel).filter(_RecModel.id == tid, _RecModel.user_id == user_id).first()
+                        if obj is None:
+                            continue
+                        for k, v in upd.items():
+                            if hasattr(obj, k):
+                                setattr(obj, k, v)
+                        _log_audit(s, user_id, "UPDATE", "recurring", tid, upd)
+                    s.commit()
+                except Exception:
+                    s.rollback()
+                    raise
+                finally:
+                    s.close()
+            except Exception as e:
+                st.error(f"Couldn't save order: {e}")
+                return
             q.bump_db_version()
             st.rerun()
 

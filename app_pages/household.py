@@ -24,7 +24,18 @@ help_expander("How households work",
               "Create a household and share the invite code with your partner or family. "
               "Once they join, you can view combined expenses on the Dashboard.")
 
-hh_id = st.session_state.get("household_id")
+def _household_id(user_id: int) -> int | None:
+    """Re-derive from DB and validate membership — stale session_state discarded."""
+    try:
+        info = get_household_by_member(user_id)
+        if info and info.get("id"):
+            return int(info["id"])
+    except Exception:
+        pass
+    return None
+
+
+hh_id = _household_id(user_id)
 
 
 @st.dialog("Leave household", icon=":material/logout:")
@@ -54,7 +65,7 @@ if not hh_id:
             hh_name = st.text_input("Household name", placeholder="e.g. The Smiths")
             if st.form_submit_button("Create household", type="primary"):
                 if hh_name.strip():
-                    if st.session_state.get("household_id"):
+                    if _household_id(user_id) is not None:
                         st.toast("Already in a household — duplicate prevented.", icon=":material/check:")
                         st.rerun()
                     try:
