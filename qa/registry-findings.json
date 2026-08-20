@@ -9,10 +9,11 @@
       "id": "T1-SHELL-AUTH-001",
       "domain": "D1 Shell/Auth",
       "location": "auth.py:40-42,57-65,138-150",
-      "verdict": "SUSPECTED",
-      "severity": "LOW",
-      "pattern": "P4 partial",
-      "short": "Throttle per-username dict-key leak + naive clock (per-username isolation intentional, home-LAN only)"
+      "verdict": "NOT-A-BUG",
+      "severity": "INFO",
+      "pattern": "INFO-hardening",
+      "short": "Throttle per-username dict-key leak + naive clock (per-username isolation intentional, home-LAN only) | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: NOT-A-BUG (per-username intentional, home-LAN, bounded leak; naive clock delta-neutral) validator 715d001d"
     },
     {
       "id": "T1-SHELL-AUTH-002",
@@ -27,10 +28,11 @@
       "id": "T1-SHELL-AUTH-003",
       "domain": "D1 Shell/Auth",
       "location": "auth.py:68-82",
-      "verdict": "SUSPECTED",
-      "severity": "LOW",
+      "verdict": "NOT-A-BUG",
+      "severity": "INFO",
       "pattern": "-",
-      "short": "ALLOW_REGISTRATION empty-string blocks secrets fallback (Docker :-false mitigates)"
+      "short": "ALLOW_REGISTRATION empty-string blocks secrets fallback (Docker :-false mitigates) | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: NOT-A-BUG fail-closed, Docker :-false mitigates validator d255d5a7"
     },
     {
       "id": "T2-PERSISTENCE-001",
@@ -45,10 +47,11 @@
       "id": "T2-PERSISTENCE-002",
       "domain": "D2 Persistence",
       "location": "db.py:918-938 queries.py:21-32",
-      "verdict": "SUSPECTED",
+      "verdict": "CONFIRMED",
       "severity": "LOW",
-      "pattern": "P2+P6",
-      "short": "Household bump RETURNING arbitrary row stays diverged (transient mirror only)"
+      "pattern": "P2",
+      "short": "Household bump RETURNING arbitrary row stays diverged (transient mirror only) | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: CONFIRMED LOW transient mirror only — RETURNING fetchone arbitrary (db.py:946-951) but DB correctly bumped + heals next rerun snapshot validator f76db170"
     },
     {
       "id": "T2-PERSISTENCE-003",
@@ -99,10 +102,11 @@
       "id": "T3-CURRENCY-003",
       "domain": "D3 Currency",
       "location": "utils TAXONOMY vs sync_core:175-184",
-      "verdict": "SUSPECTED",
-      "severity": "LOW",
-      "pattern": "P3",
-      "short": "Taxonomy remap partial wire subcategory-only rejection not silent persist"
+      "verdict": "NOT-A-BUG",
+      "severity": "INFO",
+      "pattern": "-",
+      "short": "Taxonomy remap partial wire subcategory-only rejection not silent persist | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: FALSE_POSITIVE — partial wire correctly rejected (sync_core 345-354 remap before whitelist, 16 probes) validator 46c47b18"
     },
     {
       "id": "T3-CURRENCY-004",
@@ -279,10 +283,11 @@
       "id": "T7-INTELLIGENCE-005",
       "domain": "D7 Intelligence",
       "location": "llm.py:248,326 ask.py:21",
-      "verdict": "SUSPECTED",
+      "verdict": "CONFIRMED",
       "severity": "LOW",
       "pattern": "docs overclaim",
-      "short": "Ask numeric-only doc overclaim ships capped names not silent leak"
+      "short": "Ask numeric-only doc overclaim ships capped names not silent leak | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: CONFIRMED LOW doc-only — ask.py:21 caption overclaims numeric-only vs header/README accurate; code correctly caps sanitized names/descs validator 811bbed7"
     },
     {
       "id": "T8-CONNECTIVITY-001",
@@ -324,10 +329,11 @@
       "id": "T8-CONNECTIVITY-005",
       "domain": "D8 Connectivity",
       "location": "api.py:37-48 db:2282",
-      "verdict": "SUSPECTED",
-      "severity": "LOW",
+      "verdict": "NOT-A-BUG",
+      "severity": "INFO",
       "pattern": "-",
-      "short": "Pairing rate limit per-process global clear LAN not exploitable"
+      "short": "Pairing rate limit per-process global clear LAN not exploitable | revalidated 2026-08-20",
+      "revalidated": "2026-08-20 follow-up: NOT-A-BUG per-IP 5/600s correct for LAN, >1000 clear needs 1001 IPs, single-worker Caddy 127.0.0.1:8501 validator 85334f0b"
     }
   ]
 }

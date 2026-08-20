@@ -959,7 +959,10 @@ Future AI agents (and subagents) start at [`agent instructions/README.md`](./age
 
 ## QA Bug Map
 
+Validated swarm campaign: 36 candidates across 8 domains -> 19 CONFIRMED + 1 HIGH-CONFIDENCE + 6 SUSPECTED + 10 NOT-A-BUG, 6 systemic patterns (P1-P6), 6 integration-distinct. See [`qa/reports/final-qa-bug-map.md`](./qa/reports/final-qa-bug-map.md) and [`qa/registry-findings.json`](./qa/registry-findings.json).
+
+Follow-up re-validation (2026-08-20): the 6 SUSPECTED + 4 leads were adversarially re-validated -> 4 confirmed (T2-002 transient RETURNING, T7-005 caption docs-only, LEAD-001 isolated _eur, LEAD-003 US thousands 1,200->1.2), 6 closed NOT-A-BUG. See [`qa/reports/follow-up-qa-cycle.md`](./qa/reports/follow-up-qa-cycle.md) and [`qa/new-leads.json`](./qa/new-leads.json) (now VALIDATED).
 
 ## Remediation Dossier
 
-Fixes for 26 authorized findings (20 CONFIRMED/HIGH-CONFIDENCE + 6 integration-distinct) are tracked in [`qa/reports/remediation-report.md`](./qa/reports/remediation-report.md) with `qa/registry-findings.json` (per-ID status) and `qa/new-leads.json` (4 UNVALIDATED leads). All patches preserve QA IDs; see the Remediation Dossier for per-fix validation and memory reconciliation. Source of truth is code; `agent instructions/` is synchronized Type A after each patch.
+Fixes for 26 authorized findings (20 CONFIRMED/HIGH-CONFIDENCE + 6 integration-distinct) are tracked in [`qa/reports/remediation-report.md`](./qa/reports/remediation-report.md) with `qa/registry-findings.json` (per-ID status) and `qa/new-leads.json` (now VALIDATED, 2 promoted: LEAD-001 isolated _eur CREATE, LEAD-003 US thousands guard). All patches preserve QA IDs; see the Remediation Dossier for per-fix validation and memory reconciliation. Source of truth is code; `agent instructions/` is synchronized Type A after each patch. Next hardening backlog: LEAD-001/003 (backlog), T7-005 caption (1 line), T2-002 ORDER BY (optional).

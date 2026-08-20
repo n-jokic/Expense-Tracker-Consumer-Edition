@@ -6,9 +6,11 @@
       "observed_while": "T3-CURRENCY-001/004",
       "location": "sync_core.py validate_fields isolated _eur",
       "observation": "Sync create with only amount_eur (no amount/currency) passes cap and is stored verbatim without recompute",
-      "severity": "MEDIUM",
+      "severity": "LOW",
       "relationship": "adjacent",
-      "status": "UNVALIDATED"
+      "status": "VALIDATED",
+      "verdict": "CONFIRMED",
+      "revalidated": "2026-08-20 follow-up: CONFIRMED LOW — isolated _eur CREATE bypasses to_eur (900k stored verbatim, 5M correctly capped). Promote to remediation backlog. Validator be5b80a3"
     },
     {
       "id": "LEAD-002",
@@ -17,7 +19,9 @@
       "observation": "64-char hex-like passphrase decoded as raw key not sha256 — system self-consistent but user expectation mismatch documented as UX not corruption",
       "severity": "LOW",
       "relationship": "adjacent",
-      "status": "UNVALIDATED"
+      "status": "VALIDATED",
+      "verdict": "NOT-A-BUG",
+      "revalidated": "2026-08-20 follow-up: NOT-A-BUG self-consistent hex precedence documented, no data loss validator 6d41ad91"
     },
     {
       "id": "LEAD-003",
@@ -26,7 +30,9 @@
       "observation": "US comma thousands 1,200 parses as 1.2 in bank_import vs 1200 in pdf_import — pre-existing asymmetry not introduced by fix",
       "severity": "LOW",
       "relationship": "adjacent",
-      "status": "UNVALIDATED"
+      "status": "VALIDATED",
+      "verdict": "CONFIRMED",
+      "revalidated": "2026-08-20 follow-up: CONFIRMED LOW — US 1,200 ->1.2 1000x asymmetry bank vs pdf, pre-existing. Promote. Validator 6c3393c5"
     },
     {
       "id": "LEAD-004",
@@ -35,7 +41,10 @@
       "observation": "DB-backed test fixtures fail with sqlcipher unable to open file when temp dir permission restricted — infra not product bug but masks regression signal",
       "severity": "LOW",
       "relationship": "unrelated",
-      "status": "UNVALIDATED"
+      "status": "VALIDATED",
+      "verdict": "NOT-A-BUG",
+      "revalidated": "2026-08-20 follow-up: NOT-A-BUG infra fixed (data/_pytest_tmp 18/18 pass), residual github_backup temp remains validator e8a84a53"
     }
-  ]
+  ],
+  "revalidated": "2026-08-20"
 }
