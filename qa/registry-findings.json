@@ -1,0 +1,333 @@
+{
+  "meta": {
+    "generated": "2026-08-20",
+    "total": 36,
+    "domains": 8
+  },
+  "findings": [
+    {
+      "id": "T1-SHELL-AUTH-001",
+      "domain": "D1 Shell/Auth",
+      "location": "auth.py:40-42,57-65,138-150",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "P4 partial",
+      "short": "Throttle per-username dict-key leak + naive clock (per-username isolation intentional, home-LAN only)"
+    },
+    {
+      "id": "T1-SHELL-AUTH-002",
+      "domain": "D1 Shell/Auth",
+      "location": "onboarding.py:48-49,72-80 app.py:51,64,132",
+      "verdict": "HIGH-CONFIDENCE",
+      "severity": "MEDIUM",
+      "pattern": "P2",
+      "short": "Onboarding step-1 currency_rates lost-update without fresh re-read"
+    },
+    {
+      "id": "T1-SHELL-AUTH-003",
+      "domain": "D1 Shell/Auth",
+      "location": "auth.py:68-82",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "ALLOW_REGISTRATION empty-string blocks secrets fallback (Docker :-false mitigates)"
+    },
+    {
+      "id": "T2-PERSISTENCE-001",
+      "domain": "D2 Persistence",
+      "location": "db.py:36,39,56,139,145",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P4",
+      "short": "_ENCRYPTION_LOCK BASE_DIR diverges from DB_PATH dir — migration race"
+    },
+    {
+      "id": "T2-PERSISTENCE-002",
+      "domain": "D2 Persistence",
+      "location": "db.py:918-938 queries.py:21-32",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "P2+P6",
+      "short": "Household bump RETURNING arbitrary row stays diverged (transient mirror only)"
+    },
+    {
+      "id": "T2-PERSISTENCE-003",
+      "domain": "D2 Persistence",
+      "location": "queries.py:21-32,48-173",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P2+P4",
+      "short": "db_version() N+1 per helper intra-rerun tear"
+    },
+    {
+      "id": "T2-PERSISTENCE-004",
+      "domain": "D2 Persistence",
+      "location": "crypto.py:34-51",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "64-char hex hijack self-consistent not corruption"
+    },
+    {
+      "id": "T2-PERSISTENCE-005",
+      "domain": "D2 Persistence",
+      "location": "db.py:2195-2265",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Backup PRAGMA on plaintext unreachable"
+    },
+    {
+      "id": "T3-CURRENCY-001",
+      "domain": "D3 Currency",
+      "location": "sync_core.py:45-69,155-160",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P1",
+      "short": "Sync whitelist finite-only bypasses MAX_AMOUNT and >0"
+    },
+    {
+      "id": "T3-CURRENCY-002",
+      "domain": "D3 Currency",
+      "location": "bank_import.py:275-294 utils.py:268",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Import NaN skip vs 1:1 intentional hardening"
+    },
+    {
+      "id": "T3-CURRENCY-003",
+      "domain": "D3 Currency",
+      "location": "utils TAXONOMY vs sync_core:175-184",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "P3",
+      "short": "Taxonomy remap partial wire subcategory-only rejection not silent persist"
+    },
+    {
+      "id": "T3-CURRENCY-004",
+      "domain": "D3 Currency",
+      "location": "sync_core.py:45-50,265 db.py:1029",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P1",
+      "short": "Dual amount trusts client amount_eur no recompute"
+    },
+    {
+      "id": "T4-LEDGER-001",
+      "domain": "D4 Ledger",
+      "location": "log_expense.py:295,324 db.py:1050",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P3",
+      "short": "Editor cannot write sentinel empty leaves invalid category/sub pair"
+    },
+    {
+      "id": "T4-LEDGER-002",
+      "domain": "D4 Ledger",
+      "location": "log_expense.py:170 recurring.py:114",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P3",
+      "short": "Dedup whitespace/case + Log-now exact-date vs month duplicate monthly"
+    },
+    {
+      "id": "T4-LEDGER-003",
+      "domain": "D4 Ledger",
+      "location": "db.py:368,1015,1111,1184",
+      "verdict": "CONFIRMED",
+      "severity": "CRITICAL",
+      "pattern": "P3",
+      "short": "Soft-delete ==False excludes NULL legacy rows history vanishes"
+    },
+    {
+      "id": "T4-LEDGER-004",
+      "domain": "D4 Ledger",
+      "location": "log_expense.py:276,324 db.py:1050",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P3",
+      "short": "Editor diff writes NaN into String cols violates sentinel"
+    },
+    {
+      "id": "T4-LEDGER-005",
+      "domain": "D4 Ledger",
+      "location": "recurring.py:199-224 db:1566",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P6",
+      "short": "Drag board N+1 without transaction partial commit"
+    },
+    {
+      "id": "T5-PLANNING-001",
+      "domain": "D5 Planning",
+      "location": "budgets.py:124-149 utils:299",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "scope-collapse",
+      "short": "Per-subcategory progress uses summed eff[cat] masking overspend"
+    },
+    {
+      "id": "T5-PLANNING-002",
+      "domain": "D5 Planning",
+      "location": "finance.py:232-260 savings.py:216",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P5",
+      "short": "months_between ignores day 1-day=>1 month phantom interest"
+    },
+    {
+      "id": "T5-PLANNING-003",
+      "domain": "D5 Planning",
+      "location": "finance.py:72-96,148",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Loan bucket max(k,0) intentional monthly granularity"
+    },
+    {
+      "id": "T5-PLANNING-004",
+      "domain": "D5 Planning",
+      "location": "market_data.py:28,104 portfolio.py:113",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Portfolio live vs snapshot intentional, days 24h not 47h"
+    },
+    {
+      "id": "T6-INGESTION-001",
+      "domain": "D6 Ingestion",
+      "location": "bank_import.py:427",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P5",
+      "short": "CSV dialect fixed comma EU ';' tables corrupted"
+    },
+    {
+      "id": "T6-INGESTION-002",
+      "domain": "D6 Ingestion",
+      "location": "pdf_import.py:37,231,261",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P5",
+      "short": "PDF _is_pure_amount_cell codes not stripped headerless 0 rows"
+    },
+    {
+      "id": "T6-INGESTION-003",
+      "domain": "D6 Ingestion",
+      "location": "ocr.py:31,75",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Tesseract cross-platform, timeout intentional"
+    },
+    {
+      "id": "T6-INGESTION-004",
+      "domain": "D6 Ingestion",
+      "location": "forecasting.py:228,251 bank_import.py:481",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Categorizer fingerprint handles stale"
+    },
+    {
+      "id": "T6-INGESTION-005",
+      "domain": "D6 Ingestion",
+      "location": "bank_import.py:447 pdf_import.py:104",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "EU heuristics have fallback + review-first"
+    },
+    {
+      "id": "T7-INTELLIGENCE-001",
+      "domain": "D7 Intelligence",
+      "location": "llm.py:26",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "requests mandatory not optional"
+    },
+    {
+      "id": "T7-INTELLIGENCE-002",
+      "domain": "D7 Intelligence",
+      "location": "insights.py:17,459-481",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "coupling leak",
+      "short": "Insights pure claimed but render_insights writes DB"
+    },
+    {
+      "id": "T7-INTELLIGENCE-003",
+      "domain": "D7 Intelligence",
+      "location": "llm.py:57,92-112",
+      "verdict": "NOT-A-BUG",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "_local_lock race diagnostic only benign"
+    },
+    {
+      "id": "T7-INTELLIGENCE-004",
+      "domain": "D7 Intelligence",
+      "location": "forecasting.py:45-71,81",
+      "verdict": "CONFIRMED",
+      "severity": "LOW",
+      "pattern": "feature loss",
+      "short": "ETS sparse->None hides valid per-category forecast"
+    },
+    {
+      "id": "T7-INTELLIGENCE-005",
+      "domain": "D7 Intelligence",
+      "location": "llm.py:248,326 ask.py:21",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "docs overclaim",
+      "short": "Ask numeric-only doc overclaim ships capped names not silent leak"
+    },
+    {
+      "id": "T8-CONNECTIVITY-001",
+      "domain": "D8 Connectivity",
+      "location": "api.py:75,110,131 db:2363",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P4",
+      "short": "Sync auth before init_db cold 500 not 401"
+    },
+    {
+      "id": "T8-CONNECTIVITY-002",
+      "domain": "D8 Connectivity",
+      "location": "mcp_server.py:50-75",
+      "verdict": "CONFIRMED",
+      "severity": "HIGH",
+      "pattern": "P4",
+      "short": "MCP _USER_ID cached forever stale after delete"
+    },
+    {
+      "id": "T8-CONNECTIVITY-003",
+      "domain": "D8 Connectivity",
+      "location": "notifications.py:332-346",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "optimistic dedup",
+      "short": "Budget marker persists before SMTP failure ghosts month"
+    },
+    {
+      "id": "T8-CONNECTIVITY-004",
+      "domain": "D8 Connectivity",
+      "location": "market_data.py:80,124,165",
+      "verdict": "CONFIRMED",
+      "severity": "MEDIUM",
+      "pattern": "P4",
+      "short": "Background price refresh bypasses 30m failure memo hammer"
+    },
+    {
+      "id": "T8-CONNECTIVITY-005",
+      "domain": "D8 Connectivity",
+      "location": "api.py:37-48 db:2282",
+      "verdict": "SUSPECTED",
+      "severity": "LOW",
+      "pattern": "-",
+      "short": "Pairing rate limit per-process global clear LAN not exploitable"
+    }
+  ]
+}

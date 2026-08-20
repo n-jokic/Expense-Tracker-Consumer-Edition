@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "generated": "2026-08-20",
+    "hunters": 6
+  },
+  "patterns": [
+    {
+      "id": "PATTERN-01",
+      "name": "Unbounded Whitelist without Business Invariant",
+      "mechanism": "FIELD_SCHEMAS finite/500ch only, no >0/<=MAX_AMOUNT/amount_eur recompute; setattr verbatim",
+      "seeds": [
+        "T3-CURRENCY-001",
+        "T3-CURRENCY-004"
+      ],
+      "analogs": [
+        "income hours/rate/budgeted_eur/actual_eur",
+        "savings target/deposited/balance_eur",
+        "savings_accounts amount_eur"
+      ],
+      "domains": [
+        "Currency/Sync/Audit"
+      ],
+      "prevalence": "SYSTEMIC"
+    },
+    {
+      "id": "PATTERN-02",
+      "name": "Stale Derived State / Version Tear / Lost-Update Clobber",
+      "mechanism": "No snapshot per rerun; whole-JSON overwrite from stale dict(rates); per-helper db_version re-read; RETURNING arbitrary",
+      "seeds": [
+        "T1-SHELL-AUTH-002",
+        "T2-PERSISTENCE-003",
+        "T2-PERSISTENCE-002"
+      ],
+      "analogs": [
+        "settings currency",
+        "fun_categories",
+        "travel_categories",
+        "household RETURNING",
+        "38 revision sites"
+      ],
+      "domains": [
+        "Persistence/Shell/Planning"
+      ],
+      "prevalence": "SYSTEMIC"
+    },
+    {
+      "id": "PATTERN-03",
+      "name": "Sentinel/NaN Validation Asymmetry",
+      "mechanism": "Form enforces —→''/per-CATEGORIES/NaN→''/lower normalize; editor/MCP/sync skip global ALL_SUBCATS, strict ==",
+      "seeds": [
+        "T4-LEDGER-001",
+        "T4-LEDGER-002",
+        "T4-LEDGER-004",
+        "T4-LEDGER-003"
+      ],
+      "analogs": [
+        "sync global sub check",
+        "bank import review",
+        "String NaN leak",
+        "7 strict dedup vs 1 normalized"
+      ],
+      "domains": [
+        "Ledger/Ingestion/Sync"
+      ],
+      "prevalence": "SYSTEMIC"
+    },
+    {
+      "id": "PATTERN-04",
+      "name": "Lock/Memoization Scope Divergence",
+      "mechanism": "Lock/backup/secret in BASE_DIR not DB_PATH dir; cached=False bypasses 30m memo",
+      "seeds": [
+        "T2-PERSISTENCE-001",
+        "T8-CONNECTIVITY-004",
+        "T2-PERSISTENCE-003"
+      ],
+      "analogs": [
+        "BACKUP_DIR/.last_backup",
+        ".secret_key",
+        "rates global vs per-symbol"
+      ],
+      "domains": [
+        "Persistence/Connectivity"
+      ],
+      "prevalence": "REPEATED/SYSTEMIC"
+    },
+    {
+      "id": "PATTERN-05",
+      "name": "Time/Calendar/EU Heuristic Drift",
+      "mechanism": "floor(days) month-index no day, delimiter/suffix locale EU-centric",
+      "seeds": [
+        "T5-PLANNING-002",
+        "T6-INGESTION-001",
+        "T6-INGESTION-002",
+        "INTEGRATION-B-001"
+      ],
+      "analogs": [
+        "rates 3d",
+        "backup 30d"
+      ],
+      "domains": [
+        "Planning/Ingestion/Market"
+      ],
+      "prevalence": "REPEATED"
+    },
+    {
+      "id": "PATTERN-06",
+      "name": "N+1 Partial Commit",
+      "mechanism": "Loop per-item with get_session commit no engine.begin",
+      "seeds": [
+        "T4-LEDGER-005"
+      ],
+      "analogs": [
+        "big_purchases",
+        "expense edit",
+        "trash",
+        "market snapshot",
+        "bank bulk"
+      ],
+      "domains": [
+        "Ledger/Planning/Ingestion"
+      ],
+      "prevalence": "SYSTEMIC"
+    }
+  ]
+}

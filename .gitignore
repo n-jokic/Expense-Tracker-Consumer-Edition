@@ -44,3 +44,5 @@ models/*.gguf
 # ── Exports / backups ───────────────────────────────────────────────────────────
 *.zip
 *.bak
+# ── QA ephemeral repro artifacts ─────────────────────────────────────────────
+qa/_tmp/

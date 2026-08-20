@@ -953,3 +953,10 @@ rates, loan early-repayment surcharge tracking, and reliability hardening
 (recurring dialogs, error boundaries on all DB sinks, multi-write atomicity,
 double-submit guards, atomic JSON settings merges, budget-scope correction,
 and NaN/FK guards).
+## Agent Knowledge System
+
+Future AI agents (and subagents) start at [`agent instructions/README.md`](./agent%20instructions/README.md) — the coordinator router for 19 domain docs (8 subsystems + 4 architecture docs) that map the codebase, dependency graph, execution flows, and invariants (G1–G13). See [`agent instructions/`](./agent%20instructions/) for shell/auth, persistence/crypto/caching, currency/taxonomy, ledger/recurring/audit, planning/wealth, ingestion, intelligence, and connectivity surfaces.
+
+## QA Bug Map
+
+The latest validated QA dossier lives at [`qa/reports/final-qa-bug-map.md`](./qa/reports/final-qa-bug-map.md) (registries `qa/registry-findings.json` + `qa/registry-patterns.json`) — produced by a coordinator-controlled swarm (8 domain teams → 36 adversarial validators → 6 narrow pattern hunters → 3 boundary teams, 53 subagents, no production-code mutations). Summary: **36 candidates → 19 CONFIRMED + 1 HIGH-CONFIDENCE + 6 SUSPECTED + 10 NOT-A-BUG**; hunters add **18 analogous manifestations** (SYSTEMIC patterns P1–P6: unbounded whitelist, stale derived state, sentinel/NaN asymmetry, lock/memo divergence, time/EU heuristic drift, N+1 partial commit). See the report for causal chains, dynamic taxonomy, and remediation order.
