@@ -57,15 +57,16 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
             with st.expander("Raw OCR text", expanded=False):
                 st.code((result["text"] or "")[:500], language=None)
 
+            # Category OUTSIDE the form so changing it rebuilds subcategory options immediately.
+            r_cat = st.selectbox(
+                "Category", CAT_LIST,
+                index=CAT_LIST.index(result["category"])
+                if result["category"] in CAT_LIST else 0,
+                key="rcpt_cat")
             with st.form("receipt_form"):
                 r1, r2 = st.columns(2)
                 with r1:
                     r_date = st.date_input("Date", value=date.today(), key="rcpt_date")
-                    r_cat  = st.selectbox(
-                        "Category", CAT_LIST,
-                        index=CAT_LIST.index(result["category"])
-                        if result["category"] in CAT_LIST else 0,
-                        key="rcpt_cat")
                     r_sub  = st.selectbox(
                         "Subcategory", ["—"] + CATEGORIES[r_cat],
                         index=(list(["—"] + CATEGORIES[r_cat]).index(result["subcategory"])

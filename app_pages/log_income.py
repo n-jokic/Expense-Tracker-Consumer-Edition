@@ -139,13 +139,18 @@ with st.form("inc_form", clear_on_submit=True):
             actual = st.number_input(f"Actual ({sym})", min_value=0.0,
                                      max_value=MAX_AMOUNT, step=10.0, format="%.2f")
 
+    # inc_type/cur/salary vars are outside the form so these branches are safe.
+    # The only same-form dependency was raise_cb gated on use_fixed/actual — we
+    # render raise_cb whenever use_fixed is unticked (even if actual is still 0;
+    # the save handler validates the threshold).
     use_fixed = False
     raise_cb  = False
     if inc_type == "Salary" and salary_active and salary_amount > 0:
         use_fixed = st.checkbox(
             f"Use my fixed salary ({fmt_dual(salary_amount, salary_currency, to_eur(salary_amount, salary_currency, rates))})",
             value=True)
-        if not use_fixed and float(actual) > salary_amount + 0.005:
+        if not use_fixed:
+            # Always render so unticking + typing actual > salary in one submit still shows the checkbox.
             raise_cb = st.checkbox("Update my fixed salary — this is a raise", value=True)
 
     notes = st.text_input("Notes")
@@ -192,7 +197,7 @@ if saved:
             "budgeted": budgeted_val, "actual": actual_val,
             "currency": cur, "budgeted_eur": be, "actual_eur": ae, "notes": notes,
         })
-        if inc_type == "Salary" and raise_cb:
+        if inc_type == "Salary" and raise_cb and not use_fixed and actual_val > salary_amount + 0.005:
             q.save_settings(user_id, {
                 "salary_amount": actual_val, "salary_currency": cur,
                 "salary_active": True,

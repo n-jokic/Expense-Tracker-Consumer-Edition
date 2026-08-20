@@ -41,13 +41,23 @@ if (flash := st.session_state.pop("loan_flash", None)):
         st.toast(flash[1], icon=":material/check_circle:")
 
 # ── Add loan ──────────────────────────────────────────────────────────────────
-with st.form("loan_form", clear_on_submit=True):
+# Currency + surcharge type OUTSIDE the form so Amount label / value bounds match selection immediately.
+l_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="loan_cur")
+l_surcharge_type = st.selectbox(
+    "Early repayment surcharge",
+    ["fixed", "percent"],
+    format_func=lambda v: "Fixed amount" if v == "fixed" else "Percentage",
+    key="loan_surcharge_type",
+)
+_surch_max = 100.0 if l_surcharge_type == "percent" else MAX_SAVINGS_TARGET
+_surch_step = 0.1 if l_surcharge_type == "percent" else 10.0
+_l_sym = get_currency_symbol(l_cur)
+with st.form(f"loan_form_{l_cur}_{l_surcharge_type}", clear_on_submit=True):
     st.markdown("**:material/add: New loan**")
     c1, c2 = st.columns(2)
     with c1:
         l_name    = st.text_input("Loan name", placeholder="e.g. Car loan")
-        l_cur     = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="loan_cur")
-        l_principal = st.number_input(f"Principal ({get_currency_symbol(l_cur)})",
+        l_principal = st.number_input(f"Principal ({_l_sym})",
                                       min_value=0.0, max_value=MAX_SAVINGS_TARGET,
                                       step=100.0, format="%.2f", value=0.0)
         l_rate    = st.number_input("Annual interest rate (%)", min_value=0.0,
@@ -59,15 +69,9 @@ with st.form("loan_form", clear_on_submit=True):
         l_day     = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
                                     value=1, step=1)
         l_notes   = st.text_input("Notes (optional)")
-        l_surcharge_type = st.selectbox(
-            "Early repayment surcharge",
-            ["fixed", "percent"],
-            format_func=lambda v: "Fixed amount" if v == "fixed" else "Percentage",
-        )
         l_surcharge_value = st.number_input(
             "Surcharge value (% or loan currency)", min_value=0.0,
-            max_value=100.0 if l_surcharge_type == "percent" else MAX_SAVINGS_TARGET,
-            step=0.1 if l_surcharge_type == "percent" else 10.0,
+            max_value=_surch_max, step=_surch_step,
             format="%.2f", value=0.0,
         )
     if st.form_submit_button("Save loan", type="primary", width="stretch", icon=":material/save:"):

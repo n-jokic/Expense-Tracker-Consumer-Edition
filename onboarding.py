@@ -51,21 +51,24 @@ def render_onboarding():
         dc_idx = list(SUPPORTED_CURRENCIES.keys()).index(dc_default) \
             if dc_default in SUPPORTED_CURRENCIES else 0
 
-        with st.form("onboard_step1"):
-            dc = st.selectbox("Display currency", list(SUPPORTED_CURRENCIES.keys()),
-                              index=dc_idx, help="The currency you'll see amounts in.")
-            rate_val = None
-            if dc != "EUR":
-                rate_val = st.number_input(
-                    f"Exchange rate (1 EUR = ? {get_currency_symbol(dc)})",
-                    value=max(float(rates.get(dc, 117.0)), 0.0001),
-                    step=1.0, format="%.2f", min_value=0.0001,
-                    help="Used to convert your amounts for display.")
+        # Currency outside the form so rate field appears immediately when non-EUR selected.
+        dc = st.selectbox("Display currency", list(SUPPORTED_CURRENCIES.keys()),
+                          index=dc_idx, help="The currency you'll see amounts in.",
+                          key="onboard_dc")
+        rate_val = None
+        if dc != "EUR":
+            rate_val = st.number_input(
+                f"Exchange rate (1 EUR = ? {get_currency_symbol(dc)})",
+                value=max(float(rates.get(dc, 117.0)), 0.0001),
+                step=1.0, format="%.2f", min_value=0.0001,
+                key="onboard_rate",
+                help="Used to convert your amounts for display.")
+        with st.form(f"onboard_step1_{dc}"):
             budget   = st.number_input("Monthly budget (EUR)",
                                        min_value=0.0, step=100.0, format="%.2f",
                                        help="Your total spending limit per month. You can set category limits later.")
             if st.form_submit_button("Save & Continue →", type="primary", width="stretch"):
-                if dc != "EUR" and not (rate_val > 0 and rate_val == rate_val):
+                if dc != "EUR" and not (rate_val is not None and rate_val > 0 and rate_val == rate_val):
                     st.error("❌ The exchange rate must be a positive number "
                              "greater than zero.")
                 else:

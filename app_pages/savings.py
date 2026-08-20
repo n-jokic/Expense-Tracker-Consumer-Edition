@@ -85,7 +85,7 @@ def deposit_dialog(uid: int, goal: str, tgt_eur: float, rate: float, gcur: str):
                 f"· rate {rate:.2f}%")
     d = st.date_input("Date", value=today, key="dlg_dep_date")
     amt = st.number_input(f"Amount ({gsym})", min_value=0.0, max_value=MAX_AMOUNT,
-                          step=10.0, format="%.2f", value=0.0, key="dlg_dep_amt")
+                           step=10.0, format="%.2f", value=0.0, key="dlg_dep_amt")
     notes = st.text_input("Notes", key="dlg_dep_notes")
     if st.button("Save deposit", icon=":material/save:", type="primary",
                  width="stretch", key="dlg_dep_save"):
@@ -129,8 +129,8 @@ def withdraw_dialog(uid: int, goal: str, bal_eur: float, tgt_eur: float,
         return
     d = st.date_input("Date", value=today, key="dlg_wd_date")
     amt = st.number_input(f"Amount ({gsym})", min_value=0.0,
-                          max_value=min(float(available), MAX_AMOUNT),
-                          step=10.0, format="%.2f", value=0.0, key="dlg_wd_amt")
+                           max_value=min(float(available), MAX_AMOUNT),
+                           step=10.0, format="%.2f", value=0.0, key="dlg_wd_amt")
     notes = st.text_input("Notes", key="dlg_wd_notes")
     if st.button("Save withdrawal", icon=":material/save:", type="primary",
                  width="stretch", key="dlg_wd_save"):
@@ -176,15 +176,15 @@ def edit_goal_dialog(uid: int, goal: str):
         # Target is entered in the DISPLAY currency: prefill the EUR value
         # converted to display, and convert back to EUR on save.
         e_tgt = st.number_input(f"Target ({SYM})", min_value=0.0,
-                                max_value=to_display(MAX_SAVINGS_TARGET, DC, rates),
-                                step=100.0, format="%.2f",
-                                value=min(to_display(float(tgt), DC, rates),
-                                          to_display(MAX_SAVINGS_TARGET, DC, rates)),
-                                key="dlg_goal_tgt")
+                                 max_value=to_display(MAX_SAVINGS_TARGET, DC, rates),
+                                 step=100.0, format="%.2f",
+                                 value=min(to_display(float(tgt), DC, rates),
+                                           to_display(MAX_SAVINGS_TARGET, DC, rates)),
+                                 key="dlg_goal_tgt")
     with c2:
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
-                                 max_value=100.0, step=0.01, format="%.2f",
-                                 value=float(rate), key="dlg_goal_rate")
+                                  max_value=100.0, step=0.01, format="%.2f",
+                                  value=float(rate), key="dlg_goal_rate")
     if st.button("Save goal", icon=":material/save:", type="primary",
                  width="stretch", key="dlg_goal_save"):
         new_name = (e_name or "").strip()
@@ -417,39 +417,48 @@ def edit_savings_dialog(uid: int, row):
 # ── Entry form (first deposit creates the goal) ───────────────────────────────
 goal_options = ["➕ New goal..."] + [g for g in SAVINGS_GOALS if g not in goals] + goals
 
-with st.form("sav_form", clear_on_submit=True):
+# Goal selector + currency are OUTSIDE the form so changing them rebuilds the
+# form immediately (reactive invariant). Form key includes both so switching
+# either reconstructs the amount label / new-goal fields.
+gn_sel = st.selectbox("Goal", goal_options, key="sav_goal_select")
+cur = st.selectbox("Save in", list(SUPPORTED_CURRENCIES.keys()), key="sav_cur")
+sym = get_currency_symbol(cur)
+
+# Precompute the "existing goal" caption outside the form too.
+if gn_sel != "➕ New goal...":
+    _grows = goal_rows(dfs_all, gn_sel)
+    _gt, _gr, _gc = goal_attrs(_grows)
+    _existing_caption = (
+        f"Target: {fmt(_gt, DC, rates) if _gt > 0 else '—'} · "
+        f"Interest rate: {_gr:.2f}% · Currency: {_gc} "
+        "(edit via the goal's ✏️ Edit button)"
+    )
+else:
+    _existing_caption = None  # new-goal branch shows fields instead
+
+with st.form(f"sav_form_{gn_sel}_{cur}", clear_on_submit=True):
     st.markdown("**:material/add: Log deposit / withdrawal**")
     c1, c2 = st.columns(2)
     with c1:
         sd = st.date_input("Date", value=today)
-        gn_sel = st.selectbox("Goal", goal_options)
-        new_goal = ""
-        tgt = 0.0
-        ir = 0.0
         if gn_sel == "➕ New goal...":
             new_goal = st.text_input("New goal name", placeholder="e.g. New laptop")
             tgt = st.number_input(f"Target ({SYM})", min_value=0.0,
-                                  max_value=MAX_SAVINGS_TARGET, step=100.0,
-                                  format="%.2f", value=0.0)
+                                   max_value=MAX_SAVINGS_TARGET, step=100.0,
+                                   format="%.2f", value=0.0)
             ir = st.number_input("Annual interest rate (%)", min_value=0.0,
-                                 max_value=100.0, step=0.01, format="%.2f",
-                                 value=0.0,
-                                 help="e.g. 4.50 for 4.5% p.a., compounded monthly")
+                                  max_value=100.0, step=0.01, format="%.2f",
+                                  value=0.0,
+                                  help="e.g. 4.50 for 4.5% p.a., compounded monthly")
         else:
-            _grows = goal_rows(dfs_all, gn_sel)
-            _gt, _gr, _gc = goal_attrs(_grows)
-            st.caption(f"Target: {fmt(_gt, DC, rates) if _gt > 0 else '—'} · "
-                       f"Interest rate: {_gr:.2f}% · Currency: {_gc} "
-                       "(edit via the goal's ✏️ Edit button)")
+            st.caption(_existing_caption)
     with c2:
-        cur = st.selectbox("Save in", list(SUPPORTED_CURRENCIES.keys()), key="sav_cur")
-        sym = get_currency_symbol(cur)
         dep = st.number_input(f"Amount ({sym}) — negative = withdrawal",
-                              min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
-                              step=10.0, format="%.2f", value=0.0)
+                               min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
+                               step=10.0, format="%.2f", value=0.0)
         notes = st.text_input("Notes")
     saved = st.form_submit_button("Save entry", icon=":material/save:",
-                                  width="stretch", type="primary")
+                                   width="stretch", type="primary")
 
 if saved:
     goal_name = (new_goal.strip() if gn_sel == "➕ New goal..." else gn_sel)
@@ -614,15 +623,18 @@ if not dfs.empty:
     if not goals:
         st.info("Create a goal above first — term deposits live under a goal.")
     if goals:
-        with st.form("savacc_form", clear_on_submit=True):
+        # Currency outside the form so Amount label matches selection immediately.
+        # The goal selector itself does NOT drive any other widget (safe inside).
+        a_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                             key="savacc_cur")
+        a_sym = get_currency_symbol(a_cur)
+        with st.form(f"savacc_form_{a_cur}", clear_on_submit=True):
             st.markdown("**:material/add: New term deposit**")
             c1, c2 = st.columns(2)
             with c1:
                 a_goal = st.selectbox("Goal", goals, key="savacc_goal")
                 a_name = st.text_input("Account name", placeholder="e.g. 12-month CD")
-                a_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
-                                      key="savacc_cur")
-                a_amt  = st.number_input(f"Amount ({get_currency_symbol(a_cur)})",
+                a_amt  = st.number_input(f"Amount ({a_sym})",
                                          min_value=0.0, max_value=MAX_AMOUNT,
                                          step=10.0, format="%.2f", value=0.0)
             with c2:

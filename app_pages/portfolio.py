@@ -57,7 +57,10 @@ if not df_hold.empty:
                 st.error("😕 Couldn't fetch prices — keeping the last known values.")
 
 # ── Add / edit holdings ───────────────────────────────────────────────────────
-with st.form("hold_form", clear_on_submit=True):
+# Currency outside so Cost label matches immediately.
+h_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="hold_cur")
+_h_sym = get_currency_symbol(h_cur)
+with st.form(f"hold_form_{h_cur}", clear_on_submit=True):
     st.markdown("**:material/add: Add holding**")
     c1, c2 = st.columns(2)
     with c1:
@@ -65,8 +68,7 @@ with st.form("hold_form", clear_on_submit=True):
         h_name   = st.text_input("Name (optional)", placeholder="e.g. Apple Inc.")
         h_qty    = st.number_input("Quantity", min_value=0.0, step=0.01, format="%.4f")
     with c2:
-        h_cur    = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="hold_cur")
-        h_cost   = st.number_input(f"Total invested ({get_currency_symbol(h_cur)})",
+        h_cost   = st.number_input(f"Total invested ({_h_sym})",
                                    min_value=0.0, max_value=MAX_SAVINGS_TARGET,
                                    step=100.0, format="%.2f")
         st.caption("Include fees — this is your cost basis.")
