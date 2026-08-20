@@ -216,55 +216,33 @@ else:
 
     def _persist_grouped_order(groups, rows):
         by_id = {str(row["id"]): row for _, row in rows.iterrows()}
-        pending = []
-        for category, item_ids in groups.items():
-            valid_subcategories = set(CATEGORIES.get(category, []))
-            for position, item_id in enumerate(item_ids):
-                row = by_id.get(str(item_id))
-                if row is None:
-                    continue
-                updates = {"sort_order": position}
-                if str(row["category"]) != str(category):
-                    updates["category"] = str(category)
-                    current_subcategory = str(row.get("subcategory") or "")
-                    if current_subcategory and current_subcategory not in valid_subcategories:
-                        updates["subcategory"] = ""
-                current_order = row.get("sort_order")
-                order_changed = (pd.isna(current_order)
-                                 or int(current_order) != position)
-                category_changed = "category" in updates
-                subcategory_changed = "subcategory" in updates
-                if order_changed or category_changed or subcategory_changed:
-                    pending.append((str(item_id), updates))
-        if pending:
-            # T4-005+A-002: single transaction + single bump (was N+1)
-            try:
-                from db import Recurring as _RecModel, log_audit as _log_audit
-                from sqlalchemy.orm import sessionmaker as _sm
-                from db import get_engine as _get_engine
-                engine = _get_engine()
-                Session = _sm(bind=engine, expire_on_commit=False)
-                s = Session()
-                try:
-                    for tid, upd in pending:
-                        obj = s.query(_RecModel).filter(_RecModel.id == tid, _RecModel.user_id == user_id).first()
-                        if obj is None:
-                            continue
-                        for k, v in upd.items():
-                            if hasattr(obj, k):
-                                setattr(obj, k, v)
-                        _log_audit(s, user_id, "UPDATE", "recurring", tid, upd)
-                    s.commit()
-                except Exception:
-                    s.rollback()
-                    raise
-                finally:
-                    s.close()
-            except Exception as e:
-                st.error(f"Couldn't save order: {e}")
+        try:
+            from services.commands import ItemMove as _ItemMove, reorder_recurring_items
+            all_moves: list[_ItemMove] = []
+            for cat, ids in groups.items():
+                for pos, iid in enumerate(ids):
+                    if str(iid) in by_id:
+                        all_moves.append(_ItemMove(id=str(iid), group=str(cat), position=pos))
+            filtered: list[_ItemMove] = []
+            for mv in all_moves:
+                row = by_id[mv.id]
+                order_changed = (pd.isna(row.get("sort_order")) or int(row.get("sort_order")) != mv.position)
+                cat_changed = (str(row.get("category")) != mv.group)
+                if order_changed or cat_changed:
+                    filtered.append(mv)
+            if not filtered:
                 return
-            q.bump_db_version()
-            st.rerun()
+            res = reorder_recurring_items(user_id, filtered)
+            if res.changed and res.revision is not None:
+                try:
+                    st.session_state.db_version = int(res.revision)
+                    st.session_state["_snap_version"] = int(res.revision)
+                except Exception:
+                    pass
+                st.rerun()
+        except Exception as e:
+            st.error(f"Couldn't save order: {e}")
+            return
 
     categories = {str(category) for category in active["category"].dropna()}
     category_order = [category for category in CAT_LIST if category in categories]

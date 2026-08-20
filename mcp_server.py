@@ -325,28 +325,21 @@ async def _add_expense_impl(amount: float, category: str, description: str = "",
                             date_str: str | None = None, subcategory: str = "",
                             currency: str = "EUR") -> dict:
     try:
+        from domain.validation import (validate_amount, validate_category,
+                                       validate_category_subcategory,
+                                       validate_currency, normalize_description)
+        from domain.periods import parse_date as _canon_parse_date
         uid = _resolve_user()
-        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
-            raise ValueError("amount must be a number")
-        amt = float(amount)
-        if not math.isfinite(amt) or amt <= 0 or amt > MAX_AMOUNT:
-            raise ValueError(f"amount must be > 0 and <= {MAX_AMOUNT:g}")
-        cat = (category or "").strip()
-        if cat not in CAT_LIST:
-            raise ValueError(f"unknown category '{cat}' — use one of: {', '.join(CAT_LIST)}")
-        sub = (subcategory or "").strip()
-        if sub and sub not in CATEGORIES[cat]:
-            raise ValueError(f"unknown subcategory '{sub}' for {cat} "
-                             f"(valid: {', '.join(CATEGORIES[cat])})")
-        desc = (description or "").strip()
-        if not desc:
-            raise ValueError("description is required")
-        if len(desc) > 500:
-            raise ValueError("description must be at most 500 characters")
-        cur = (currency or "EUR").strip().upper()
-        if cur not in SUPPORTED_CURRENCIES:
-            raise ValueError(f"unknown currency '{cur}'")
-        when = _parse_date(date_str)
+        amt = validate_amount(amount, field="amount")
+        cat = validate_category(category)
+        sub_val = (subcategory or "").strip()
+        if sub_val:
+            _, sub = validate_category_subcategory(cat, sub_val)
+        else:
+            sub = ""
+        desc = normalize_description(description, required=True)
+        cur = validate_currency(currency or "EUR")
+        when = _canon_parse_date(date_str)
         rates = _user_rates()
         ae = to_eur(amt, cur, rates)
         row = {
@@ -368,20 +361,14 @@ async def _add_income_impl(amount: float, income_type: str = "Other",
                            date_str: str | None = None, currency: str = "EUR",
                            notes: str = "") -> dict:
     try:
+        from domain.validation import (validate_amount, validate_currency,
+                                       validate_income_type)
+        from domain.periods import parse_date as _canon_parse_date
         uid = _resolve_user()
-        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
-            raise ValueError("amount must be a number")
-        amt = float(amount)
-        if not math.isfinite(amt) or amt <= 0 or amt > MAX_AMOUNT:
-            raise ValueError(f"amount must be > 0 and <= {MAX_AMOUNT:g}")
-        itype = (income_type or "Other").strip()
-        if itype not in INCOME_TYPES:
-            raise ValueError(f"unknown income_type '{itype}' — use one of: "
-                             f"{', '.join(INCOME_TYPES)}")
-        cur = (currency or "EUR").strip().upper()
-        if cur not in SUPPORTED_CURRENCIES:
-            raise ValueError(f"unknown currency '{cur}'")
-        when = _parse_date(date_str)
+        amt = validate_amount(amount, field="amount")
+        itype = validate_income_type(income_type)
+        cur = validate_currency(currency or "EUR")
+        when = _canon_parse_date(date_str)
         notes = (notes or "").strip()
         if len(notes) > 2000:
             raise ValueError("notes must be at most 2000 characters")

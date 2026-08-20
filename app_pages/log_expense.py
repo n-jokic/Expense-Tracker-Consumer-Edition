@@ -320,34 +320,29 @@ if not df_exp.empty:
                                    width="stretch", icon=":material/delete:")
 
     if save_changes:
-        changed = 0
+        # Collect valid per-row diffs; apply atomically via Unit-of-Work.
+        pending: list[dict] = []
         rejected = 0
-        save_error = None
         for _, row in edited.iterrows():
             rid  = str(row["id"])
             orig = df_exp[df_exp["id"] == rid]
             if orig.empty:
                 continue
             orig = orig.iloc[0]
-            # T4-004: NaN → '' coercion before diff (like bank_import:351) + str(nan) guard
-            # Work on a coerced copy so NaN/— never reaches DB / breaks comparisons
             coerced = dict(row)
             for _c in ("subcategory", "notes", "category", "currency"):
                 v = coerced.get(_c)
                 if v is None or (isinstance(v, float) and pd.isna(v)):
                     coerced[_c] = ""
                 else:
-                    # guard "nan" string leaks
                     sv = str(v).strip()
                     coerced[_c] = "" if sv.lower() == "nan" else sv
-            # description is special: must not become "nan", empty is rejected
             dv = coerced.get("description")
             if dv is None or (isinstance(dv, float) and pd.isna(dv)):
                 coerced["description"] = ""
             else:
                 sv = str(dv)
                 coerced["description"] = "" if sv.strip().lower() == "nan" else sv
-            # T4-001: "—" sentinel → ''
             if coerced.get("subcategory") == "—":
                 coerced["subcategory"] = ""
             upd = {}
@@ -356,14 +351,12 @@ if not df_exp.empty:
                     upd[col] = coerced[col]
             if not upd:
                 continue
-            # T4-001: whitelist guard — invalid sub for final category → ''
             _final_cat = str(upd.get("category", orig["category"]))
             _final_sub = str(upd.get("subcategory", orig.get("subcategory", "") or ""))
             if _final_sub and _final_sub != "—" and _final_sub not in CATEGORIES.get(_final_cat, []):
                 upd["subcategory"] = ""
             elif upd.get("subcategory") == "—":
                 upd["subcategory"] = ""
-            # never write a cleared (NaN) amount or an empty description
             if "amount" in upd and (pd.isna(coerced["amount"]) or float(coerced["amount"]) <= 0):
                 rejected += 1
                 continue
@@ -373,47 +366,57 @@ if not df_exp.empty:
             if "amount" in upd or "currency" in upd:
                 amt = float(upd.get("amount", orig["amount"]))
                 cur2 = str(upd.get("currency", orig["currency"]))
-                # T4-004 currency was already de-NaNed above; extra guard
                 if not cur2 or cur2.lower() == "nan":
                     cur2 = "EUR"
                     upd["currency"] = cur2
                 upd["amount_eur"] = to_eur(amt, cur2, rates)
-            try:
-                update_expense(user_id, rid, upd)
-            except Exception as e:
-                save_error = str(e)
-                break
-            changed += 1
-        if save_error:
-            st.error(f"Couldn't save: {save_error}")
-        elif changed:
-            q.bump_db_version()
-            st.toast(f"{changed} row(s) updated", icon=":material/check:")
-            st.rerun()
-        elif rejected:
+            pending.append({"id": rid, "fields": upd})
+        if not pending and rejected:
             safe_error(f"{rejected} row(s) not saved — amount/description must not be empty.")
-        else:
+        elif not pending:
             st.caption("No changes detected.")
+        else:
+            try:
+                from services.commands import bulk_update_expenses as _bulk_upd
+                res = _bulk_upd(user_id, pending)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                if res.changed and res.revision is not None:
+                    try:
+                        st.session_state.db_version = int(res.revision)
+                        st.session_state["_snap_version"] = int(res.revision)
+                    except Exception:
+                        pass
+                    if rejected:
+                        st.toast(f"{len(res.affected_ids)} updated, {rejected} rejected.", icon=":material/check:")
+                    else:
+                        st.toast(f"{len(res.affected_ids)} row(s) updated", icon=":material/check:")
+                    st.rerun()
+                else:
+                    st.caption("No changes saved.")
 
     if trash_selected:
-        removed = 0
-        trash_error = None
-        for _, row in edited.iterrows():
-            if bool(row["trash"]):
-                try:
-                    soft_delete_expense(user_id, str(row["id"]))
-                except Exception as e:
-                    trash_error = str(e)
-                    break
-                removed += 1
-        if trash_error:
-            st.error(f"Couldn't save: {trash_error}")
-        elif removed:
-            q.bump_db_version()
-            st.toast(f"{removed} row(s) moved to trash — you can restore them below.", icon=":material/delete:")
-            st.rerun()
-        else:
+        ids = [str(row["id"]) for _, row in edited.iterrows() if bool(row.get("trash"))]
+        if not ids:
             st.caption("Tick the Trash checkbox on the rows you want to trash.")
+        else:
+            try:
+                from services.commands import bulk_soft_delete_expenses as _bulk_del
+                res = _bulk_del(user_id, ids)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+            else:
+                if res.changed and res.revision is not None:
+                    try:
+                        st.session_state.db_version = int(res.revision)
+                        st.session_state["_snap_version"] = int(res.revision)
+                    except Exception:
+                        pass
+                    st.toast(f"{len(res.affected_ids)} row(s) moved to trash — you can restore them below.", icon=":material/delete:")
+                    st.rerun()
+                else:
+                    st.caption("Nothing trashed.")
 
     # Restore deleted
     df_deleted = q.expenses(user_id, include_deleted=True)

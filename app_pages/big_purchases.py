@@ -266,29 +266,29 @@ st.subheader("Wishlist items")
 
 def _persist_grouped_order(groups, rows):
     by_id = {str(row["id"]): row for _, row in rows.iterrows()}
-    changed = False
-    for category, item_ids in groups.items():
-        for position, item_id in enumerate(item_ids):
-            row = by_id.get(str(item_id))
-            if row is None:
-                continue
-            updates = {"sort_order": position}
-            if str(row["category"]) != str(category):
-                updates["category"] = str(category)
-            current_order = row.get("sort_order")
-            order_changed = (pd.isna(current_order)
-                             or int(current_order) != int(updates["sort_order"]))
-            category_changed = "category" in updates
-            if order_changed or category_changed:
-                try:
-                    update_big_purchase(user_id, str(item_id), updates)
-                except Exception as e:
-                    st.error(f"Couldn't save: {e}")
-                else:
-                    changed = True
-    if changed:
-        q.bump_db_version()
-        st.rerun()
+    try:
+        from services.commands import ItemMove as _ItemMove, reorder_big_purchases
+        moves: list[_ItemMove] = []
+        for category, item_ids in groups.items():
+            for position, item_id in enumerate(item_ids):
+                if str(item_id) in by_id:
+                    row = by_id[str(item_id)]
+                    changed = (pd.isna(row.get("sort_order")) or int(row.get("sort_order")) != position) or (str(row.get("category")) != str(category))
+                    if changed:
+                        moves.append(_ItemMove(id=str(item_id), group=str(category), position=position))
+        if not moves:
+            return
+        res = reorder_big_purchases(user_id, moves)
+        if res.changed and res.revision is not None:
+            try:
+                st.session_state.db_version = int(res.revision)
+                st.session_state["_snap_version"] = int(res.revision)
+            except Exception:
+                pass
+            st.rerun()
+    except Exception as e:
+        st.error(f"Couldn't save: {e}")
+        return
 
 
 def _render_purchase_card(row, archived=False):
