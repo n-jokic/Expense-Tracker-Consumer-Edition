@@ -30,8 +30,18 @@
       filtering; load never raises (warn+default), writes raise LayoutSaveError;
       panel chevrons get accessible labels; failures log + non-fatal st.warning.
       8 new tests; suite 555/7/10 = baseline +8, identical failure set. (`7dd5e0a`)
-- [ ] FIN-03 Implement accessible recurring-category collapse and reorder.
-- [ ] FIN-04 Make savings and term-account movements zero-sum and atomic.
+- [x] FIN-03 Implement accessible recurring-category collapse and reorder.
+      → board emits group_order/collapsed_groups with aria-expanded + native
+      keyboard buttons; values validated (permutation/subset) pre-persistence;
+      recurring page persists via set_area_ids w/ LayoutSaveError→warning.
+      Bonus fix: known_ids now actually threads into sanitization (was dropped).
+      8 new tests; suite 563/7/10 = baseline +8, same failure set. (`a878dbf`)
+- [x] FIN-04 Make savings and term-account movements zero-sum and atomic.
+      → commands (deposit/withdraw/open-term/settle/monthly-posting/delete
+      guards) with in-txn invariant validation; accrual_key/settlement_ref
+      partial unique indexes; posted-balance read chain + pending column;
+      page rewired. 14 new tests incl. both locked acceptances (3.10 / 2.25);
+      suite 577/7/10 = baseline +14, identical failure set. (`c499fb0`)
 - [ ] FIN-05 Model early-withdrawal policy and nest term accounts under goals.
 - [ ] FIN-06 Link wishlist items to new or existing savings targets.
 - [ ] FIN-07 Complete linked purchases atomically and prevent status bypass/duplicates.
