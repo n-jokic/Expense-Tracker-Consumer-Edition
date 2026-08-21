@@ -1393,8 +1393,11 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
     Interest is compounded monthly on the elapsed months between consecutive
     deposits (using the earlier deposit's interest rate), so the balance stays
     consistent even when rows are edited, deleted, or two deposits land in the
-    same month. Withdrawals (negative deposits) are supported; the balance is
-    clamped at 0.
+    same month. Withdrawals (negative deposits) are supported.
+
+    FIN-01: the balance is NOT clamped at zero any more — legacy invalid
+    states (overdrawn goals) must stay inspectable. New overdrafts are
+    prevented by validation in services.commands, not by read-time masking.
 
     With `asof` (default None = no tail accrual), each goal's LAST entry is
     also compounded forward from its date to `asof` using its own interest
@@ -1427,7 +1430,7 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
                 if months > 0 and prev_rate > 0:
                     bal = bal * ((1 + prev_rate / 100 / 12) ** months)
                 bal += dep
-            df.at[idx, "balance_eur"] = max(round(bal, 4), 0.0)
+            df.at[idx, "balance_eur"] = round(bal, 4)
             if not pd.isna(d):
                 prev_date = d
             prev_rate = float(r["interest_rate"]) if pd.notna(r["interest_rate"]) else 0.0
@@ -1440,7 +1443,7 @@ def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> p
             months = (asof.year - prev_d.year) * 12 + (asof.month - prev_d.month)
             if months > 0:
                 bal = bal * ((1 + prev_rate / 100 / 12) ** months)
-                df.at[last_idx, "balance_eur"] = max(round(bal, 4), 0.0)
+                df.at[last_idx, "balance_eur"] = round(bal, 4)
     return df
 
 

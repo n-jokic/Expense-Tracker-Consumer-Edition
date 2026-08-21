@@ -24,6 +24,7 @@ import calendar
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import pandas as pd
 
@@ -46,6 +47,96 @@ def _effective_category_budgets(m_bud) -> dict:
         else:
             eff[cat] = float(g["budgeted_eur"].sum())
     return eff
+
+
+# ── Canonical virtual unallocated-funds invariant (FIN-01) ───────────────────
+#
+# CLASSIFICATION OF CASH EFFECTS over the current schema. This is the
+# authoritative money model: UI pages, MCP tools, and AI tools must consume
+# these functions — never page-local arithmetic.
+#
+# | Row type                                   | Class             | Notes |
+# |--------------------------------------------|-------------------|-------|
+# | income.actual_eur                          | + external inflow | budgeted_eur is intent, not cash; opening-balance adjustments and refunds are ordinary income rows. |
+# | expenses.amount_eur                        | - external outflow| Includes rows with loan_id set: loan payments ARE expense rows whose amount ALREADY CONTAINS loan_surcharge_eur (inclusive representation, pinned by tests/test_db.py). Count once, in full. |
+# | savings.deposited_eur > 0                  | ± allocation      | Pool -> goal principal. |
+# | savings.deposited_eur < 0                  | ± allocation      | Goal -> pool withdrawal. |
+# | savings_accounts.amount_eur, status active | ± allocation      | Locked term principal. 'closed' accounts excluded (settled via FIN-04 commands). |
+# | holdings.cost_eur                          | ± allocation      | Cost basis incl. fees; holdings create no expense row, so cost basis is their single cash representation. Market value is 0 valuation-only. |
+# | loans.principal_eur                        | + financing inflow| Disbursement writes no other record today; the liability side lives in net worth, not here. |
+# | accrued savings interest (display chain)   | 0 valuation       | Never enters this query; realized interest will arrive as income rows + credit rows (FIN-04 posting), which cancel inside the invariant. |
+# | accrued term interest                      | 0 valuation       | Realized only at term settlement. |
+# | budgets / recurring templates              | not in model      | Planning artifacts; become outflows only when logged as expenses. |
+# | big_purchases row itself                   | not in model      | Wishlist intent; realized through its linked expense when bought (FIN-07). |
+#
+# Delete participation: income/expenses/savings/savings_accounts are soft-deleted
+# and read here EXPLICITLY excluding is_deleted rows (via db.get_* defaults).
+# loans/holdings have no soft delete — a hard-deleted loan removes its financing
+# inflow; a hard-deleted holding releases its cost basis (mistake-correction
+# semantics until the FIN-09 sale workflow lands).
+#
+# Money rules: Decimal cents internally, quantized to €0.01 at this boundary;
+# equality tolerance EUR_TOLERANCE (€0.01) — never 1e-6-style epsilons;
+# negative results are returned verbatim (no max(balance, 0) anywhere).
+
+EUR_TOLERANCE = 0.01  # user-facing money equality tolerance in EUR
+_CENT = Decimal("0.01")
+
+
+def _to_cents(v) -> Decimal:
+    try:
+        d = Decimal(str(float(v) if v is not None else 0.0))
+    except (TypeError, ValueError):
+        d = Decimal("0")
+    return d.quantize(_CENT)
+
+
+def _sum_col(df: pd.DataFrame, col: str) -> Decimal:
+    if df is None or df.empty or col not in df.columns:
+        return Decimal("0.00")
+    return _to_cents(pd.to_numeric(df[col], errors="coerce").fillna(0.0).sum())
+
+
+def unallocated_breakdown(user_id: int) -> dict:
+    """Component view of the canonical virtual cash invariant (all values EUR)."""
+    income_df = db.get_income(user_id)
+    expense_df = db.get_expenses(user_id)
+    savings_df = db.get_savings(user_id)
+    accounts_df = db.get_savings_accounts(user_id)
+    loans_df = db.get_loans(user_id)
+    holdings_df = db.get_holdings(user_id)
+
+    inflows = _sum_col(income_df, "actual_eur")
+    financing = _sum_col(loans_df, "principal_eur")
+    outflows = _sum_col(expense_df, "amount_eur")
+    savings_alloc = _sum_col(savings_df, "deposited_eur")
+    if accounts_df is None or accounts_df.empty or "status" not in accounts_df.columns:
+        term_alloc = Decimal("0.00")
+    else:
+        active_acc = accounts_df[accounts_df["status"].fillna("active") != "closed"]
+        term_alloc = _sum_col(active_acc, "amount_eur")
+    holdings_alloc = _sum_col(holdings_df, "cost_eur")
+
+    unallocated = inflows + financing - outflows - (savings_alloc + term_alloc + holdings_alloc)
+    return {
+        "inflows_eur": float(inflows),
+        "financing_inflows_eur": float(financing),
+        "outflows_eur": float(outflows),
+        "savings_allocations_eur": float(savings_alloc),
+        "term_allocations_eur": float(term_alloc),
+        "holdings_allocations_eur": float(holdings_alloc),
+        "unallocated_eur": float(unallocated),
+    }
+
+
+def unallocated_funds_eur(user_id: int) -> float:
+    """Canonical virtual unallocated cash for a user.
+
+    Returns realized external inflows + financing inflows - external outflows
+    - allocated principal (liquid savings + active terms + holding cost basis).
+    May legitimately be negative (legacy/overdrawn history): never clamped.
+    """
+    return unallocated_breakdown(user_id)["unallocated_eur"]
 
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────

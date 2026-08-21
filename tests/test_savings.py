@@ -108,19 +108,23 @@ def test_withdrawal_reduces_balance_with_interest():
     assert df.iloc[-1]["balance_eur"] == pytest.approx(71.0, abs=1e-3)
 
 
-def test_withdrawal_cannot_push_balance_below_zero():
+def test_withdrawal_below_zero_is_preserved_inspectable():
+    """FIN-01 semantic change: the read chain no longer clamps at 0 — a legacy
+    overdrawn goal stays visible as a negative balance (new overdrafts are
+    prevented by service validation, not by masking)."""
     df = _savings_df([
         {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 0.0},
         {"goal_name": "G", "date": "2025-02-01", "deposited_eur": -250.0, "interest_rate": 0.0},
     ])
-    assert df.iloc[-1]["balance_eur"] == 0.0
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(-150.0)
 
 
-def test_negative_first_deposit_clamped_to_zero():
+def test_negative_first_deposit_preserved_inspectable():
+    """FIN-01 semantic change: a negative opening entry stays negative."""
     df = _savings_df([
         {"goal_name": "G", "date": "2025-01-01", "deposited_eur": -50.0, "interest_rate": 0.0},
     ])
-    assert df.iloc[0]["balance_eur"] == 0.0
+    assert df.iloc[0]["balance_eur"] == pytest.approx(-50.0)
 
 
 # ── Goal editing & term-deposit accounts (db.py + sync) ───────────────────────

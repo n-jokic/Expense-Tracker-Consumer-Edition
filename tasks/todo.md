@@ -14,7 +14,17 @@
       → `StreamlitAPIException: Forms cannot be nested` at `app.py:120` (fix in OCR-02 scope).
       Bare `pytest` from root still blocked by undeletable foreign-session dirs under
       `data\_pytest_tmp` (ACL principals from another sandbox product); use `pytest tests`.
-- [ ] FIN-01 Define and test the canonical virtual unallocated-funds invariant.
+- [x] FIN-01 Define and test the canonical virtual unallocated-funds invariant.
+      → `unallocated_funds_eur()` / `unallocated_breakdown()` in services/finance_queries.py
+      with the full cash-effect classification docstring; €0.01 tolerance constant;
+      read-time clamps removed from `_recompute_savings_balances` (negatives inspectable);
+      `tests/test_unallocated.py` (12 scenarios incl. surcharge-single-count,
+      holding double-count, −€250 verbatim, cross-user isolation). Suite: 547 passed /
+      7 failed / 10 errors = baseline +12, identical failure set.
+      Scope note: the daily-accrual engine swap planned for FIN-01 moves to FIN-04 —
+      it couples to interest posting and would force touching summary/page KPI code
+      before its numbers become load-bearing. The invariant never reads balance_eur
+      (it sums deposited_eur), so clamps were the only FIN-01-relevant part.
 - [ ] FIN-02 Persist shared panel collapse/layout state and surface save failures.
 - [ ] FIN-03 Implement accessible recurring-category collapse and reorder.
 - [ ] FIN-04 Make savings and term-account movements zero-sum and atomic.
