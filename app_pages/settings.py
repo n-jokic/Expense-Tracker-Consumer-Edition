@@ -135,19 +135,127 @@ with tab_notif:
     render_ai_settings(user_id, settings)
 
 with tab_ml:
+    # ── ML-01: explicit EMPTY / CANDIDATE / ACTIVE / version-history states ──
     st.subheader(":material/psychology: Evaluated ML models")
-    st.caption("Training never changes your active model. Choose an evaluated version explicitly.")
+    from db import deactivate_ml_model, discard_ml_model_version
+
+    def _fmt_metrics(metrics: dict) -> str:
+        parts = []
+        for k, v in (metrics or {}).items():
+            if isinstance(v, (int, float)) and 0.0 <= v <= 1.0 and k != "auto_threshold":
+                parts.append(f"{k} {v:.0%}")
+            elif isinstance(v, (int, float)):
+                parts.append(f"{k} {v:.2f}")
+            else:
+                parts.append(f"{k} {v}")
+        return " · ".join(parts) if parts else "no metrics"
+
     models = list_ml_models(user_id)
-    for name in sorted({m.name for m in models}):
-        versions = [m for m in models if m.name == name]
-        active = get_active_ml_model(user_id, name)
-        labels = [f"v{m.version} — {m.trained_rows} rows — {m.metrics}" for m in versions]
-        current = next((i for i, m in enumerate(versions) if active and m.version == active.version), 0)
-        selected = st.selectbox(name, labels, index=current, key=f"ml_version_{name}")
-        if st.button(f"Activate {name}", key=f"ml_activate_{name}"):
-            activate_ml_model(user_id, name, versions[labels.index(selected)].version)
-            st.success(f"{name} activated.")
-            st.rerun()
+    if not models:
+        # ── EMPTY state ──────────────────────────────────────────────────────
+        st.info(
+            "No trained model yet. Once you have logged a handful of "
+            "expenses, the app trains a **candidate** text classifier on "
+            "your own categories automatically — it never goes live on its "
+            "own. You review and activate it here.")
+        st.caption("Until a model is active, category and subcategory "
+                   "suggestions come from the built-in keyword rules.")
+    else:
+        by_name: dict[str, list] = {}
+        for m in models:
+            by_name.setdefault(m.name, []).append(m)
+        for name in sorted(by_name):
+            versions = sorted(by_name[name], key=lambda m: m.version)
+            active = get_active_ml_model(user_id, name)
+            newest = versions[-1]
+            has_candidate = (active is None) or (newest.version != active.version)
+
+            if active is not None:
+                # ── ACTIVE state ────────────────────────────────────────────
+                stale_fp = active.dataset_fingerprint != newest.dataset_fingerprint
+                status = (":green-badge[Active]" if not stale_fp
+                          else ":orange-badge[Active — your data changed since training]")
+                st.markdown(
+                    f"**{name}** v{active.version} · {status} · "
+                    f"{_fmt_metrics(active.metrics)} · trained on "
+                    f"{active.trained_rows} rows")
+                hc1, hc2, _ = st.columns([1, 1, 3])
+                with hc1:
+                    if st.button("Deactivate", key=f"ml_deactivate_{name}",
+                                 icon=":material/pause_circle:",
+                                 help="Turn suggestions off. Artifacts and history are kept."):
+                        deactivate_ml_model(user_id, name)
+                        st.toast("Model deactivated — nothing was deleted.",
+                                 icon=":material/pause_circle:")
+                        st.rerun()
+
+            if has_candidate:
+                # ── CANDIDATE state: newest evaluated version awaits review ─
+                cand_status = ("New candidate awaiting your review" if active is None
+                               else f"Candidate v{newest.version} — newer than the active v{active.version}")
+                with st.container(border=True):
+                    st.markdown(
+                        f":material/science: **Candidate** {name} "
+                        f"v{newest.version} — {cand_status}")
+                    st.caption(f"{_fmt_metrics(newest.metrics)} · trained on "
+                               f"{newest.trained_rows} rows")
+                    cc1, cc2, _rest = st.columns([1, 1, 3])
+                    with cc1:
+                        if st.button("Activate", key=f"ml_activate_new_{name}",
+                                     type="primary", icon=":material/check_circle:"):
+                            activate_ml_model(user_id, name, newest.version)
+                            st.success(f"{name} v{newest.version} activated.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("Discard", key=f"ml_discard_new_{name}",
+                                     icon=":material/delete:",
+                                     help="Remove this candidate only. The active model and other versions are untouched."):
+                            try:
+                                discard_ml_model_version(user_id, name,
+                                                         newest.version)
+                            except ValueError as ve:
+                                st.error(str(ve))
+                            else:
+                                st.toast("Candidate discarded.", icon=":material/delete:")
+                                st.rerun()
+
+            # ── Version history (multiple-version state) ────────────────────
+            if len(versions) > 1 or active is None:
+                labels = [f"v{m.version} — {_fmt_metrics(m.metrics)} — "
+                          f"{m.trained_rows} rows"
+                          + (" · active" if active and m.version == active.version else "")
+                          for m in versions]
+                idx_active = next((i for i, m in enumerate(versions)
+                                   if active and m.version == active.version), 0)
+                selected = st.selectbox(f"{name} version history", labels,
+                                        index=idx_active,
+                                        key=f"ml_version_{name}")
+                chosen = versions[labels.index(selected)]
+                b1, b2, _ = st.columns([1, 1, 3])
+                with b1:
+                    if st.button(f"Activate selected",
+                                 key=f"ml_activate_{name}",
+                                 disabled=bool(active and chosen.version == active.version)):
+                        activate_ml_model(user_id, name, chosen.version)
+                        st.success(f"{name} v{chosen.version} activated.")
+                        st.rerun()
+                with b2:
+                    if st.button("Discard selected", key=f"ml_discard_hist_{name}",
+                                 disabled=bool(active and chosen.version == active.version),
+                                 help="Delete this non-active candidate version."):
+                        try:
+                            discard_ml_model_version(user_id, name, chosen.version)
+                        except ValueError as ve:
+                            st.error(str(ve))
+                        else:
+                            st.rerun()
+            st.divider()
+
+    st.caption("Training runs automatically on your labelled expenses and "
+               "only ever registers a candidate here — activation is always "
+               "your explicit choice. Any category correction produces a new "
+               "candidate; the previously active model keeps serving until "
+               "you switch.")
 
 # ── Account tab ───────────────────────────────────────────────────────────────
 with tab_acct:

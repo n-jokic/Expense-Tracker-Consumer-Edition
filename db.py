@@ -1291,6 +1291,45 @@ def get_active_ml_model(user_id, name):
     return ModelInfo(row.name, row.version, row.trained_rows, row.trained_at, row.dataset_fingerprint, dict(row.metrics or {}))
 
 
+def deactivate_ml_model(user_id, name):
+    """ML-01: turn the active model off WITHOUT deleting anything.
+
+    Artifacts and every registered version are kept so reactivation or
+    inspection stays possible. Audited; idempotent."""
+    from ml.registry import ModelInfo
+    with get_session() as s:
+        rows = s.query(MlModel).filter_by(user_id=user_id, name=name, active=True).all()
+        if not rows:
+            return None
+        for r in rows:
+            r.active = False
+        info = ModelInfo(rows[0].name, rows[0].version, rows[0].trained_rows,
+                         rows[0].trained_at, rows[0].dataset_fingerprint,
+                         dict(rows[0].metrics or {}))
+        log_audit(s, user_id, "UPDATE", "ml_models", f"{name}",
+                  {"action": "deactivate", "was_version": info.version})
+        return info
+
+
+def discard_ml_model_version(user_id, name, version):
+    """ML-01: delete ONE evaluated candidate version (never the active one).
+
+    Discarding a candidate can never touch the active model or history of
+    other versions. Returns True when a row was removed."""
+    with get_session() as s:
+        row = s.query(MlModel).filter_by(user_id=user_id, name=name,
+                                         version=version).first()
+        if not row:
+            return False
+        if row.active:
+            raise ValueError("cannot discard the active model — deactivate it first")
+        s.delete(row)
+        log_audit(s, user_id, "DELETE", "ml_models", f"{name}:v{version}",
+                  {"action": "discard_candidate",
+                   "metrics": dict(row.metrics or {})})
+        return True
+
+
 def record_ml_feedback(user_id, event_data):
     """Append one immutable ML feedback event."""
     from domain.merchant import normalize_merchant
