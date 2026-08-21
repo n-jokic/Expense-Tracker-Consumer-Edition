@@ -18,7 +18,7 @@ from db import (
     soft_delete_savings_account, restore_savings_account,
     rename_savings_goal, update_savings_goal, soft_delete_savings_goal,
 )
-from finance import accrued_value, maturity_value
+from finance import accrued_value, maturity_value, calculate_term_payout
 from services.commands import (
     CommandError, InsufficientFunds,
     deposit_to_goal, withdraw_from_goal, open_term_from_goal,
@@ -209,6 +209,23 @@ def edit_goal_dialog(uid: int, goal: str):
                     st.error(f"A goal named **{new_name}** already exists — "
                              "renaming would merge the two goals.")
                     return
+                # FIN-05: carry the goal's layout state across the rename —
+                # the savings panel id is derived from the goal name, so the
+                # collapse entry must follow or the state would be lost.
+                try:
+                    from ui.layout_state import update_layout_area, LayoutSaveError
+                    from ui.panel import warn_layout_unsaved
+
+                    def _carry(av, _old=goal, _new=new_name):
+                        av = dict(av or {})
+                        av["collapsed"] = [_new if c == _old else c
+                                           for c in av.get("collapsed", [])]
+                        return av
+                    update_layout_area(uid, "savings", _carry)
+                except LayoutSaveError as le:
+                    warn_layout_unsaved(le)
+                except Exception:
+                    pass  # layout carry-over is best-effort; rename succeeded
                 goal = new_name
             update_savings_goal(uid, goal, {"target_eur": tgt_eur,
                                             "interest_rate": float(e_rate)})
@@ -251,21 +268,32 @@ def withdraw_account_dialog(uid: int, row):
     has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
     matured = (has_dates and row["maturity_date"].date() <= today)
     payout_date = (row["maturity_date"].date() if matured else today)
-    if matured:
-        val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                             row["start_date"].date(), row["maturity_date"].date())
-    elif has_dates:
-        val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                            row["start_date"].date(), today)
-    else:
-        val = float(row["amount_eur"] or 0.0)   # no dates -> no interest accrued
+    early_rate = row.get("early_annual_rate")
+    early_rate = None if pd.isna(early_rate) else float(early_rate)
+    # FIN-05: the payout policy is explicit — matured pays the full term
+    # rate; early pays the agreed early rate, or principal-only when none.
+    payout = calculate_term_payout(
+        float(row["amount_eur"] or 0.0), float(row["annual_rate"] or 0.0),
+        row["start_date"].date() if has_dates else None,
+        payout_date, maturity_date=row["maturity_date"].date() if has_dates else None,
+        early_annual_rate_pct=early_rate,
+        withdrawal_kind="matured" if matured else ("early" if has_dates else "no_dates"))
+    val = payout["payout_eur"]
     gcur = str(row["currency"] or "EUR")
-    payout_label = ("matured" if matured
-                    else ("accrued so far — early withdrawal" if has_dates
-                          else "no interest accrued"))
+    if payout["kind"] == "matured":
+        payout_label = (f"Matured — full term rate {payout['rate_applied']:.2f}% "
+                        f"(interest {fmt(payout['interest_eur'], DC, rates)})")
+    elif payout["interest_eur"] > 0:
+        payout_label = (f"Early withdrawal — agreed early rate "
+                        f"{payout['rate_applied']:.2f}% "
+                        f"(interest {fmt(payout['interest_eur'], DC, rates)})")
+    elif payout["kind"] == "early":
+        payout_label = "Early withdrawal — no early rate agreed: principal only, no interest"
+    else:
+        payout_label = "No dates on this deposit — principal only, no interest"
     st.markdown(f"**{row['name']}** ({row['goal_name']})")
     st.write(f"Logging **{fmt(val, DC, rates)}** into the goal on "
-             f"{payout_date.strftime('%d %b %Y')} ({payout_label}) and closing the account.")
+             f"{payout_date.strftime('%d %b %Y')}. {payout_label}.")
     if st.button("Withdraw and close", icon=":material/check:", type="primary",
                  width="stretch", key="dlg_acc_wd"):
         # Re-read the account: guard against double-clicking Withdraw before
@@ -277,11 +305,11 @@ def withdraw_account_dialog(uid: int, row):
             st.rerun()
         tgt, rate, _ = goal_attrs(goal_rows(dfs_all, str(row["goal_name"])))
         try:
-            # FIN-04: one atomic settlement — principal + realized interest
-            # credited to the goal exactly once, interest booked as income.
-            interest = round(val - float(row["amount_eur"] or 0.0), 2)
+            # FIN-04/05: one atomic settlement — principal + realized interest
+            # (per the locked early-withdrawal policy) credited to the goal
+            # exactly once, interest booked as income.
             settle_term_account(uid, str(row["id"]),
-                                realized_interest_eur=interest,
+                                realized_interest_eur=payout["interest_eur"],
                                 payout_date=payout_date)
         except CommandError as e:
             st.error(f"Couldn't save: {e}")
@@ -545,7 +573,15 @@ if not dfs.empty:
         rows = dfs[dfs["goal_name"] == g].sort_values("date")
         bal = float(rows.iloc[-1]["balance_eur"])
         dep_sum = float(rows["deposited_eur"].sum())
-        interest_total += bal - dep_sum
+        # FIN-04: balances are POSTED principal — interest shown is the
+        # posted interest credits plus still-unposted pending accrual.
+        posted_mask = rows["accrual_key"].notna() if "accrual_key" in rows.columns \
+            else pd.Series(False, index=rows.index)
+        posted_int = float(rows.loc[posted_mask, "deposited_eur"].fillna(0).sum())
+        pending_int = float(pd.to_numeric(rows.get("pending_interest_eur"),
+                                          errors="coerce").fillna(0.0).sum()) \
+            if "pending_interest_eur" in rows.columns else 0.0
+        interest_total += posted_int + pending_int
         total_balance  += bal
     saved_year = float(ydf["deposited_eur"].sum()) if not ydf.empty else 0.0
 
@@ -584,12 +620,77 @@ if not dfs.empty:
     # ── Goal progress (cards with quick actions) ─────────────────────────────
     st.divider()
     st.subheader("Goals")
+
+    def _render_account_card(row):
+        """One term-deposit card (FIN-05: rendered exactly once — inside its
+        goal panel, or in the orphan section when the goal is gone)."""
+        acc_id = str(row["id"])
+        has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
+        matured = (row["status"] == "active" and has_dates
+                   and row["maturity_date"].date() <= today)
+        if has_dates:
+            end = (row["maturity_date"].date()
+                   if row["maturity_date"].date() < today else today)
+            cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                    row["start_date"].date(), end)
+            mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
+                                     row["start_date"].date(), row["maturity_date"].date())
+        else:
+            cur_val = float(row["amount_eur"] or 0.0)
+            mat_val = cur_val
+        days_left = ((row["maturity_date"].date() - today).days
+                     if has_dates else None)
+        status_txt = ("**Matured — ready to withdraw**"
+                      if matured else
+                      ("Closed" if row["status"] == "closed" else "Active"))
+        with st.container(border=True):
+            m1, m2, m3, m4 = st.columns([2.4, 1, 1, 1])
+            with m1:
+                st.markdown(f"🔒 **{row['name']}** · {status_txt}")
+                maturity_txt = (row["maturity_date"].strftime("%d %b %Y")
+                                if has_dates else "—")
+                days_txt = (f" · {days_left} days left" if days_left is not None
+                            and days_left >= 0 and row["status"] == "active" else "")
+                rate_txt = f"{float(row['annual_rate']):.2f}% p.a."
+                early = row.get("early_annual_rate")
+                if not pd.isna(early):
+                    rate_txt += f" · early {float(early):.2f}%"
+                st.caption(f"Rate: {rate_txt} · "
+                           f"Matures: {maturity_txt}{days_txt}")
+            with m2:
+                st.metric("Deposited", fmt(row["amount_eur"], DC, rates),
+                          label_visibility="collapsed")
+            with m3:
+                st.metric("Now", fmt(cur_val, DC, rates),
+                          label_visibility="collapsed")
+            with m4:
+                st.metric("At maturity", fmt(mat_val, DC, rates),
+                          label_visibility="collapsed")
+            with st.container(horizontal=True):
+                if row["status"] == "active":
+                    if st.button("Withdraw", icon=":material/savings:",
+                                 key=f"savacc_wd_{acc_id}", type="primary"):
+                        withdraw_account_dialog(user_id, row)
+                    if st.button("Edit", icon=":material/edit:",
+                                 key=f"savacc_ed_{acc_id}"):
+                        edit_account_dialog(user_id, row)
+                if st.button("Delete", icon=":material/delete:",
+                             key=f"savacc_del_{acc_id}"):
+                    delete_account_dialog(user_id, acc_id, str(row["name"]))
+
     for idx, g in enumerate(goals):
         rows  = dfs[dfs["goal_name"] == g].sort_values("date")
         lat   = rows.iloc[-1]
         bal   = float(lat["balance_eur"])
         td    = float(rows["deposited_eur"].sum())
-        interest = bal - td
+        # FIN-04: posted credits + pending accrual, not balance-minus-deposits
+        _pmask = rows["accrual_key"].notna() if "accrual_key" in rows.columns \
+            else pd.Series(False, index=rows.index)
+        interest = (float(rows.loc[_pmask, "deposited_eur"].fillna(0).sum())
+                    + float(pd.to_numeric(rows.get("pending_interest_eur"),
+                                          errors="coerce").fillna(0.0).sum())
+                    if "pending_interest_eur" in rows.columns
+                    else float(rows.loc[_pmask, "deposited_eur"].fillna(0).sum()))
         tgtv, grat, gcur = goal_attrs(rows)
         g_accs = accs[(accs["goal_name"] == g) & (accs["status"] != "closed")]
         g_locked = 0.0
@@ -641,6 +742,12 @@ if not dfs.empty:
                     if st.button("Delete goal", icon=":material/delete:",
                                  key=f"goal_del_{idx}"):
                         delete_goal_dialog(user_id, g, len(rows), g_locked)
+                # FIN-05: this goal's term accounts (active AND closed) render
+                # exactly once — here, inside their goal panel.
+                if not accs.empty:
+                    g_all = accs[accs["goal_name"] == g]
+                    for _, acc_row in g_all.iterrows():
+                        _render_account_card(acc_row)
 
     # ── Term-deposit accounts ────────────────────────────────────────────────
     st.divider()
@@ -717,59 +824,14 @@ if not dfs.empty:
                         )
                         st.rerun()
 
-    # Account cards render even when the user has no goal entries yet
-    # (orphaned accounts stay manageable).
-    if not accs.empty:
-        for _, row in accs.iterrows():
-            acc_id = str(row["id"])
-            has_dates = pd.notna(row["start_date"]) and pd.notna(row["maturity_date"])
-            matured = (row["status"] == "active" and has_dates
-                       and row["maturity_date"].date() <= today)
-            if has_dates:
-                end = (row["maturity_date"].date()
-                       if row["maturity_date"].date() < today else today)
-                cur_val = accrued_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                        row["start_date"].date(), end)
-                mat_val = maturity_value(float(row["amount_eur"]), float(row["annual_rate"]),
-                                         row["start_date"].date(), row["maturity_date"].date())
-            else:
-                cur_val = float(row["amount_eur"] or 0.0)
-                mat_val = cur_val
-            days_left = ((row["maturity_date"].date() - today).days
-                         if has_dates else None)
-            status_txt = ("**Matured — ready to withdraw**"
-                          if matured else
-                          ("Closed" if row["status"] == "closed" else "Active"))
-            with st.container(border=True):
-                m1, m2, m3, m4 = st.columns([2.4, 1, 1, 1])
-                with m1:
-                    st.markdown(f"🔒 **{row['name']}** — *{row['goal_name']}* · {status_txt}")
-                    maturity_txt = (row["maturity_date"].strftime("%d %b %Y")
-                                    if has_dates else "—")
-                    days_txt = (f" · {days_left} days left" if days_left is not None
-                                and days_left >= 0 and row["status"] == "active" else "")
-                    st.caption(f"Rate: {float(row['annual_rate']):.2f}% p.a. · "
-                               f"Matures: {maturity_txt}{days_txt}")
-                with m2:
-                    st.metric("Deposited", fmt(row["amount_eur"], DC, rates),
-                              label_visibility="collapsed")
-                with m3:
-                    st.metric("Now", fmt(cur_val, DC, rates),
-                              label_visibility="collapsed")
-                with m4:
-                    st.metric("At maturity", fmt(mat_val, DC, rates),
-                              label_visibility="collapsed")
-                with st.container(horizontal=True):
-                    if row["status"] == "active":
-                        if st.button("Withdraw", icon=":material/savings:",
-                                     key=f"savacc_wd_{acc_id}", type="primary"):
-                            withdraw_account_dialog(user_id, row)
-                        if st.button("Edit", icon=":material/edit:",
-                                     key=f"savacc_ed_{acc_id}"):
-                            edit_account_dialog(user_id, row)
-                    if st.button("Delete", icon=":material/delete:",
-                                 key=f"savacc_del_{acc_id}"):
-                        delete_account_dialog(user_id, acc_id, str(row["name"]))
+    # FIN-05: only TRUE orphans (goal no longer exists) render outside their
+    # goal panel — linked accounts already rendered above, exactly once.
+    orphan_accs = accs[~accs["goal_name"].isin(set(goals))] if not accs.empty else accs
+    if not orphan_accs.empty:
+        st.caption("Unlinked term deposits (their goal no longer exists) — "
+                   "withdraw or delete them to clean up:")
+        for _, row in orphan_accs.iterrows():
+            _render_account_card(row)
     elif goals:
         st.caption("No term deposits yet — open one above.")
 

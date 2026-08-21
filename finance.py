@@ -373,6 +373,73 @@ def goal_balance_timeline(rows, asof: date | None = None) -> dict:
 
 # ── Portfolio math ────────────────────────────────────────────────────────────
 
+def calculate_term_payout(amount_eur: float, annual_rate_pct: float,
+                          start_date, end_date, *,
+                          maturity_date=None,
+                          early_annual_rate_pct: float | None = None,
+                          withdrawal_kind: str = "early") -> dict:
+    """Term-deposit payout under the locked early-withdrawal policy (FIN-05).
+
+    Locked model: term interest pays out ONCE at the end of term. Early
+    closure is an explicit workflow governed by an optional agreed
+    ``early_annual_rate``:
+
+    * ``withdrawal_kind="matured"`` (end_date >= maturity_date): interest is
+      the full term value minus principal (monthly compounding via
+      ``maturity_value``); rate_applied = annual_rate_pct.
+    * ``withdrawal_kind="early"``: interest accrues at the agreed early rate
+      (simple ACT/365, one day per day held) when one was agreed; with no
+      agreed early rate the payout is PRINCIPAL ONLY — no interest.
+    * ``withdrawal_kind="no_dates"``: payout = principal, interest 0.
+
+    Returns ``{"payout_eur", "principal_eur", "interest_eur", "rate_applied",
+    "kind"}`` quantized to €0.01 (ROUND_HALF_UP). No clamps.
+    """
+    principal = _finite_float(amount_eur)
+    p = Decimal(str(principal)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+    def _d(v):
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v.date()
+        return v if isinstance(v, date) else None
+
+    kind = withdrawal_kind
+    if kind not in ("matured", "early", "no_dates"):
+        kind = "early"
+    if kind == "no_dates" or _d(start_date) is None or _d(end_date) is None:
+        return {"payout_eur": float(p), "principal_eur": float(p),
+                "interest_eur": 0.0, "rate_applied": 0.0, "kind": "no_dates"}
+
+    start = _d(start_date)
+    end = _d(end_date)
+    mat = _d(maturity_date)
+    if kind == "matured" and mat is not None and end >= mat:
+        interest = Decimal(str(maturity_value(
+            principal, float(annual_rate_pct), start, mat))) - p
+        rate = float(annual_rate_pct)
+        interest = max(interest, Decimal("0")).quantize(_CENT, rounding=ROUND_HALF_UP)
+        return {"payout_eur": float(p + interest), "principal_eur": float(p),
+                "interest_eur": float(interest), "rate_applied": rate,
+                "kind": "matured"}
+
+    # early withdrawal
+    if early_annual_rate_pct is None:
+        return {"payout_eur": float(p), "principal_eur": float(p),
+                "interest_eur": 0.0, "rate_applied": 0.0, "kind": "early"}
+    days = (end - start).days
+    if days < 0:
+        days = 0
+    rate = float(early_annual_rate_pct)
+    interest = (p * Decimal(str(rate)) / Decimal("36500") * days).quantize(
+        _CENT, rounding=ROUND_HALF_UP)
+    return {"payout_eur": float(p + interest), "principal_eur": float(p),
+            "interest_eur": float(interest), "rate_applied": rate,
+            "kind": "early"}
+
+
+
 def portfolio_metrics(holdings: list) -> dict:
     """Aggregate portfolio value/gain from holding dicts.
 

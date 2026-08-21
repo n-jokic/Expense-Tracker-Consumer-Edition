@@ -436,6 +436,9 @@ class SavingsAccount(Base):
     currency      = Column(String, default="EUR")
     amount_eur    = Column(Float, default=0.0)      # deposit, EUR
     annual_rate   = Column(Float, default=0.0)      # percent, compounded monthly
+    # FIN-05: optional agreed rate for EARLY withdrawal (percent). None/NULL =
+    # no early-withdrawal interest agreed -> early payout is principal only.
+    early_annual_rate = Column(Float, nullable=True)
     start_date    = Column(Date)
     maturity_date = Column(Date)
     status        = Column(String, default="active")  # active | closed
@@ -797,6 +800,9 @@ def _migrate(engine):
     _add_missing_columns(engine, "loans", {
         "early_repayment_surcharge_type": "VARCHAR DEFAULT 'fixed'",
         "early_repayment_surcharge_value": "FLOAT DEFAULT 0",
+    })
+    _add_missing_columns(engine, "savings_accounts", {
+        "early_annual_rate": "FLOAT",
     })
     _add_missing_columns(engine, "users", {
         "data_revision": "INTEGER DEFAULT 0",
@@ -1615,8 +1621,9 @@ def soft_delete_savings_goal(user_id, goal_name):
 # ── Term-deposit accounts (under a savings goal) ──────────────────────────────
 
 _SAV_ACC_COLS = ["id","user_id","goal_name","name","amount","currency",
-                 "amount_eur","annual_rate","start_date","maturity_date",
-                 "status","notes","is_deleted","deleted_at","created_at","updated_at"]
+                 "amount_eur","annual_rate","early_annual_rate","start_date",
+                 "maturity_date","status","notes","is_deleted","deleted_at",
+                 "created_at","updated_at"]
 
 
 def get_savings_accounts(user_id, include_deleted=False):
@@ -1639,6 +1646,8 @@ def add_savings_account(user_id, row):
             amount=float(row.get("amount", 0)), currency=row.get("currency", "EUR"),
             amount_eur=float(row.get("amount_eur", 0)),
             annual_rate=float(row.get("annual_rate", 0)),
+            early_annual_rate=(None if row.get("early_annual_rate") is None
+                               else float(row["early_annual_rate"])),
             start_date=row.get("start_date"), maturity_date=row.get("maturity_date"),
             status=row.get("status", "active"), notes=row.get("notes", ""),
         )
