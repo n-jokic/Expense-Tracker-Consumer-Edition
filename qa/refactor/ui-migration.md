@@ -59,4 +59,4 @@ refresh, OCR review. Not "every 5 lines".
 | Migration 5 | `app_pages/loans.py` | — | ☑ done (per-loan Panels in b761353) |
 | Migration 6 | `app_pages/budgets.py` | — | ☑ done (4 Panels: overall, category, progress, all_rows) |
 | Migration 7 | `app_pages/portfolio.py` | — | ☑ done (4 Panels: metrics, allocation, value_over_time, holdings) |
-| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☐ deferred (R1 already fragments AI settings; Panel chrome optional) |
+| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☑ done (Settings tabs are native tab layout per spec; AI settings is fragmented via `st.fragment` + provider-keyed form — no per-tab Panel needed; optional Panel chrome deferred as spec allows) |
