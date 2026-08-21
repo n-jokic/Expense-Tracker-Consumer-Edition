@@ -128,6 +128,21 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
             with st.expander("Raw OCR text", expanded=False):
                 st.code((result["text"] or "")[:500], language=None)
 
+            # Category/currency feed BOTH the item-review import and the
+            # single-expense fallback below — define them BEFORE any consumer.
+            # Streamlit reruns top-to-bottom per interaction; defining them
+            # here fixes NameError: r_cur when item rows rendered first.
+            r_cat = st.selectbox(
+                "Category", CAT_LIST,
+                index=CAT_LIST.index(result["category"])
+                if result["category"] in CAT_LIST else 0,
+                key="rcpt_cat")
+            r_cur = st.selectbox(
+                "Currency", list(SUPPORTED_CURRENCIES.keys()),
+                index=(list(SUPPORTED_CURRENCIES.keys()).index(st.session_state.get("rcpt_cur", DC))
+                       if st.session_state.get("rcpt_cur", DC) in SUPPORTED_CURRENCIES else 0),
+                key="rcpt_cur")
+
             # ── OCR-02: row-level item review ────────────────────────────
             from ingestion.receipt.line_item_extractor import (
                 EUR_TOLERANCE, extract_line_items, reconcile)
@@ -216,16 +231,7 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                         st.rerun()
 
             # ── Single-expense fallback (no nested form — AppTest-safe) ──
-            r_cat = st.selectbox(
-                "Category", CAT_LIST,
-                index=CAT_LIST.index(result["category"])
-                if result["category"] in CAT_LIST else 0,
-                key="rcpt_cat")
-            r_cur = st.selectbox(
-                "Currency", list(SUPPORTED_CURRENCIES.keys()),
-                index=(list(SUPPORTED_CURRENCIES.keys()).index(st.session_state.get("rcpt_cur", DC))
-                       if st.session_state.get("rcpt_cur", DC) in SUPPORTED_CURRENCIES else 0),
-                key="rcpt_cur")
+            # r_cat/r_cur are defined above (shared with the item review).
             r1, r2 = st.columns(2)
             with r1:
                 r_date = st.date_input("Date", value=date.today(), key="rcpt_date")
