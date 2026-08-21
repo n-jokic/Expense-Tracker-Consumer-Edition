@@ -161,9 +161,16 @@ small warning tells you it will reset on reload instead of failing silently.
   amount and currency**, so later rate changes never rewrite history.
 - Optionally save the entry as a **recurring template** in one tick.
 - **Receipt scanning (OCR)**: photograph or upload a receipt; Tesseract reads
-  it **on the server** (the phone only sends the photo), the app guesses the
-  total amount, merchant, and category, and you accept, edit, or reject the
-  result before anything is saved. Images are kept in memory only.
+  it **on the server** (the phone only sends the photo), extracts not just the
+  total but **individual line items** (including `2 x 289,99` quantity rows)
+  and reconciles them against the printed total. You review **each extracted
+  row** — keep/edit/reject per item — and nothing is saved until you confirm;
+  when the rows don't sum to the receipt total (or document confidence is
+  low) the page says so and requires an explicit "import anyway"
+  confirmation. A saved receipt becomes one atomic multi-item expense group
+  with the source total retained. Images are kept in memory only; a cloud
+  vision fallback exists but stays **off unless you enable it** (Settings →
+  AI).
 - **History editor**: search and filter all expenses, edit any field inline
   (paginated, "Showing X–Y of N"), and trash/restore rows. Deleted rows are
   **soft-deleted** and can be restored; the data is never silently destroyed.
@@ -199,20 +206,24 @@ small warning tells you it will reset on reload instead of failing silently.
     entries; the balance chain recomputes automatically.
   - *Delete goal* moves every entry to the trash (restorable) and removes its
     term-deposit accounts.
-- **Monthly compound interest**: the balance chain is recomputed on every read
-  from the deposit history, compounding at each entry's interest rate over the
-  elapsed months, and the latest entry is rolled forward to **today** at the
-  goal's latest rate — the displayed balance is always the current value.
-  Editing or deleting an entry intentionally updates the chain *from that entry
-  forward* (nothing else is rewritten).
+- **Interest — daily accrual, monthly posting**: savings goals accrue
+  interest **daily** on the posted balance at the goal's annual rate
+  (ACT/365), and each completed month posts one interest income entry plus
+  one goal credit — exactly once, idempotent even if you log more events
+  later retroactively. Posted interest becomes spendable goal principal;
+  the *current* month's accrual is display-only until the month completes.
+  Early-withdrawal policy is explicit per goal: an optional
+  **early-withdrawal rate** applies to withdrawals before maturity-style
+  targets, otherwise principal-only with no invented interest.
 - **Term-deposit accounts**: open one or several accounts *under a goal* —
   each has its own amount, currency, **fixed annual interest rate**, start date
-  and **maturity date**. The value compounds monthly; the card shows the
-  current and maturity values, the days remaining, and when the deposit
-  matures you can **withdraw it into the goal** (or early, at the accrued
-  value) with one click — it is logged as a goal deposit and the account is
-  closed. Accounts, goals, and locked value also count towards the goal's
-  progress bar and the "Locked (term)" KPI.
+  and **maturity date**. Interest is paid **once, at the end of the term**
+  (not compounded monthly). The card shows the current and maturity values,
+  the days remaining; at maturity you can withdraw into the goal with one
+  click, or settle **early** — using the account's optional early annual rate
+  if set, otherwise principal-only (no penalty is ever guessed). Accounts,
+  goals, and locked value also count towards the goal's progress bar and the
+  "Locked (term)" KPI.
 - Individual entries remain editable (date, amount, target, interest rate,
   notes) via "Manage savings entries", and everything is soft-delete/restore
   supported (including trashed term deposits).
@@ -323,6 +334,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
   Early repayment action logs one expense for principal plus surcharge; only
   principal reduces the balance, while the surcharge is included in interest
   paid. The next installment shows its interest/principal split.
+- **Paid-off loans can be archived** (hidden from active lists, history and
+  payments kept) and **reopened** later; archiving is bookkeeping, never
+  deletion.
 - Email reminders N days before the due day; deleting a loan keeps its payment
   expenses.
 
@@ -332,7 +346,11 @@ require confirmation dialogs. Every change is written to the **audit log**.
   (1–5), plotted on a **4-quadrant priority matrix** (Quick wins / Plan & save /
   Maybe later / Reconsider).
 - Status flow: wishlist → saving → **bought**, with a confirmation dialog that
-  logs the purchase as an expense in one step.
+  logs the purchase as an expense in one step. Buying is **atomic and
+  funding-aware**: the item can be linked to the savings goal (or unallocated
+  cash) that funded it, and buy/refund are single transactions — a **refund**
+  reverses the expense, releases the goal link, and puts the item back on the
+  wishlist, all auditable.
 - Bought rows remain recoverable in a collapsed **Archived** section. Active
   rows are compact cards grouped by category and can be dragged to reorder or
   move between categories; the order is persisted.
@@ -603,11 +621,32 @@ GGUF model weights are never included in the installer.
 
 **External API key**
 
-Any **OpenAI-compatible** endpoint works (OpenRouter, Groq, Together, …):
-pick provider **External API**, set the base URL (default
-`https://openrouter.ai/api/v1`), the model name (default
-`google/gemma-3-12b-it`), and the API key. The key is stored Fernet-encrypted,
-never exported, and never logged.
+Two kinds of external providers are supported: any **OpenAI-compatible**
+endpoint (OpenRouter, Groq, Together, …) or the **Anthropic Messages API**.
+Pick provider **External API**, choose the API kind, set the base URL
+(default `https://openrouter.ai/api/v1`), the model name, and the API key.
+The key is stored Fernet-encrypted, never exported, and never logged.
+
+What the assistant can do today:
+
+- **Ask your data**: free-form questions answered from a sanitized numeric
+  snapshot of your data; follow-up turns keep context. Ambiguous date
+  questions ("how much did I spend" with no month) get one **clarifying
+  question** instead of a guess, and malformed model output is repaired once
+  before you see an error.
+- **Insights "In short" and the weekly email paragraph** in plain language.
+- **Charts on request**: when a chart helps, the model proposes a spec that is
+  **validated against a strict whitelist** (chart type, identifier-only
+  fields, your actual rows as data) before anything renders — the model can
+  only visualize numbers the app itself computed.
+- **Transient API errors** (429/5xx) are retried with capped exponential
+  backoff honoring Retry-After; permanent 4xx failures fall back to the
+  built-in template immediately.
+
+Privacy boundary: every outbound prompt passes through one sanitizer that
+strips newlines/control characters and caps value sizes — stored data can
+never steer the model, and with the local Gemma provider nothing leaves the
+machine at all.
 
 Notes:
 
@@ -631,6 +670,8 @@ The v2 protocol is security-hardened:
 
 - every change is validated against **per-table field schemas** (unknown
   fields, protected fields, wrong types, and oversized strings are rejected);
+  creates carrying a derived `*_eur` value without its base amount are
+  rejected outright — the server always computes EUR values itself;
 - the sync cursor is the device's **server-recorded last-sync time** — a
   client cannot send null/future timestamps to bypass conflict detection;
 - compare-and-update runs in **one database transaction** (no race window);
@@ -770,6 +811,24 @@ are local to your data, degrade gracefully, and never block the UI.
   rate and deciding when the model is good enough to extend (subcategory
   prediction, character n-grams, higher training floor).
 
+### Model versions you control (Settings → ML)
+
+The categorizer follows a **candidate → review → active** lifecycle, and the
+ML tab shows exactly one of these states:
+
+- **Empty**: no model yet — the tab explains that training starts
+  automatically once enough labelled expenses exist and that keyword rules
+  handle suggestions until then.
+- **Candidate awaiting review**: an evaluated version exists but is not live.
+  You see its metrics (accuracy formatted as %) and choose **Activate** or
+  **Discard**. Training never activates anything by itself.
+- **Active**: the live version with its metrics; if your data changed since
+  it was trained, the tab says so ("your data changed since training"). A new
+  automatic training run registers a **new candidate** — the active model
+  keeps serving until you switch. **Deactivate** turns suggestions off
+  without deleting anything; **Discard** removes one non-active candidate
+  only. Every activate/deactivate/discard is audited.
+
 ### 4. Monthly spending-pattern clustering (KMeans)
 
 - Groups your past months by their category-mix similarity (KMeans on the
@@ -875,6 +934,14 @@ db.py                   # SQLAlchemy models, migrations, CRUD, backups, devices
 queries.py              # cached readers keyed by a shared DB revision
 utils.py                # currency engine, formatting, categories, CSS, helpers
 finance.py              # loan amortization + portfolio math (pure, tested)
+services/               # canonical money commands (atomic, audited):
+                        #   commands.py — savings/loans/income/receipts,
+                        #   purchase_commands.py — wishlist buy/refund/funding
+ai/                     # assistant stack: router, orchestrator loop,
+                        #   providers (llama.cpp / OpenAI-compatible / Anthropic),
+                        #   safety sanitizer, chart-spec validation
+ingestion/receipt/      # OCR document model + line-item extraction + reconcile
+ml/                     # model registry (ModelInfo) + evaluation helpers
 market_data.py          # Yahoo/Stooq price fetching + background refresh
 rates.py                # live exchange-rate refresh (frankfurter / er-api)
 forecasting.py          # ML: ETS forecast, anomalies, categorizer, KMeans, ...
@@ -895,7 +962,7 @@ make_cert.py            # one-shot self-signed certificate generator
 run_server.bat/.ps1     # HTTPS launchers (cert + app + API)
 compose.yaml/Caddyfile  # secure Docker deployment
 app_pages/*.py          # UI pages (Budgets, Rewards & badges, Ask your data, …)
-tests/                  # 397 pytest regression/AppTest suites (updated for reliability hardening)
+tests/                  # 700+ pytest regression/AppTest suites
 ```
 
 ## Running tests
@@ -908,18 +975,23 @@ pip install -r requirements-dev.txt
 Run pytest scoped to the `tests` directory — a bare `pytest` from the repo
 root fails on sandbox/temp directories.
 
-The suite (397 tests) covers the currency engine, loan amortization edge
-cases (including interest booked when payments are applied before their due
-date), backups, notifications, bank import, forecast/anomaly/categorizer
-behaviour, OCR, PDF parsing, portfolio snapshots, budget scoping, entry
-editing (including the "edits never rewrite history" guarantees), the sync
-protocol and API (pairing, throttling, cursors, conflicts), formula-injection
-safety, cache invalidation, gamification achievements, database encryption
-(creation, plaintext→ciphertext migration, wrong keys, encrypted backups),
-GitHub backups (chunking, checksums, retention, error paths — with mocked
-HTTP), the MCP tools, the optional LLM layer (mocked providers, escaping,
-fallbacks), plus Streamlit AppTest smoke tests that run every page. Tests use
-a throwaway database and never touch `data/expense_tracker.db`.
+The suite (700+ tests) covers the currency engine, the canonical savings/
+loan/purchase money commands (posted balances, daily accrual with monthly
+posting, early-withdrawal policy, atomic multi-item receipt saves), loan
+amortization edge cases (including interest booked when payments are applied
+before their due date), backups, notifications, bank import, PDF parsing,
+forecast/anomaly/categorizer behaviour plus the ML candidate/active state
+machine, OCR line-item extraction and reconciliation, the AI assistant stack
+(sanitizer boundary, router, retries, chart-spec validation, mocked
+providers), portfolio snapshots, budget scoping, entry editing (including the
+"edits never rewrite history" guarantees), the sync protocol and API
+(pairing, throttling, cursors, conflicts, derived-EUR rejection),
+formula-injection safety, cache invalidation, gamification achievements,
+database encryption (creation, plaintext→ciphertext migration, wrong keys,
+encrypted backups), GitHub backups (chunking, checksums, retention, error
+paths — with mocked HTTP), the MCP tools, the optional LLM layer, plus
+Streamlit AppTest smoke tests that run every page. Tests use a throwaway
+database and never touch `data/expense_tracker.db`.
 
 ## Hosting later (VPS / server)
 
@@ -967,6 +1039,15 @@ rates, loan early-repayment surcharge tracking, and reliability hardening
 (recurring dialogs, error boundaries on all DB sinks, multi-write atomicity,
 double-submit guards, atomic JSON settings merges, budget-scope correction,
 and NaN/FK guards).
+
+Also new in this cycle: posted savings balances with daily accrual and
+monthly interest posting plus an explicit early-withdrawal policy; term
+deposits nested under goals with end-of-term payout; funding-linked atomic
+wishlist buy/refund; loan archive/reopen; a hardened AI assistant (router +
+orchestrator, three provider kinds, output sanitizer boundary, validated
+charts, clarifying questions); receipt line-item review with reconciliation
+and an opt-in-only cloud fallback; and explicit ML candidate/active model
+states with audited activation.
 ## Agent Knowledge System
 
 Future AI agents (and subagents) start at [`agent instructions/README.md`](./agent%20instructions/README.md) — the coordinator router for 19 domain docs (8 subsystems + 4 architecture docs) that map the codebase, dependency graph, execution flows, and invariants (G1–G13). See [`agent instructions/`](./agent%20instructions/) for shell/auth, persistence/crypto/caching, currency/taxonomy, ledger/recurring/audit, planning/wealth, ingestion, intelligence, and connectivity surfaces.
