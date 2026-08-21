@@ -58,4 +58,5 @@ Examples: LIDL SRBIJA DOO #0183 BEOGRAD / LIDL-183 / LIDL PROD 0183 → normaliz
   as the persistence façade and split into `repositories/` only after services
   have taken the pressure off it.
 - `utils.py` compatibility shims stay during R6 so imports don't churn.
-- `ui/formatting.py`, `ui/styles.py`, `infra/exporting.py`, `infra/networking.py` seeded (R6 preview).
+- `ui/formatting.py`, `ui/styles.py`, `infra/exporting.py`, `infra/networking.py` seeded; `utils.py` now a compat shim re-exporting from domain/ui/infra ✅.
+- Phase-2 stubs: `ui/panel.py` (PanelSpec), `ui/layout_state.py`, `ui/board.py` (BoardResult/ItemMove).
