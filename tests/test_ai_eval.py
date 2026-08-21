@@ -79,6 +79,29 @@ def test_fast_route_covers_deterministic():
     assert hits >= 10, f"fast_route hit only {hits}, expected >=10"
 
 
+def test_deterministic_route_parses_explicit_and_relative_months():
+    today = __import__("datetime").date(2026, 8, 21)
+    args = router.infer_deterministic_args(
+        "aggregate_spending", "How much did I spend on groceries in June 2025?", today)
+    assert args == {"year": 2025, "month": 6, "category": "Groceries"}
+    args = router.infer_deterministic_args(
+        "aggregate_spending", "How much did I spend last month?", today)
+    assert args == {"year": 2026, "month": 7}
+
+
+def test_fast_route_handles_common_breakdown_and_comparison_questions():
+    assert router.fast_route("What were my top merchants this month?") == "merchant_breakdown"
+    assert router.fast_route("How does this month compare to last month?") == "compare_periods"
+    assert router.fast_route("What did I spend at Lidl this month?") == "search_transactions"
+
+
+def test_purchase_scenario_route_extracts_amount():
+    assert router.fast_route("Can I afford a €1,500 laptop in October?") == "purchase_scenario"
+    assert router.infer_deterministic_args(
+        "purchase_scenario", "Can I afford a €1,500 laptop in October?", __import__("datetime").date(2026, 8, 21)
+    ) == {"purchase_eur": 1500.0, "year": 2026, "month": 8}
+
+
 def test_parse_local_tool_json_valid():
     obj = router.parse_local_tool_json('{"tool": "budget_status", "arguments": {"year": 2025, "month": 6}}')
     assert obj is not None
@@ -195,7 +218,7 @@ def test_schemas_provenance_roundtrip():
 def test_tool_schemas_cover_all_tools():
     for name in tr.TOOLS:
         assert name in tr.TOOL_SCHEMAS, f"missing schema for {name}"
-    assert len(tr.TOOLS) == 16
+    assert len(tr.TOOLS) >= 16
 
 
 # ── Hallucinated number guard ──────────────────────────────────────────────

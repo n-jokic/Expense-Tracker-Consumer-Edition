@@ -44,13 +44,11 @@ elif provider == "api":
 
 if provider == "none":
     st.info(
-        "The AI assistant is not configured yet. Set it up in "
-        "**Settings → Notifications → AI assistant** (a local Gemma model "
-        "or an API key) — the README has the download steps. "
-        "Until then, the rule-based Insights page covers the same ground.",
+        "No AI provider is configured. Common questions still work using "
+        "deterministic finance services; configure an AI provider in "
+        "**Settings → Notifications → AI assistant** for complex questions.",
         icon=":material/smart_toy:",
     )
-    st.stop()
 
 if "ask_history" not in st.session_state:
     st.session_state.ask_history = []
@@ -102,6 +100,10 @@ if _last_calls:
                         + (f" · Filters: {filters}" if filters else "")
                         + f" · Basis: {prov.get('currency_basis', 'EUR')}"
                     )
+                source_rows = (tc.get("result") or {}).get("expenses")
+                if isinstance(source_rows, list) and source_rows:
+                    with st.expander("Show source transactions", expanded=False):
+                        st.dataframe(source_rows, use_container_width=True, hide_index=True)
                 # brief result preview (no raw row dump beyond cap)
                 preview = str(tc.get("result", {}))
                 if len(preview) > 900:
@@ -162,7 +164,7 @@ if st.session_state.pop("ask_pending", None):
         st.session_state["_last_tool_calls"] = tool_calls
         err = result.get("error") or result.get("diagnostic") or "The assistant could not answer this time."
         diag = llm.local_diagnostic()
-        hint = diag if diag else "Check the provider in **Settings → Notifications → AI assistant**."
+        hint = diag if diag else "Try a common spending, budget, or recurring-cost question, or configure an AI provider for complex questions."
         st.error(f"{err} {hint}")
 
 if st.session_state.ask_history:

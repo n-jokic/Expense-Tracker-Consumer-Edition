@@ -412,6 +412,105 @@ def get_recurring_monthly_total(user_id: int) -> float:
     return float(df[df["active"] == True]["amount_eur"].sum())
 
 
+def budget_runway(user_id: int, period_start: date, total_budget_eur: float | None = None) -> dict:
+    """Budget depletion estimate using the user's configured monthly budgets."""
+    budgets = get_budget_vs_actual(user_id, period_start.year, period_start.month)
+    total = float(total_budget_eur) if total_budget_eur is not None else sum(
+        row["budgeted_eur"] for row in budgets.values())
+    return {"total_budget_eur": total, "period_start": period_start.isoformat(),
+            "days_remaining": days_until_budget_depleted(db.get_expenses(user_id), total, period_start),
+            "depleted": False}
+
+
+def project_savings_goal(user_id: int, goal_name: str) -> dict:
+    return savings_projection(db.get_savings(user_id), goal_name)
+
+
+def recurring_costs(user_id: int, limit: int = 100) -> dict:
+    df = db.get_recurring(user_id)
+    active = df[df["active"] == True] if not df.empty and "active" in df else df  # noqa: E712
+    bills = [{"description": str(row.get("description", "")),
+              "amount_eur": float(row.get("amount_eur", 0) or 0),
+              "category": str(row.get("category", ""))}
+             for _, row in active.head(limit).iterrows()]
+    return {"monthly_total_eur": get_recurring_monthly_total(user_id), "bills": bills}
+
+
+def subscription_changes(user_id: int, limit: int = 100) -> list[dict]:
+    import forecasting as fc
+    df = fc.detect_subscriptions(db.get_expenses(user_id))
+    if df is None or df.empty:
+        return []
+    rows = []
+    for _, row in df.head(limit).iterrows():
+        item = row.to_dict()
+        for key, value in item.items():
+            if hasattr(value, "isoformat"):
+                item[key] = value.isoformat()
+        rows.append(item)
+    return rows
+
+
+def anomalies(user_id: int, multiplier: float = 2.0, limit: int = 100) -> list[dict]:
+    df = unusual_expenses(db.get_expenses(user_id), multiplier=float(multiplier))
+    rows = []
+    for _, row in df.head(limit).iterrows():
+        item = row.to_dict()
+        if hasattr(item.get("date"), "isoformat"):
+            item["date"] = item["date"].isoformat()
+        rows.append(item)
+    return rows
+
+
+def forecast(user_id: int) -> dict:
+    import forecasting as fc
+    return dict(fc.forecast_next_month(db.get_expenses(user_id)))
+
+
+def loan_scenario(principal_eur: float, annual_rate_pct: float, term_months: int,
+                  extra_monthly_eur: float = 0.0) -> dict:
+    """Deterministic repayment comparison; no database mutation or model arithmetic."""
+    principal, rate, term, extra = float(principal_eur), float(annual_rate_pct), int(term_months), float(extra_monthly_eur or 0)
+    monthly = fin.annuity_payment(principal, rate, term)
+    out = {"principal_eur": principal, "annual_rate_pct": rate, "term_months": term,
+           "monthly_payment": round(monthly, 2)}
+    if extra <= 0:
+        return out
+    monthly_rate = rate / 1200
+    payment = monthly + extra
+    if monthly_rate == 0:
+        months = math.ceil(principal / payment)
+    elif payment <= principal * monthly_rate:
+        months = term
+    else:
+        months = max(1, math.ceil(-math.log(1 - principal * monthly_rate / payment) / math.log(1 + monthly_rate)))
+    normal_interest = monthly * term - principal
+    extra_interest = payment * months - principal
+    out.update({"extra_monthly_eur": round(extra, 2), "monthly_with_extra": round(payment, 2),
+                "months_needed_with_extra": months, "months_saved": max(0, term - months),
+                "interest_saved_eur": round(max(0, normal_interest - extra_interest), 2)})
+    return out
+
+
+def purchase_scenario(user_id: int, purchase_eur: float, year: int, month: int) -> dict:
+    """Read-only affordability snapshot for a proposed purchase."""
+    purchase = float(purchase_eur)
+    if purchase <= 0:
+        raise ValueError("purchase_eur must be positive")
+    cashflow = get_expense_summary(user_id, f"{int(year)}-{int(month):02d}")
+    savings = get_savings_summary(user_id)
+    free_cash = float(cashflow["net_eur"])
+    savings_balance = float(savings["total_balance_eur"])
+    return {
+        "purchase_eur": round(purchase, 2),
+        "projected_free_cash_before_purchase": round(free_cash, 2),
+        "projected_after_purchase": round(free_cash - purchase, 2),
+        "savings_balance_eur": round(savings_balance, 2),
+        "savings_after_purchase_eur": round(savings_balance - purchase, 2),
+        "affordable_from_monthly_cashflow": free_cash >= purchase,
+    }
+
+
 def get_portfolio_metrics(user_id: int) -> dict:
     """Portfolio metrics via finance.portfolio_metrics after EUR conversion."""
     df = db.get_holdings(user_id)

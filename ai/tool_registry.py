@@ -26,8 +26,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "category_breakdown": {"required": ["year", "month"], "optional": []},
     "merchant_breakdown": {"required": ["year", "month"], "optional": ["n"]},
     "budget_status": {"required": ["year", "month"], "optional": []},
-    "budget_runway": {"required": ["total_budget_eur", "period_start"], "optional": []},
-    "cashflow_summary": {"required": ["year"], "optional": ["month"]},
+    "budget_runway": {"required": ["period_start"], "optional": ["total_budget_eur"]},
+    "cashflow_summary": {"required": ["year", "month"], "optional": []},
     "savings_status": {"required": [], "optional": []},
     "project_savings": {"required": ["goal_name"], "optional": []},
     "debt_summary": {"required": [], "optional": []},
@@ -36,6 +36,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "subscription_changes": {"required": [], "optional": []},
     "anomalies": {"required": [], "optional": ["multiplier"]},
     "forecast": {"required": [], "optional": []},
+    "purchase_scenario": {"required": ["purchase_eur", "year", "month"], "optional": []},
 }
 
 MAX_RESULT_ROWS = 100  # enforced by orchestrator too; kept here for reference
@@ -210,32 +211,23 @@ def budget_status(user_id: int, year: int, month: int) -> dict:
 
 
 @_register("budget_runway")
-def budget_runway(user_id: int, total_budget_eur: float, period_start: str) -> dict:
-    from db import get_expenses
-    total_budget_eur = float(total_budget_eur)
+def budget_runway(user_id: int, period_start: str, total_budget_eur: float | None = None) -> dict:
     start = _parse_date(period_start)
-    df = get_expenses(user_id)
-    days = fq.days_until_budget_depleted(df, total_budget_eur, start)
-    return {
-        "total_budget_eur": total_budget_eur,
-        "period_start": start.isoformat(),
-        "days_remaining": days,
-        "depleted": days == 0,
-        "_provenance": _prov("budget_runway", period_start=start),
-    }
+    result = fq.budget_runway(user_id, start, total_budget_eur)
+    result["depleted"] = result["days_remaining"] == 0
+    result["_provenance"] = _prov("budget_runway", period_start=start)
+    return result
 
 
 @_register("cashflow_summary")
-def cashflow_summary(user_id: int, year: int, month: int | None = None) -> dict:
+def cashflow_summary(user_id: int, year: int, month: int) -> dict:
     year = int(year)
-    # When month provided, use that month; otherwise aggregate current month as proxy
-    month_key = f"{year}-{int(month):02d}" if month is not None else f"{year}-01"
+    month = int(month)
+    month_key = f"{year}-{month:02d}"
     summary = fq.get_expense_summary(user_id, month_key)
-    # If caller asked for year-level without month, we already returned Jan; augment with real month hint
     result = dict(summary)
-    if month is not None:
-        result["requested_month"] = f"{year}-{int(month):02d}"
-    result["_provenance"] = _prov("cashflow_summary", period_start=date(year, int(month) if month else 1, 1))
+    result["requested_month"] = month_key
+    result["_provenance"] = _prov("cashflow_summary", period_start=date(year, month, 1))
     return result
 
 
@@ -252,9 +244,7 @@ def savings_status(user_id: int) -> dict:
 
 @_register("project_savings")
 def project_savings(user_id: int, goal_name: str) -> dict:
-    import db as _db
-    df = _db.get_savings(user_id)
-    proj = fq.savings_projection(df, goal_name)
+    proj = fq.project_savings_goal(user_id, goal_name)
     proj = dict(proj)
     # Make projected_date json-safe
     if proj.get("projected_date") and hasattr(proj["projected_date"], "isoformat"):
@@ -277,47 +267,7 @@ def debt_summary(user_id: int) -> dict:
 @_register("loan_scenario")
 def loan_scenario(user_id: int, principal_eur: float, annual_rate_pct: float,
                   term_months: int, extra_monthly_eur: float = 0.0) -> dict:
-    import finance as fin
-    principal_eur = float(principal_eur)
-    annual_rate_pct = float(annual_rate_pct)
-    term_months = int(term_months)
-    extra = float(extra_monthly_eur or 0.0)
-    monthly = fin.annuity_payment(principal_eur, annual_rate_pct, term_months)
-    out: dict[str, Any] = {
-        "principal_eur": principal_eur,
-        "annual_rate_pct": annual_rate_pct,
-        "term_months": term_months,
-        "monthly_payment": round(monthly, 2),
-    }
-    if extra > 0.01:
-        # Simulate extra payment effect via finance.loan_schedule without history
-        from datetime import timedelta
-        # Use a synthetic schedule: extra reduces remaining months if we compute
-        # via closed-form rather than full schedule (keep deterministic, no DB).
-        r = (annual_rate_pct / 100) / 12
-        if r == 0:
-            import math
-            months_needed = math.ceil(principal_eur / (monthly + extra)) if (monthly + extra) > 0 else term_months
-        else:
-            import math
-            pay = monthly + extra
-            if pay <= principal_eur * r:
-                months_needed = term_months  # extra not enough
-            else:
-                months_needed = math.ceil(-math.log(1 - principal_eur * r / pay) / math.log(1 + r))
-                months_needed = max(1, months_needed)
-        saved_months = max(0, term_months - months_needed)
-        # Interest: total cost = payment * months; difference approximates saved interest
-        interest_normal = monthly * term_months - principal_eur
-        interest_extra = (monthly + extra) * months_needed - principal_eur
-        interest_saved = max(0.0, interest_normal - interest_extra)
-        out.update({
-            "extra_monthly_eur": round(extra, 2),
-            "monthly_with_extra": round(monthly + extra, 2),
-            "months_needed_with_extra": months_needed,
-            "months_saved": saved_months,
-            "interest_saved_eur": round(interest_saved, 2),
-        })
+    out = fq.loan_scenario(principal_eur, annual_rate_pct, term_months, extra_monthly_eur)
     out["_provenance"] = _prov("loan_scenario")
     return out
 
@@ -326,45 +276,14 @@ def loan_scenario(user_id: int, principal_eur: float, annual_rate_pct: float,
 
 @_register("recurring_costs")
 def recurring_costs(user_id: int) -> dict:
-    total = fq.get_recurring_monthly_total(user_id)
-    # Also include per-bill list capped
-    try:
-        from db import get_recurring
-        df = get_recurring(user_id)
-        bills: list[dict] = []
-        if not df.empty:
-            active = df[df["active"] == True] if "active" in df.columns else df  # noqa: E712
-            for _, r in active.head(MAX_RESULT_ROWS).iterrows():
-                bills.append({
-                    "description": str(r.get("description", "")),
-                    "amount_eur": float(r.get("amount_eur", 0) or 0),
-                    "category": str(r.get("category", "")),
-                })
-    except Exception:
-        bills = []
-    return {
-        "monthly_total_eur": float(total),
-        "bills": bills,
-        "_provenance": _prov("recurring_costs", row_count=len(bills)),
-    }
+    result = fq.recurring_costs(user_id, MAX_RESULT_ROWS)
+    result["_provenance"] = _prov("recurring_costs", row_count=len(result["bills"]))
+    return result
 
 
 @_register("subscription_changes")
 def subscription_changes(user_id: int) -> dict:
-    from db import get_expenses
-    import forecasting as fc
-    df = get_expenses(user_id)
-    subs = fc.detect_subscriptions(df)
-    records: list[dict] = []
-    if subs is not None and not subs.empty:
-        for _, r in subs.head(MAX_RESULT_ROWS).iterrows():
-            d = r.to_dict()
-            if "last_date" in d and hasattr(d["last_date"], "isoformat"):
-                try:
-                    d["last_date"] = d["last_date"].isoformat()
-                except Exception:
-                    d["last_date"] = str(d["last_date"])
-            records.append(d)
+    records = fq.subscription_changes(user_id, MAX_RESULT_ROWS)
     return {
         "count": len(records),
         "subscriptions": records,
@@ -375,29 +294,7 @@ def subscription_changes(user_id: int) -> dict:
 
 @_register("anomalies")
 def anomalies(user_id: int, multiplier: float = 2.0) -> dict:
-    import db as _db
-    multiplier = float(multiplier)
-    df = _db.get_expenses(user_id)
-    out = fq.unusual_expenses(df, multiplier=multiplier)
-    records: list[dict] = []
-    if out is not None and not out.empty:
-        for _, r in out.head(MAX_RESULT_ROWS).iterrows():
-            d = r.to_dict()
-            if "date" in d and hasattr(d["date"], "isoformat"):
-                try:
-                    d["date"] = d["date"].isoformat()
-                except Exception:
-                    d["date"] = str(d["date"])
-            records.append(d)
-    # Enrich with IsolationForest signal when enough rows (pure helper, not authoritative)
-    try:
-        import forecasting as fc
-        flagged = fc.detect_anomalies(df)
-        if flagged is not None and not flagged.empty:
-            # Only note count; do not duplicate arithmetic as authoritative
-            pass
-    except Exception:
-        pass
+    records = fq.anomalies(user_id, multiplier, MAX_RESULT_ROWS)
     return {
         "count": len(records),
         "expenses": records,
@@ -408,10 +305,7 @@ def anomalies(user_id: int, multiplier: float = 2.0) -> dict:
 
 @_register("forecast")
 def forecast(user_id: int) -> dict:
-    from db import get_expenses
-    import forecasting as fc
-    df = get_expenses(user_id)
-    result = fc.forecast_next_month(df)
+    result = fq.forecast(user_id)
     # Ensure json-safe and provenance
     result = dict(result)
     if "_provenance" not in result:
@@ -419,4 +313,11 @@ def forecast(user_id: int) -> dict:
     else:
         result["_provenance"] = dict(result["_provenance"])
         result["_provenance"].setdefault("calculation", "forecast")
+    return result
+
+
+@_register("purchase_scenario")
+def purchase_scenario(user_id: int, purchase_eur: float, year: int, month: int) -> dict:
+    result = fq.purchase_scenario(user_id, purchase_eur, year, month)
+    result["_provenance"] = _prov("purchase_scenario", period_start=date(int(year), int(month), 1))
     return result

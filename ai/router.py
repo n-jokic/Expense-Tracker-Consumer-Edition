@@ -20,6 +20,11 @@ MAX_RESULT_ROWS = 100
 # Each pattern maps to a canonical tool; orchestrator infers args from question
 # and current date without invoking the LLM.
 DETERMINISTIC_PATTERNS: list[tuple[str, str]] = [
+    (r"can i afford|afford.*(?:€|eur|euro)|purchase", "purchase_scenario"),
+    (r"compare|higher.*than|more expensive|spending.*vs|vs.*spending", "compare_periods"),
+    (r"top.*merchant|merchant.*breakdown|where.*shop", "merchant_breakdown"),
+    (r"category.*breakdown|biggest expense category|top spending categor", "category_breakdown"),
+    (r"search.*(?:purchase|transaction)|spend at|spent at|how much at", "search_transactions"),
     (r"how much.*spen", "aggregate_spending"),
     (r"spen.*this month|this month.*spen", "aggregate_spending"),
     (r"spending.*this month", "aggregate_spending"),
@@ -43,13 +48,38 @@ _CATEGORY_HINTS = [
     "food & dining",
 ]
 
+_MONTHS = {
+    name: index for index, name in enumerate(
+        ("january", "february", "march", "april", "may", "june", "july",
+         "august", "september", "october", "november", "december"), start=1
+    )
+}
+
 def _extract_category(question: str) -> str | None:
     q = question.lower()
     for cat in _CATEGORY_HINTS:
         if cat in q:
             # Return canonical capitalised form
-            return cat.title() if cat != "food & dining" else "Food & Dining"
+            return {
+                "healthcare": "Health",
+                "utilities": "Housing & Utilities",
+                "food & dining": "Food & Dining",
+            }.get(cat, cat.title())
     return None
+
+
+def _extract_month(question: str, today: date) -> tuple[int, int]:
+    """Return the month named by the question, defaulting to the current month."""
+    q = question.lower()
+    explicit = re.search(r"\b(" + "|".join(_MONTHS) + r")\s+(20\d{2})\b", q)
+    if explicit:
+        return int(explicit.group(2)), _MONTHS[explicit.group(1)]
+    for name, month in _MONTHS.items():
+        if re.search(rf"\b{name}\b", q):
+            return today.year, month
+    if "last month" in q or "previous month" in q:
+        return (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    return today.year, today.month
 
 
 def fast_route(question: str) -> str | None:
@@ -161,7 +191,7 @@ def validate_tool_call(tool: str, arguments: dict) -> tuple[bool, str | None]:
                     int(v)
                 except Exception:
                     return False, f"argument {k} must be int"
-        if k in ("total_budget_eur", "principal_eur", "annual_rate_pct", "extra_monthly_eur", "multiplier"):
+        if k in ("total_budget_eur", "principal_eur", "annual_rate_pct", "extra_monthly_eur", "purchase_eur", "multiplier"):
             try:
                 float(v)
             except Exception:
@@ -174,27 +204,34 @@ def infer_deterministic_args(tool: str, question: str, today: date | None = None
     today = today or date.today()
     cat = _extract_category(question)
     if tool == "aggregate_spending":
-        args: dict[str, Any] = {"year": today.year, "month": today.month}
+        year, month = _extract_month(question, today)
+        args: dict[str, Any] = {"year": year, "month": month}
         if cat:
             args["category"] = cat
-        # Detect "last month" phrasing
-        if "last month" in question.lower() or "previous month" in question.lower():
-            if today.month == 1:
-                args["year"] = today.year - 1
-                args["month"] = 12
-            else:
-                args["month"] = today.month - 1
         return args
     if tool == "budget_status":
         return {"year": today.year, "month": today.month}
     if tool == "budget_runway":
-        return {"total_budget_eur": 1000.0, "period_start": today.replace(day=1).isoformat()}
+        return {"period_start": today.replace(day=1).isoformat()}
     if tool == "category_breakdown":
-        return {"year": today.year, "month": today.month}
+        year, month = _extract_month(question, today)
+        return {"year": year, "month": month}
     if tool == "merchant_breakdown":
-        return {"year": today.year, "month": today.month, "n": 5}
+        year, month = _extract_month(question, today)
+        return {"year": year, "month": month, "n": 5}
     if tool == "cashflow_summary":
-        return {"year": today.year, "month": today.month}
+        year, month = _extract_month(question, today)
+        return {"year": year, "month": month}
+    if tool == "search_transactions":
+        match = re.search(r"(?:at|for)\s+['\"]?([\w .&-]+?)(?:['\"]?\s+(?:this|last|in)\b|[?!.]?$)", question, re.I)
+        return {"query": (match.group(1) if match else question).strip(), "limit": 20}
+    if tool == "purchase_scenario":
+        amount = re.search(r"(?:€|eur\s*|euro\s*)([\d.,]+)|([\d.,]+)\s*(?:€|eur|euro)", question, re.I)
+        if amount is None:
+            return {"purchase_eur": 0, "year": today.year, "month": today.month}
+        value = (amount.group(1) or amount.group(2)).replace(",", "")
+        year, month = _extract_month(question, today)
+        return {"purchase_eur": float(value), "year": year, "month": month}
     if tool in ("recurring_costs", "savings_status", "debt_summary", "forecast", "anomalies", "subscription_changes"):
         return {}
     if tool == "project_savings":

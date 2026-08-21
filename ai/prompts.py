@@ -18,7 +18,7 @@ PLANNER_SYSTEM = (
     "Available tools: search_transactions, aggregate_spending, compare_periods, "
     "category_breakdown, merchant_breakdown, budget_status, budget_runway, "
     "cashflow_summary, savings_status, project_savings, debt_summary, "
-    "loan_scenario, recurring_costs, subscription_changes, anomalies, forecast. "
+    "loan_scenario, recurring_costs, subscription_changes, anomalies, forecast, purchase_scenario. "
     "Use the arguments schema exactly. Dates are YYYY-MM-DD. Year/month are integers."
 )
 

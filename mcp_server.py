@@ -299,22 +299,17 @@ async def _get_insights_impl() -> dict:
 
 
 async def _ask_data_impl(question: str) -> dict:
-    """Free-form question answered over the user's own data via the optional
-    AI assistant (llm.py). Read-only; needs a configured provider."""
+    """Free-form financial question via the same bounded advisor as the UI."""
     uid = _resolve_user()
     try:
-        from llm import answer_query, resolve_provider
-        settings = get_settings(uid)
-        if resolve_provider(settings) == "none":
-            return {"ok": False,
-                    "error": "AI assistant is not configured — set it up in "
-                             "Settings → Notifications → AI assistant."}
-        answer = answer_query(uid, question or "", settings)
-        if not answer:
-            return {"ok": False,
-                    "error": "The AI assistant could not answer right now "
-                             "(model/API failure)."}
-        return {"ok": True, "answer": answer}
+        from ai.orchestrator import orchestrate
+
+        result = orchestrate(uid, question or "", get_settings(uid))
+        if result.get("answer"):
+            return {"ok": True, "answer": result["answer"],
+                    "tool_calls": result.get("tool_calls", [])}
+        return {"ok": False, "error": result.get("error") or
+                "The advisor could not answer right now."}
     except Exception as e:
         return _err(e)
 

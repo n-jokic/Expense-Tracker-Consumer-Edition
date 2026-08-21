@@ -69,6 +69,23 @@ def _truncate_result(result: dict) -> dict:
     return result
 
 
+def _normalize_provenance(result: dict, tool: str) -> dict:
+    """Give every registry result the UI's stable provenance shape."""
+    provenance = dict(result.get("_provenance") or {})
+    start, end = provenance.pop("period_start", None), provenance.pop("period_end", None)
+    if start and end and not provenance.get("period"):
+        provenance["period"] = f"{start}..{end}"
+    provenance.setdefault("period", None)
+    provenance.setdefault("previous_period", None)
+    provenance.setdefault("row_count", 0)
+    provenance.setdefault("filters", {})
+    provenance.setdefault("currency_basis", "EUR")
+    provenance.setdefault("calculation", tool)
+    provenance.setdefault("truncated", bool(result.get("_truncated")))
+    result["_provenance"] = provenance
+    return result
+
+
 def _execute_tool(tool: str, arguments: dict, user_id: int) -> tuple[dict | None, str | None]:
     """Execute a read-only finance tool. Returns (result, error)."""
     try:
@@ -94,10 +111,7 @@ def _execute_tool(tool: str, arguments: dict, user_id: int) -> tuple[dict | None
         result = fn(user_id=user_id, **arguments)
         if not isinstance(result, dict):
             result = {"result": result, "_provenance": {"calculation": tool}}
-        result = _truncate_result(result)
-        # Ensure _provenance exists
-        if "_provenance" not in result:
-            result["_provenance"] = {"calculation": tool, "row_count": 0}
+        result = _normalize_provenance(_truncate_result(result), tool)
         return result, None
     except TypeError as e:
         return None, f"argument error for {tool}: {e}"
@@ -317,9 +331,19 @@ def orchestrate(
             args = parsed.get("arguments", {})
             ok, err = validate_tool_call(tool, args)
             if not ok:
-                # One repair attempt for arg validation too
-                log.warning("planner args invalid: %s", err)
-                break
+                repair_req = GenerationRequest(
+                    system=P.PLANNER_SYSTEM,
+                    user=f"{P.REPAIR_INSTRUCTION}\nValidation error: {err}\nYour previous output:\n{text[:500]}",
+                    max_tokens=256,
+                )
+                repaired = parse_local_tool_json((provider.generate(repair_req).text or "").strip())
+                if repaired is None:
+                    break
+                tool, args = repaired["tool"], repaired.get("arguments", {})
+                ok, err = validate_tool_call(tool, args)
+                if not ok:
+                    log.warning("planner args invalid after repair: %s", err)
+                    break
 
             # Deduplicate: don't call same tool with same args twice
             if any(tc.tool == tool and tc.arguments == args for tc in tool_calls):

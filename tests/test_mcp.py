@@ -293,21 +293,15 @@ def test_read_tools_return_errors_not_exceptions(test_user, monkeypatch):
 
 
 def test_ask_data_tool(monkeypatch):
-    # No provider configured → clean error result, no exception.
+    # MCP delegates to the bounded advisor and preserves its clean errors.
     monkeypatch.setattr(mcp, "_USER_ID", 1)
+    import ai.orchestrator as advisor
+    monkeypatch.setattr(advisor, "orchestrate", lambda *args, **kwargs: {
+        "answer": "123 EUR.", "tool_calls": [{"tool": "aggregate_spending"}]})
     res = run(mcp._ask_data_impl("how much did I spend?"))
-    assert res["ok"] is False and "not configured" in res["error"]
+    assert res["ok"] is True and res["answer"] == "123 EUR."
+    assert res["tool_calls"] == [{"tool": "aggregate_spending"}]
 
-    # Provider configured + engine works → the answer comes through.
-    import llm as llm_module
-    monkeypatch.setattr(llm_module, "resolve_provider", lambda s: "api")
-    monkeypatch.setattr(llm_module, "answer_query",
-                        lambda uid, q, settings, history=None: "123 EUR.")
+    monkeypatch.setattr(advisor, "orchestrate", lambda *args, **kwargs: {"error": "No route"})
     res = run(mcp._ask_data_impl("how much did I spend?"))
-    assert res == {"ok": True, "answer": "123 EUR."}
-
-    # Engine failure → clean error result.
-    monkeypatch.setattr(llm_module, "answer_query",
-                        lambda uid, q, settings, history=None: None)
-    res = run(mcp._ask_data_impl("how much did I spend?"))
-    assert res["ok"] is False and "could not answer" in res["error"]
+    assert res == {"ok": False, "error": "No route"}
