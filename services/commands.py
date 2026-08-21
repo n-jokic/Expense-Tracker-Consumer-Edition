@@ -709,3 +709,259 @@ def soft_delete_account_checked(user_id: int, account_id: str) -> CommandResult:
         s.close()
     return CommandResult(changed=True, revision=_bump(user_id),
                          affected_ids=(str(account_id),))
+
+
+# ── FIN-08: atomic loan payments, payoff invariant, archive flow ─────────────
+#
+# A loan payment is ONE transaction writing every leg: the linked expense row
+# (the single cash-outflow representation — the surcharge is INCLUSIVE inside
+# amount_eur and is never added on top), the schedule-derived principal/
+# interest split (pinned into the audit details for reporting), and — when the
+# payoff invariant is met — the paid_off status flip. Rejections raise
+# CommandError subclasses before anything is written; nothing is clamped or
+# swallowed. Archiving flips the status exactly once and keeps every payment
+# row; reopening restores the active calculations.
+
+EUR_TOLERANCE = 0.01  # locked money equality tolerance (€0.01)
+
+
+class LoanError(CommandError):
+    """Base class for loan command rejections."""
+
+
+class LoanNotFound(LoanError):
+    """The loan id does not exist for this user."""
+
+
+class LoanArchived(LoanError):
+    """The loan is archived (paid_off); new payments are rejected."""
+
+
+class LoanOverpayment(LoanError):
+    """The principal component exceeds the remaining balance beyond €0.01."""
+
+
+class LoanNotPaidOff(LoanError):
+    """Archive requested while the computed remaining balance is above €0.01."""
+
+
+def _loan_in_session(s, user_id: int, loan_id: str):
+    from db import Loan
+    return s.query(Loan).filter(
+        Loan.id == str(loan_id), Loan.user_id == user_id).first()
+
+
+def _loan_history_records(s, user_id: int, loan_id: str) -> list[dict]:
+    """Non-deleted payment expenses of a loan as loan_schedule inputs.
+
+    Each record carries date / amount_eur / surcharge_eur read back from the
+    stored columns; the schedule derives the principal component itself
+    (total − surcharge), so history reconstruction never needs extra columns.
+    """
+    from db import Expense
+    rows = (s.query(Expense.date, Expense.amount_eur, Expense.loan_surcharge_eur)
+            .filter(Expense.user_id == user_id,
+                    Expense.loan_id == str(loan_id),
+                    Expense.is_deleted.isnot(True))
+            .all())
+    records = []
+    for d, amt, surch in rows:
+        if d is None:
+            continue
+        records.append({
+            "date": d,
+            "amount_eur": float(amt or 0.0),
+            "surcharge_eur": max(float(surch or 0.0), 0.0),
+        })
+    records.sort(key=lambda r: r["date"])
+    return records
+
+
+def _loan_schedule_for(s_loan, payments: list, asof) -> dict:
+    import finance as fin
+    from datetime import date as _date
+    start = s_loan.start_date or _date.today()
+    return fin.loan_schedule(
+        float(s_loan.principal_eur or 0.0), float(s_loan.annual_rate or 0.0),
+        int(s_loan.term_months or 1), start, int(s_loan.payment_day or 1),
+        payments, asof=asof)
+
+
+def record_loan_payment(user_id: int, loan_id: str, amount_eur: float, date, *,
+                        interest_component: float | None = None,
+                        surcharge_eur: float = 0.0,
+                        payment_type: str = "regular",
+                        currency: str = "EUR",
+                        amount: float | None = None,
+                        notes: str = "") -> CommandResult:
+    """Log one loan payment atomically (expense + split + payoff flip).
+
+    Writes in ONE transaction: the linked expense row (loan_id set; the single
+    cash-outflow representation — amount_eur INCLUDES any early-repayment
+    surcharge), an audit entry pinning the schedule-derived split, and — when
+    the principal component reaches the remaining balance within EUR_TOLERANCE
+    — the paid_off status flip with its own audit entry. One revision bump.
+
+    The split comes from finance.loan_schedule when interest_component is not
+    given: interest = balance_before · monthly rate, capped at the money
+    available for principal (amount − surcharge); principal takes the rest, so
+    principal + interest + surcharge == amount_eur cent-exact.
+
+    Raises CommandError subclasses: LoanNotFound, LoanArchived (paying a
+    paid-off loan), LoanOverpayment (principal beyond balance + tolerance),
+    and generic CommandError for invalid amounts/types.
+    """
+    import finance as fin
+    from db import Expense, log_audit
+    total = _q2(_finite_amount(amount_eur, "Payment amount"))
+    if total <= 0:
+        raise CommandError("Payment must be greater than 0.")
+    surcharge = _q2(max(_finite_amount(surcharge_eur, "Surcharge"), 0.0))
+    available = _q2(total - surcharge)
+    if surcharge > total or available < 0:
+        # The surcharge is INCLUSIVE metadata inside amount_eur — it can never
+        # exceed the total payment (a fee-only payment, available == 0, is ok).
+        raise CommandError("Surcharge cannot exceed the payment amount.")
+    if payment_type not in {"regular", "early"}:
+        raise CommandError("Payment type must be 'regular' or 'early'.")
+    s = _session()
+    try:
+        loan = _loan_in_session(s, user_id, loan_id)
+        if loan is None:
+            raise LoanNotFound(f"Loan {loan_id} not found.")
+        if str(loan.status) != "active":
+            raise LoanArchived(
+                f"'{loan.name}' is archived (paid off) — reopen it before "
+                "logging new payments.")
+        history = _loan_history_records(s, user_id, loan_id)
+        split = fin.loan_payment_split(
+            float(loan.principal_eur or 0.0), float(loan.annual_rate or 0.0),
+            int(loan.term_months or 1), loan.start_date,
+            int(loan.payment_day or 1), history, date, total, surcharge)
+        bal_before = float(split["balance_before"])
+        if interest_component is None:
+            ic = float(split["interest_eur"])
+        else:
+            ic = _q2(_finite_amount(interest_component, "Interest component"))
+            if ic < -EUR_TOLERANCE or ic > available + EUR_TOLERANCE:
+                raise CommandError(
+                    "Interest component must be between 0 and the payment "
+                    "amount minus surcharge.")
+            ic = min(max(ic, 0.0), max(available, 0.0))
+        principal_component = _q2(max(available, 0.0) - ic)
+        if available > bal_before + EUR_TOLERANCE:
+            raise LoanOverpayment(
+                f"Payment exceeds the remaining balance: "
+                f"{principal_component:.2f} € principal vs "
+                f"{bal_before:.2f} € outstanding on '{loan.name}' "
+                f"(tolerance {EUR_TOLERANCE:.2f} €).")
+        pays_off = bool(split["pays_off"])
+        label = ("early repayment" if payment_type == "early" else "payment")
+        exp = Expense(
+            user_id=user_id, date=date,
+            category="Loans & Debt", subcategory="Loan Repayment",
+            description=f"{loan.name} {label}",
+            amount=float(amount) if amount is not None else total,
+            currency=str(currency or "EUR"),
+            amount_eur=total, recurring=False,
+            loan_id=str(loan_id), loan_payment_type=payment_type,
+            loan_surcharge_eur=surcharge,
+            notes=notes or (
+                f"Loan {label}: principal {principal_component:.2f} + "
+                f"interest {ic:.2f}"
+                + (f" + fee {surcharge:.2f}" if surcharge > 0 else "")),
+        )
+        s.add(exp)
+        s.flush()
+        eid = exp.id
+        log_audit(s, user_id, "CREATE", "expenses", eid, {
+            "loan_id": str(loan_id), "payment_type": payment_type,
+            "amount_eur": total, "surcharge_eur": surcharge,
+            "principal_eur": principal_component, "interest_eur": ic,
+            "balance_before": bal_before,
+        })
+        flipped = False
+        if pays_off:
+            loan.status = "paid_off"
+            flipped = True
+            log_audit(s, user_id, "UPDATE", "loans", str(loan.id),
+                      {"status": "paid_off", "payoff_expense": eid,
+                       "remaining_eur": round(bal_before - principal_component, 2)})
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+    affected = (eid, str(loan_id)) if flipped else (eid,)
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=affected)
+
+
+def archive_loan(user_id: int, loan_id: str) -> CommandResult:
+    """Archive a fully paid loan (status → paid_off, history retained).
+
+    Gated on the payoff invariant: the canonically computed remaining balance
+    (from the recorded payment history via loan_schedule) must be within
+    EUR_TOLERANCE of zero. Idempotent: archiving an already archived loan is
+    a no-op (changed=False) — the status flips exactly once. Hard delete is
+    never involved; all payment/audit history stays intact.
+    """
+    from datetime import date as _date
+    from db import log_audit
+    s = _session()
+    try:
+        loan = _loan_in_session(s, user_id, loan_id)
+        if loan is None:
+            raise LoanNotFound(f"Loan {loan_id} not found.")
+        if str(loan.status) != "active":
+            s.rollback()
+            return CommandResult(changed=False, revision=None,
+                                 affected_ids=(str(loan_id),))
+        sched = _loan_schedule_for(
+            loan, _loan_history_records(s, user_id, loan_id), _date.today())
+        remaining = float(sched["remaining_balance"])
+        if remaining > EUR_TOLERANCE:
+            raise LoanNotPaidOff(
+                f"'{loan.name}' still has {remaining:.2f} € outstanding — "
+                "it can only be archived once the remaining balance is within "
+                f"{EUR_TOLERANCE:.2f} €.")
+        loan.status = "paid_off"
+        log_audit(s, user_id, "UPDATE", "loans", str(loan.id),
+                  {"status": "paid_off", "archived": True,
+                   "remaining_eur": remaining})
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(str(loan_id),))
+
+
+def reopen_loan(user_id: int, loan_id: str) -> CommandResult:
+    """Reopen an archived loan (status → active); calculations resume.
+
+    Idempotent on already-active loans. Audited + one revision bump."""
+    from db import log_audit
+    s = _session()
+    try:
+        loan = _loan_in_session(s, user_id, loan_id)
+        if loan is None:
+            raise LoanNotFound(f"Loan {loan_id} not found.")
+        if str(loan.status) == "active":
+            s.rollback()
+            return CommandResult(changed=False, revision=None,
+                                 affected_ids=(str(loan_id),))
+        loan.status = "active"
+        log_audit(s, user_id, "UPDATE", "loans", str(loan.id),
+                  {"status": "active", "reopened": True})
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(str(loan_id),))

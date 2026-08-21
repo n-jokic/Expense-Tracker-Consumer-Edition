@@ -10,10 +10,11 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import (add_loan, update_loan, delete_loan, add_expense,
-                soft_delete_expense)
+from db import add_loan, update_loan, delete_loan
 from finance import (annuity_payment, loan_schedule, _first_due, _next_due,
                      calculate_early_repayment_surcharge)
+from services.commands import (CommandError, archive_loan,
+                               record_loan_payment, reopen_loan)
 from utils import (
     SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     fmt, to_eur, get_currency_symbol,
@@ -163,9 +164,9 @@ def edit_loan_dialog(uid: int, row):
         e_day = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
                                 value=int(row["payment_day"]) if pd.notna(row["payment_day"]) else 1,
                                 step=1, key=f"loan_edit_day_{row['id']}")
-        e_status = st.selectbox("Status", ["active", "paid_off"],
-                                index=0 if str(row["status"]) == "active" else 1,
-                                key=f"loan_edit_status_{row['id']}")
+        # Status is NOT editable here: paid_off/archive transitions go through
+        # the gated archive/reopen commands so the payoff invariant cannot be
+        # bypassed by a free status selector.
     e_notes = st.text_input("Notes (optional)",
                             value=str(row["notes"]) if pd.notna(row["notes"]) else "",
                             key=f"loan_edit_notes_{row['id']}")
@@ -206,7 +207,7 @@ def edit_loan_dialog(uid: int, row):
                         "currency": e_cur, "principal_eur": pe,
                         "annual_rate": float(e_rate), "start_date": e_start,
                         "term_months": int(e_term), "payment_day": int(e_day),
-                        "status": e_status, "notes": e_notes,
+                        "notes": e_notes,
                         "early_repayment_surcharge_type": e_surcharge_type,
                         "early_repayment_surcharge_value": float(e_surcharge_value),
                     })
@@ -274,34 +275,18 @@ def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
         ).any():
             st.toast("Already saved — duplicate payment prevented.", icon=":material/check:")
             st.rerun()
-        record = {"date": p_date, "amount_eur": total_eur,
-                  "surcharge_eur": surcharge_eur}
+        # ONE atomic command: expense + audited split + payoff flip.
         try:
-            exp_id = add_expense(uid, {
-                "date": p_date, "category": "Loans & Debt",
-                "subcategory": "Loan Repayment",
-                "description": f"{row['name']} early repayment",
-                "amount": float(principal + surcharge), "currency": lcur,
-                "amount_eur": total_eur, "recurring": False, "loan_id": str(row["id"]),
-                "loan_payment_type": "early", "loan_surcharge_eur": surcharge_eur,
-                "notes": "Early repayment",
-            })
-            projected = loan_schedule(
-                float(row["principal_eur"]), float(row["annual_rate"]),
-                int(row["term_months"]),
-                row["start_date"].date() if pd.notna(row["start_date"]) else today,
-                int(row["payment_day"]), payments + [record], today,
+            record_loan_payment(
+                uid, str(row["id"]), total_eur, p_date,
+                surcharge_eur=surcharge_eur, payment_type="early",
+                currency=lcur, amount=float(principal + surcharge),
+                notes="Early repayment",
             )
-            if projected["remaining_balance"] <= 0.005:
-                update_loan(uid, str(row["id"]), {"status": "paid_off"})
+        except CommandError as e:
+            st.error(f"Couldn't save: {e}")
+            return
         except Exception as e:
-            # Compensate: if the follow-up write failed after the expense was
-            # created, try to remove the just-logged expense.
-            try:
-                if "exp_id" in locals():
-                    soft_delete_expense(uid, exp_id)
-            except Exception:
-                pass
             st.error(f"Couldn't save: {e}")
             return
         q.bump_db_version()
@@ -309,14 +294,25 @@ def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
         st.rerun()
 
 
-# ── Loan list ─────────────────────────────────────────────────────────────────
+# ── Loan list (active first, paid-off loans under Archived) ──────────────────
 df_loans = q.loans(user_id)
 if df_loans.empty:
     st.info("No loans yet — add one above")
 else:
+    if "status" in df_loans.columns:
+        _active_rows = df_loans[df_loans["status"].astype(str) != "paid_off"]
+        _archived_rows = df_loans[df_loans["status"].astype(str) == "paid_off"]
+        df_loans = pd.concat([_active_rows, _archived_rows], ignore_index=True)
     total_debt = 0.0
     debt_free_dates = []
+    _archive_shown = False
     for _, row in df_loans.iterrows():
+        if row["status"] == "paid_off" and not _archive_shown:
+            _archive_shown = True
+            st.divider()
+            st.subheader(":material/archive: Archived")
+            st.caption("Paid-off loans keep their full payment and audit "
+                       "history. Reopen one to resume active calculations.")
         loan_id = str(row["id"])
         pay_df = q.loan_payments(user_id, loan_id)
         payments = _loan_payment_records(pay_df)
@@ -418,35 +414,16 @@ else:
                                 st.toast("Already saved — duplicate payment prevented.", icon=":material/check:")
                                 st.rerun()
                             try:
-                                exp_id2 = add_expense(user_id, {
-                                    "date": p_date,
-                                    "category": "Loans & Debt",
-                                    "subcategory": "Loan Repayment",
-                                    "description": f"{row['name']} payment",
-                                    "amount": amount_in_cur,
-                                    "currency": lcur,
-                                    "amount_eur": ae,
-                                    "recurring": False,
-                                    "loan_id": loan_id,
-                                    "loan_payment_type": "regular",
-                                    "loan_surcharge_eur": 0.0,
-                                    "notes": "Loan payment",
-                                })
-                                projected = loan_schedule(
-                                    _principal, _rate, int(row["term_months"]), start_date,
-                                    int(row["payment_day"]), payments + [{
-                                        "date": p_date, "amount_eur": ae,
-                                        "surcharge_eur": 0.0,
-                                    }], today,
+                                # ONE atomic command: expense + audited
+                                # principal/interest split + payoff flip.
+                                record_loan_payment(
+                                    user_id, loan_id, ae, p_date,
+                                    currency=lcur, amount=amount_in_cur,
+                                    notes="Loan payment",
                                 )
-                                if projected["remaining_balance"] <= 0.005:
-                                    update_loan(user_id, loan_id, {"status": "paid_off"})
+                            except CommandError as e:
+                                st.error(str(e))
                             except Exception as e:
-                                try:
-                                    if "exp_id2" in locals():
-                                        soft_delete_expense(user_id, exp_id2)
-                                except Exception:
-                                    pass
                                 st.error(f"Couldn't save: {e}")
                             else:
                                 q.bump_db_version()
@@ -475,12 +452,19 @@ else:
                         st.caption("No payments logged yet.")
             with c2:
                 with st.container(horizontal=True):
-                    new_status = "paid_off" if row["status"] == "active" else "active"
                     st_lbl, st_icon = ("Mark paid off", ":material/check_circle:") \
                         if row["status"] == "active" else ("Reopen", ":material/undo:")
                     if st.button(st_lbl, icon=st_icon, key=f"loan_st_{loan_id}"):
+                        # Gated transitions: archive requires the payoff
+                        # invariant (remaining ≤ €0.01); reopen restores the
+                        # active calculations. Rejections surface as errors.
                         try:
-                            update_loan(user_id, loan_id, {"status": new_status})
+                            if row["status"] == "active":
+                                archive_loan(user_id, loan_id)
+                            else:
+                                reopen_loan(user_id, loan_id)
+                        except CommandError as e:
+                            st.error(str(e))
                         except Exception as e:
                             st.error(f"Couldn't save: {e}")
                         else:

@@ -236,6 +236,48 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
     }
 
 
+def loan_payment_split(principal: float, annual_rate_pct: float, term_months: int,
+                       start_date: date, payment_day: int, payments: list,
+                       payment_date: date, amount_eur: float,
+                       surcharge_eur: float = 0.0) -> dict:
+    """Schedule-derived principal/interest split for ONE new loan payment.
+
+    ``loan_schedule`` is the single source of truth: ``balance_before`` is the
+    remaining balance just before this payment is applied (booked interest
+    capitalized), computed against the ACTUAL payment history. The interest
+    component is the month's accrual estimate ``balance_before * r`` capped at
+    the money available for principal (payment minus early-repayment
+    surcharge), so a partial payment can never report more interest than was
+    paid. The surcharge is INCLUSIVE metadata inside ``amount_eur`` — it is
+    reported separately but never added on top and never reduces the balance.
+
+    By construction ``principal_eur + interest_eur + surcharge_eur ==
+    amount_eur`` cent-exact (locked representation check).
+
+    Returns: balance_before, available_eur, principal_eur, interest_eur,
+    surcharge_eur, pays_off (the payment reaches the remaining balance within
+    the locked €0.01 tolerance).
+    """
+    total = round(float(amount_eur or 0.0), 2)
+    surcharge = round(min(max(float(surcharge_eur or 0.0), 0.0), total), 2)
+    available = round(total - surcharge, 2)
+    sched = loan_schedule(principal, annual_rate_pct, term_months,
+                          start_date, payment_day, payments, asof=payment_date)
+    bal_before = float(sched["remaining_balance"])
+    r = (annual_rate_pct / 100.0) / 12.0
+    interest = min(max(bal_before, 0.0) * r, max(available, 0.0))
+    interest = min(max(round(interest, 2), 0.0), max(available, 0.0))
+    return {
+        "balance_before": bal_before,
+        "available_eur": available,
+        "principal_eur": round(available - interest, 2),
+        "interest_eur": interest,
+        "surcharge_eur": surcharge,
+        # Locked payoff invariant: |remaining| ≤ €0.01 counts as paid off.
+        "pays_off": available >= bal_before - 0.01,
+    }
+
+
 # ── Term deposit math ─────────────────────────────────────────────────────────
 
 def months_between(start: date, end: date) -> int:
