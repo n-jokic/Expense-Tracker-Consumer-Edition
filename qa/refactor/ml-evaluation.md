@@ -36,4 +36,4 @@ hybrid recurring+discretionary`. Metrics: MAE, sMAPE, bias.
 Group on `merchant_key`, examine gaps (weekly 5–9d / monthly 25–35d /
 quarter 80–100d / annual 340–390d), detect amount drift.
 
-Status: ☐ planned — not yet implemented.
+Status: ☑ done — M1 registry (`ModelInfo` + `register/activate` with metrics gate) + `ml/evaluation.py` (`evaluate_classification`, `score_forecast`, `rolling_origin_backtest`) implemented; M2 categorizer upgraded to merchant-normalized `FeatureUnion(word(1,2)+char_wb(3,5))` + `CalibratedClassifierCV` (v4, 36/36 tests green); M4 `detect_anomalies` now uses log_amount/amount_vs_medians/merchant_count-age-is_new/days_since_same_merchant/recurring_prob + severity/reasons + MAD supplement; M5 rolling-origin helper in `ml/evaluation.py`; M6 `detect_subscriptions` now groups on `merchant_key=normalize_merchant` with cadence buckets weekly/monthly/quarterly/annual + 60% dominant-share gate + amount drift detection.

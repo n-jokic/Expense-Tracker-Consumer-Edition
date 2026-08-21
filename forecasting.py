@@ -5,9 +5,9 @@ All models run on the server (the phone only renders results), so they work
 identically on any device including budget Android phones:
 
 1. ETS (Holt-Winters) next-month spending forecast — statsmodels.
-2. IsolationForest transaction anomaly detection — scikit-learn.
+2. IsolationForest transaction anomaly detection — scikit-learn (M4 enriched).
 3. Learned expense categorizer (TF-IDF + LogisticRegression) trained on the
-   user's own descriptions — used by bank import and receipt OCR.
+   user's own descriptions — used by bank import and receipt OCR (M2 FeatureUnion).
 
 Every model degrades gracefully: not enough history -> forecast falls back,
 too few rows -> no anomalies, untrained classifier -> keyword-map fallback.
@@ -94,10 +94,25 @@ def forecast_next_month(expenses_df: pd.DataFrame) -> dict:
     return out
 
 
-# ── 2. Anomaly detection (IsolationForest) ───────────────────────────────────
+# ── 2. Anomaly detection (IsolationForest + robust stats) ────────────────────
+
+def _merchant_key_series(desc_series: pd.Series) -> pd.Series:
+    """Merchant-normalized key for grouping."""
+    try:
+        from domain.merchant import normalize_merchant
+        return desc_series.fillna("").astype(str).apply(normalize_merchant)
+    except Exception:
+        return desc_series.fillna("").astype(str).str.strip().str.lower()
+
 
 def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> pd.DataFrame:
-    """Flag unusual transactions; returns the flagged rows with scores."""
+    """Flag unusual transactions; returns the flagged rows with scores.
+
+    M4 enriched features:
+      log_amount, amount/user_median, amount/category_median, amount/merchant_median,
+      merchant counts/age/is_new, dow/month/dom, days_since_same_merchant,
+      recurring_probability, plus robust median/MAD explanations.
+    """
     if expenses_df is None or expenses_df.empty or len(expenses_df) < MIN_ROWS_FOR_ANOMALIES:
         return pd.DataFrame()
     try:
@@ -105,32 +120,245 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
     except Exception:
         return pd.DataFrame()
 
+    import numpy as np
+
     df = expenses_df.copy()
-    df["dow"]      = df["date"].dt.dayofweek
-    df["month"]    = df["date"].dt.month
-    # fillna("") so a missing category becomes its own class (code -1 is the
-    # NaN sentinel and would be treated as a real category by the model).
+    # Ensure date is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df.get("date")):
+        try:
+            df["date"] = pd.to_datetime(df["date"])
+        except Exception:
+            pass
+
+    # Base temporal
+    try:
+        df["dow"] = df["date"].dt.dayofweek
+        df["month"] = df["date"].dt.month
+        df["dom"] = df["date"].dt.day
+    except Exception:
+        df["dow"] = 0
+        df["month"] = 1
+        df["dom"] = 1
+
     df["cat_code"] = df["category"].fillna("").astype("category").cat.codes
-    X = df[["amount_eur","dow","month","cat_code"]].fillna(0)
+
+    # Amount features
+    df["log_amount"] = np.log1p(df["amount_eur"].fillna(0).clip(lower=0))
+    user_median = float(df["amount_eur"].median()) if not df["amount_eur"].empty else 1.0
+    if user_median <= 0:
+        user_median = 1.0
+    df["amount_vs_user_median"] = df["amount_eur"] / user_median
+
+    # Category medians
+    try:
+        cat_medians = df.groupby("category")["amount_eur"].median()
+        df["cat_median"] = df["category"].map(cat_medians)
+        df["amount_vs_cat_median"] = df["amount_eur"] / df["cat_median"].replace(0, np.nan)
+        df["amount_vs_cat_median"] = df["amount_vs_cat_median"].fillna(1.0)
+    except Exception:
+        df["cat_median"] = user_median
+        df["amount_vs_cat_median"] = df["amount_vs_user_median"]
+
+    # Merchant features
+    df["_merchant_key"] = _merchant_key_series(df["description"] if "description" in df.columns else pd.Series([""] * len(df)))
+    try:
+        merch_medians = df.groupby("_merchant_key")["amount_eur"].median()
+        df["merch_median"] = df["_merchant_key"].map(merch_medians)
+        df["amount_vs_merch_median"] = df["amount_eur"] / df["merch_median"].replace(0, np.nan)
+        df["amount_vs_merch_median"] = df["amount_vs_merch_median"].fillna(1.0)
+        merch_counts = df.groupby("_merchant_key")["_merchant_key"].transform("count")
+        df["merchant_count"] = merch_counts.astype(float)
+        # merchant age
+        merch_min = df.groupby("_merchant_key")["date"].transform("min")
+        merch_max = df.groupby("_merchant_key")["date"].transform("max")
+        try:
+            df["merchant_age_days"] = (merch_max - merch_min).dt.days.astype(float).fillna(0)
+        except Exception:
+            df["merchant_age_days"] = 0.0
+        df["is_new_merchant"] = (df["merchant_count"] <= 1).astype(float)
+        # days since same merchant
+        df_sorted = df.sort_values(["_merchant_key", "date"])
+        df_sorted["_prev_date"] = df_sorted.groupby("_merchant_key")["date"].shift(1)
+        try:
+            df_sorted["days_since_same_merchant"] = (df_sorted["date"] - df_sorted["_prev_date"]).dt.days.astype(float)
+        except Exception:
+            df_sorted["days_since_same_merchant"] = np.nan
+        df_sorted["days_since_same_merchant"] = df_sorted["days_since_same_merchant"].fillna(999.0)
+        # map back to original order
+        df["days_since_same_merchant"] = df_sorted["days_since_same_merchant"].reindex(df.index).fillna(999.0)
+    except Exception:
+        df["merch_median"] = user_median
+        df["amount_vs_merch_median"] = df["amount_vs_user_median"]
+        df["merchant_count"] = 1.0
+        df["merchant_age_days"] = 0.0
+        df["is_new_merchant"] = 0.0
+        df["days_since_same_merchant"] = 999.0
+
+    # Recurring probability heuristic: merchants with monthly cadence -> high prob
+    # Use detect_subscriptions as signal would be circular; approximate via gap stats
+    try:
+        gap_means = {}
+        for key, grp in df.groupby("_merchant_key"):
+            if len(grp) >= 3:
+                dates = grp["date"].dropna().sort_values()
+                gaps = dates.diff().dropna().dt.days
+                avg_gap = float(gaps.mean()) if len(gaps) else 999
+                if 25 <= avg_gap <= 35:
+                    gap_means[key] = 0.9
+                elif 5 <= avg_gap <= 9:
+                    gap_means[key] = 0.85
+                elif 80 <= avg_gap <= 100:
+                    gap_means[key] = 0.8
+                elif 340 <= avg_gap <= 390:
+                    gap_means[key] = 0.8
+                else:
+                    gap_means[key] = 0.2
+            else:
+                gap_means[key] = 0.1
+        df["recurring_prob"] = df["_merchant_key"].map(gap_means).fillna(0.1).astype(float)
+    except Exception:
+        df["recurring_prob"] = 0.1
+
+    feature_cols = [
+        "amount_eur", "log_amount", "amount_vs_user_median", "amount_vs_cat_median",
+        "amount_vs_merch_median", "merchant_count", "merchant_age_days",
+        "is_new_merchant", "dow", "month", "dom", "days_since_same_merchant",
+        "recurring_prob", "cat_code",
+    ]
+    # Keep only existing
+    feature_cols = [c for c in feature_cols if c in df.columns]
+    X = df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
 
     model = IsolationForest(contamination=contamination, random_state=42)
     labels = model.fit_predict(X)
     df["anomaly_score"] = model.decision_function(X)
     flagged = df[labels == -1].sort_values("anomaly_score").copy()
 
-    # Explanation: how far above the category's median amount this row is
-    medians = df.groupby("category")["amount_eur"].median()
-    flagged["cat_median"] = flagged["category"].map(medians)
+    # Backward-compat multiplier (already computed cat_median)
     flagged["multiplier"] = flagged.apply(
         lambda r: round(float(r["amount_eur"]) / float(r["cat_median"]), 1)
         if r["cat_median"] and r["cat_median"] > 0 else None, axis=1)
+
+    # Severity by score quantile
+    try:
+        q_low = flagged["anomaly_score"].quantile(0.33) if not flagged.empty else 0
+        q_mid = flagged["anomaly_score"].quantile(0.66) if not flagged.empty else 0
+        def _severity(s):
+            if s <= q_low:
+                return "high"
+            if s <= q_mid:
+                return "medium"
+            return "low"
+        flagged["severity"] = flagged["anomaly_score"].apply(_severity)
+    except Exception:
+        flagged["severity"] = "medium"
+
+    # Reasons per flagged row
+    def _reasons_for_row(r):
+        reasons: list[str] = []
+        try:
+            amt = float(r["amount_eur"])
+            cat_med = float(r.get("cat_median") or 0)
+            if cat_med > 0 and amt > cat_med * 3:
+                mult = round(amt / cat_med, 1)
+                reasons.append(f"{mult}× your normal {r['category']} transaction")
+            merch_med = float(r.get("merch_median") or 0)
+            if merch_med > 0 and amt > merch_med * 2:
+                reasons.append(f"{round(amt/merch_med,1)}× your typical {r.get('_merchant_key','merchant')} amount")
+            if r.get("is_new_merchant", 0) == 1:
+                reasons.append("first transaction with this merchant")
+            # largest for merchant in window
+            try:
+                key = r.get("_merchant_key")
+                if key and not df.empty:
+                    mer_rows = df[df["_merchant_key"] == key]
+                    if not mer_rows.empty and amt >= float(mer_rows["amount_eur"].max()) - 1e-9:
+                        # count months window
+                        span_days = float(r.get("merchant_age_days", 0))
+                        months = max(1, int(span_days // 30))
+                        reasons.append(f"largest {_merchant_key_display(key)} transaction in {months} months")
+            except Exception:
+                pass
+            if float(r.get("amount_vs_user_median", 0)) > 4:
+                reasons.append(f"{round(float(r['amount_vs_user_median']),1)}× your median transaction")
+            if not reasons:
+                reasons.append(f"unusual amount €{amt:.2f} (score {float(r['anomaly_score']):.3f})")
+        except Exception:
+            reasons.append("unusual transaction")
+        return reasons
+
+    def _merchant_key_display(k: str) -> str:
+        try:
+            from domain.merchant import match_merchant
+            m = match_merchant(k)
+            return m.canonical or k
+        except Exception:
+            return k
+
+    flagged["reasons"] = flagged.apply(_reasons_for_row, axis=1)
+
+    # Robust MAD-based explanations as supplement: flag if |modified z| > 3.5
+    try:
+        for cat, grp in df.groupby("category"):
+            med = float(grp["amount_eur"].median())
+            mad = float((grp["amount_eur"] - med).abs().median())
+            if mad > 0:
+                for idx in flagged[flagged["category"] == cat].index:
+                    amt = float(flagged.at[idx, "amount_eur"])
+                    mz = 0.6745 * (amt - med) / mad
+                    if abs(mz) > 3.5 and len(flagged.at[idx, "reasons"]) < 3:
+                        flagged.at[idx, "reasons"] = list(flagged.at[idx, "reasons"]) + [f"robust outlier (modified z={mz:.1f})"]
+    except Exception:
+        pass
+
+    # Clean helper columns for output: keep useful ones, drop internal
+    # Preserve _merchant_key for debugging but not required
     return flagged
 
 
 # ── 3. Learned categorizer (TF-IDF + LogisticRegression) ─────────────────────
 
+def _prepare_texts(series: pd.Series) -> list[str]:
+    """Merchant-normalized + cleaned texts for ML."""
+    out: list[str] = []
+    try:
+        from domain.merchant import normalize_merchant
+        has_merchant = True
+    except Exception:
+        has_merchant = False
+        normalize_merchant = None  # type: ignore
+    for raw in series.astype(str):
+        s = str(raw).strip()
+        base = s.lower()
+        if has_merchant and s:
+            try:
+                norm = normalize_merchant(s)
+                if norm and norm not in base:
+                    # keep merchant token prefix for char n-grams to catch noisy strings
+                    out.append(f"{norm} {base}")
+                    continue
+            except Exception:
+                pass
+        out.append(base)
+    return out
+
+
+def _build_vectorizer():
+    """Word + char FeatureUnion for noisy merchant strings like MCDONALDS BG."""
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.pipeline import FeatureUnion
+        word = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+        char = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1)
+        return FeatureUnion([("word", word), ("char", char)])
+    except Exception:
+        # Fallback to single word vectorizer
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        return TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+
+
 class _SubcategorizerModel:
-    """Per-category subcategory classifier: TF-IDF(1,2) + LogisticRegression.
+    """Per-category subcategory classifier: FeatureUnion(TF-IDF) + LogisticRegression.
 
     Trained only on rows of ONE category that have a non-empty subcategory;
     requires at least 8 rows and 2 distinct subcategories.
@@ -150,22 +378,55 @@ class _SubcategorizerModel:
         if d["subcategory"].nunique() < 2 or len(d) < 8:
             return False
         try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
             from sklearn.linear_model import LogisticRegression
         except Exception:
             return False
-        self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
-        X = self.vec.fit_transform(d["description"].astype(str))
+        try:
+            self.vec = _build_vectorizer()
+            texts = _prepare_texts(d["description"])
+            X = self.vec.fit_transform(texts)
+        except Exception:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+            X = self.vec.fit_transform(d["description"].astype(str))
         self.clf = LogisticRegression(max_iter=500)
-        self.clf.fit(X, d["subcategory"])
-        self.subcategories = list(self.clf.classes_)
+        # Calibrated classifier when enough data
+        if len(d) >= 50 and d["subcategory"].nunique() >= 2:
+            try:
+                from sklearn.calibration import CalibratedClassifierCV
+                base = self.clf
+                self.clf = CalibratedClassifierCV(base, cv=3)
+            except Exception:
+                pass
+        try:
+            self.clf.fit(X, d["subcategory"])
+        except Exception:
+            # Calibration may fail on tiny folds; fall back to base
+            try:
+                from sklearn.linear_model import LogisticRegression
+                self.clf = LogisticRegression(max_iter=500)
+                self.clf.fit(X, d["subcategory"])
+            except Exception:
+                return False
+        try:
+            self.subcategories = list(self.clf.classes_)
+        except Exception:
+            # CalibratedClassifierCV wraps classes differently
+            try:
+                self.subcategories = list(self.clf.base_estimator.classes_)  # type: ignore
+            except Exception:
+                self.subcategories = sorted(d["subcategory"].unique())
         self.trained_rows = len(d)
         return True
 
     def predict(self, text: str):
-        if self.clf is None:
+        if self.clf is None or self.vec is None:
             return None, 0.0
-        X = self.vec.transform([str(text)])
+        try:
+            texts = _prepare_texts(pd.Series([str(text)]))
+            X = self.vec.transform(texts)
+        except Exception:
+            X = self.vec.transform([str(text)])
         probs = self.clf.predict_proba(X)[0]
         idx = probs.argmax()
         return self.subcategories[idx], float(probs[idx])
@@ -190,15 +451,41 @@ class _CategorizerModel:
         if df["category"].nunique() < 2 or len(df) < 10:
             return False
         try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
             from sklearn.linear_model import LogisticRegression
         except Exception:
             return False
-        self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
-        X = self.vec.fit_transform(df["description"].astype(str))
+        try:
+            self.vec = _build_vectorizer()
+            texts = _prepare_texts(df["description"])
+            X = self.vec.fit_transform(texts)
+        except Exception:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+            X = self.vec.fit_transform(df["description"].astype(str))
         self.clf = LogisticRegression(max_iter=500)
-        self.clf.fit(X, df["category"])
-        self.categories = list(self.clf.classes_)
+        if len(df) >= 50 and df["category"].nunique() >= 3:
+            try:
+                from sklearn.calibration import CalibratedClassifierCV
+                base = self.clf
+                self.clf = CalibratedClassifierCV(base, cv=3)
+            except Exception:
+                pass
+        try:
+            self.clf.fit(X, df["category"])
+        except Exception:
+            try:
+                from sklearn.linear_model import LogisticRegression
+                self.clf = LogisticRegression(max_iter=500)
+                self.clf.fit(X, df["category"])
+            except Exception:
+                return False
+        try:
+            self.categories = list(self.clf.classes_)
+        except Exception:
+            try:
+                self.categories = list(self.clf.base_estimator.classes_)  # type: ignore
+            except Exception:
+                self.categories = sorted(df["category"].unique())
         self.trained_rows = len(df)
         # Train one subcategory classifier per category on its non-empty rows.
         self.sub_models = {}
@@ -209,20 +496,40 @@ class _CategorizerModel:
         return True
 
     def predict(self, text: str):
-        if self.clf is None:
+        if self.clf is None or self.vec is None:
             return None, 0.0
-        X = self.vec.transform([str(text)])
+        try:
+            texts = _prepare_texts(pd.Series([str(text)]))
+            X = self.vec.transform(texts)
+        except Exception:
+            X = self.vec.transform([str(text)])
         probs = self.clf.predict_proba(X)[0]
         idx = probs.argmax()
         return self.categories[idx], float(probs[idx])
 
 
 # Bump when the training pipeline changes so old cached models are discarded.
-CATEGORIZER_MODEL_VERSION = 3
+# v4: word+char FeatureUnion + merchant normalization + optional calibration (M2).
+CATEGORIZER_MODEL_VERSION = 4
 
 # Confidence thresholds for the combined suggestion pipeline.
+# Derive from evaluation: Auto-apply ≥ threshold giving ≥95% precision,
+# suggest-only below that. Current 0.5 is the fallback.
 CATEGORY_CONFIDENCE    = 0.5
 SUBCATEGORY_CONFIDENCE = 0.4
+
+
+def suggest_threshold_for_precision(y_true, y_prob, target_precision: float = 0.95) -> float:
+    """Return threshold achieving ≥ target_precision if possible (helper for M2)."""
+    try:
+        from sklearn.metrics import precision_recall_curve
+        precisions, _recalls, thresholds = precision_recall_curve(y_true, y_prob)
+        for prec, thr in zip(precisions[:-1], thresholds):
+            if prec >= target_precision:
+                return float(thr)
+    except Exception:
+        pass
+    return 0.5
 
 
 def _dataset_fingerprint(expenses_df: pd.DataFrame) -> str:
@@ -333,49 +640,136 @@ def suggest_category_and_subcategory(expenses_df: pd.DataFrame, text: str,
     return cat, sub, cat_conf, sub_conf
 
 
-# ── 4. Subscription / recurring detection ────────────────────────────────────
+# ── 4. Subscription / recurring detection (M6 cadence-aware) ─────────────────
+
+# Cadence buckets per M6
+_CADENCE_RANGES: dict[str, tuple[int, int]] = {
+    "weekly": (5, 9),
+    "monthly": (25, 35),
+    "quarterly": (80, 100),
+    "annual": (340, 390),
+}
+_CADENCE_MAX_GAP: dict[str, int] = {
+    "weekly": 15,
+    "monthly": 60,
+    "quarterly": 120,
+    "annual": 500,
+}
+
+
+def _classify_gap(days: float) -> str | None:
+    for name, (lo, hi) in _CADENCE_RANGES.items():
+        if lo <= days <= hi:
+            return name
+    return None
+
 
 def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.DataFrame:
-    """Find (description, amount) pairs that repeat monthly — likely bills.
+    """Find recurring merchant charges with cadence detection (M6).
 
-    Returns a DataFrame with description, amount_eur, months_seen, avg_gap_days
-    and last_date, sorted by most recent.
+    Groups on merchant_key (domain/merchant normalized), examines transaction
+    gaps for weekly/monthly/quarterly/annual cadence, allows amount drift,
+    and detects median amount changes.
+
+    Returns DataFrame with description, amount_eur (median), months_seen,
+    avg_gap_days, cadence, amount_change_pct, last_date, sorted by most recent.
     """
     if expenses_df is None or expenses_df.empty:
         return pd.DataFrame()
     df = expenses_df.copy()
     if "description" not in df.columns:
         return pd.DataFrame()
-    # Null descriptions (nullable String column from sync/import) must never
-    # reach the .str accessor — pandas 3 raises TypeError on NaN + str ops.
-    # The normalised form is only the grouping key; the OUTPUT keeps the
-    # original description.
-    df["desc_norm"] = df["description"].fillna("").astype(str).str.strip().str.lower()
-    # A subscription needs a name; empty descriptions can't form one.
-    df = df[df["desc_norm"] != ""]
+    # Merchant-normalized grouping key (falls back to lowercased stripped)
+    try:
+        from domain.merchant import normalize_merchant
+        df["_merchant_key"] = df["description"].fillna("").astype(str).apply(normalize_merchant)
+        df["_merchant_key"] = df["_merchant_key"].replace("", pd.NA)
+        # fallback for empty normalized keys -> original lower
+        mask_empty = df["_merchant_key"].isna() | (df["_merchant_key"].str.strip() == "")
+        df.loc[mask_empty, "_merchant_key"] = df.loc[mask_empty, "description"].fillna("").astype(str).str.strip().str.lower()
+    except Exception:
+        df["_merchant_key"] = df["description"].fillna("").astype(str).str.strip().str.lower()
+    # Also need stripped lower for fallback display
+    df["_desc_norm"] = df["description"].fillna("").astype(str).str.strip().str.lower()
+    df = df[df["_merchant_key"].fillna("").astype(str).str.strip() != ""]
     if df.empty:
         return pd.DataFrame()
-    df["key"] = (df["desc_norm"]
-                 + "|" + df["amount_eur"].round(2).astype(str))
     groups = []
-    for key, grp in df.groupby("key"):
+    for merchant_key, grp in df.groupby("_merchant_key"):
         if len(grp) < min_months:
             continue
         dates = grp["date"].dropna().sort_values()
         if len(dates) < min_months:
             continue
-        gaps = dates.diff().dropna().dt.days
+        gaps = dates.diff().dropna().dt.days.astype(float)
+        if gaps.empty:
+            continue
         avg_gap = float(gaps.mean()) if len(gaps) else 0.0
         max_gap = float(gaps.max()) if len(gaps) else 0.0
-        # Regularity: the average alone can hide gaps like [1, 59] (avg 30).
-        if not (25 <= avg_gap <= 35) or max_gap > 60:
+        # Cadence classification: majority bucket
+        bucket_counts: dict[str, int] = {k: 0 for k in _CADENCE_RANGES}
+        for g in gaps:
+            b = _classify_gap(float(g))
+            if b:
+                bucket_counts[b] += 1
+        dominant = max(bucket_counts, key=lambda k: bucket_counts[k])
+        dominant_share = bucket_counts[dominant] / max(len(gaps), 1)
+        # Require ≥60% of gaps in dominant bucket for a confident cadence
+        if dominant_share < 0.6:
+            # fallback: check if avg_gap falls in any bucket
+            cadence = _classify_gap(avg_gap)
+            if not cadence:
+                continue
+            # need at least one gap in that bucket
+            if bucket_counts.get(cadence, 0) == 0:
+                continue
+        else:
+            cadence = dominant
+        # Validate max_gap bound for cadence
+        if max_gap > _CADENCE_MAX_GAP.get(cadence, 60):
             continue
+        # Regularity already enforced by dominant_share; also avg_gap must be in cadence range
+        lo, hi = _CADENCE_RANGES[cadence]
+        if not (lo <= avg_gap <= hi):
+            # allow if dominant_share high but avg slightly off — still accept if 80% gaps in range
+            if dominant_share < 0.8:
+                continue
+        # Amount drift: median overall, old vs new median
+        amounts = grp["amount_eur"].dropna().astype(float)
+        if amounts.empty:
+            continue
+        median_amt = float(amounts.median())
+        # split half for drift
+        half = len(amounts) // 2
+        if half >= 2:
+            sorted_by_date = grp.sort_values("date")
+            old_median = float(sorted_by_date["amount_eur"].iloc[:half].median())
+            new_median = float(sorted_by_date["amount_eur"].iloc[half:].median())
+            if old_median > 0:
+                amount_change_pct = round((new_median - old_median) / old_median * 100, 1)
+            else:
+                amount_change_pct = 0.0
+        else:
+            amount_change_pct = 0.0
+        # Pick representative description: most frequent original description for this merchant
+        try:
+            rep_desc = grp["description"].mode().iloc[0] if not grp["description"].mode().empty else grp.iloc[0]["description"]
+        except Exception:
+            rep_desc = grp.iloc[0]["description"]
+        # Most common category
+        try:
+            rep_cat = grp["category"].mode().iloc[0] if not grp["category"].mode().empty else grp.iloc[0]["category"]
+        except Exception:
+            rep_cat = grp.iloc[0].get("category", "")
         groups.append({
-            "description": grp.iloc[0]["description"],
-            "category": grp.iloc[0]["category"],
-            "amount_eur": float(grp.iloc[0]["amount_eur"]),
+            "description": rep_desc,
+            "merchant_key": merchant_key,
+            "category": rep_cat,
+            "amount_eur": median_amt,
             "months_seen": len(grp),
             "avg_gap_days": round(avg_gap, 1),
+            "cadence": cadence,
+            "amount_change_pct": amount_change_pct,
             "last_date": dates.iloc[-1],
         })
     out = pd.DataFrame(groups)
