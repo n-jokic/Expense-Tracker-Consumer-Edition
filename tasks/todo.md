@@ -42,11 +42,30 @@
       partial unique indexes; posted-balance read chain + pending column;
       page rewired. 14 new tests incl. both locked acceptances (3.10 / 2.25);
       suite 577/7/10 = baseline +14, identical failure set. (`c499fb0`)
-- [ ] FIN-05 Model early-withdrawal policy and nest term accounts under goals.
-- [ ] FIN-06 Link wishlist items to new or existing savings targets.
-- [ ] FIN-07 Complete linked purchases atomically and prevent status bypass/duplicates.
-- [ ] FIN-08 Enforce loan payoff invariants and archive paid loans.
-- [ ] AI-01 Sanitize tool results before any external provider request.
+- [x] FIN-05 Model early-withdrawal policy and nest term accounts under goals.
+      → early_annual_rate column + calculate_term_payout (matured=full rate,
+      early=agreed rate or principal-only); explicit preview text; accounts
+      render once inside goal panels, true orphans separate; rename carries
+      layout state; KPIs on posted+pending. 8 new tests; 585/7/10. (`b0ffbae`)
+- [x] GATE B financial foundation checkpoint.
+      → end-to-end lifecycle test (income→unallocated→goal→term→goal→pool)
+      with total-value invariant and single realized-interest income row;
+      non-destructive open proven; full suite 587/7/10, identical failure
+      set. (`410d943`)
+- [x] FIN-06 Link wishlist items to new or existing savings targets.
+      → funding_goal_ref anchors to a Savings row id (rename-safe); 3-way
+      funding choice; vanished goals render a warning. (`95127f9`)
+- [x] FIN-07 Complete linked purchases atomically and prevent status bypass/duplicates.
+      → buy_wishlist_item one-txn (goal debit w/ unique settlement_ref +
+      expense + status stamp); refund reverses exactly; bought removed from
+      free selector. 16 new tests. (`95127f9`)
+- [x] FIN-08 Enforce loan payoff invariants and archive paid loans.
+      → record_loan_payment single-txn with inclusive surcharge + audited
+      split; overpay/archive guards; LoanError hierarchy. 14 tests. (`11a5d5c`)
+- [x] AI-01 Sanitize tool results before any external provider request.
+      → ai.safety boundary applied at llm.py egress; credentials/paths/
+      emails redacted, counts-only logging; local providers keep context.
+      33 new tests. (`828c2d4`)
 - [ ] AI-02 Repair missing planner arguments deterministically.
 - [ ] AI-03 Retry transient provider failures and preserve deterministic answers/diagnostics.
 - [ ] AI-04 Add validated Plotly chart answers, then native OpenAI/Claude adapters.
@@ -57,7 +76,7 @@
 
 ### Checkpoints
 
-- [ ] After FIN-00–FIN-05: full suite passes and the income → unallocated → goal → term lifecycle balances exactly.
-- [ ] After FIN-06–FIN-08: linked purchase and loan archive flows pass end to end.
+- [x] After FIN-00–FIN-05: full suite passes and the income → unallocated → goal → term lifecycle balances exactly. (Gate B, `410d943`)
+- [x] After FIN-06–FIN-08: linked purchase and loan archive flows pass end to end. (648/7/10 combined-tree run)
 - [ ] After AI-01–AI-04: external prompt privacy, outage handling, and chart safety tests pass.
 - [ ] After OCR-01–ML-01: real-receipt benchmark and all ML UI states pass.
