@@ -1,10 +1,10 @@
 """
-ocr.py — Receipt scanning: Tesseract OCR + amount/merchant extraction +
-category suggestion (learned ML classifier with keyword-map fallback).
+ocr.py — Receipt scanning compatibility façade (Phase 5 O12).
 
-OCR runs on the SERVER (the phone only uploads the photo), so any phone
-works. When the Tesseract binary is missing, analyze_receipt reports
-ok=False with reason="ocr_unavailable" and the UI shows a setup hint.
+New pipeline: ingestion.receipt.service.analyze_receipt
+This module re-exports that implementation while preserving the legacy
+Tesseract helpers (ocr_image, extract_amounts, guess_total_amount,
+guess_merchant) for tests and existing imports.
 """
 
 import io
@@ -29,15 +29,7 @@ _TOTAL_KEYS = ("total", "ukupno", "suma", "svega", "amount due",
 
 
 def _find_tesseract() -> str | None:
-    r"""Locate the Tesseract binary on Windows.
-
-    `winget install UB-Mannheim.TesseractOCR` installs into
-    `C:\Program Files\Tesseract-OCR` and writes a registry key, but does NOT
-    add the folder to PATH — so a plain PATH lookup (pytesseract's default)
-    keeps failing after install. Resolve: PATH first, then the common
-    install locations, then the registry InstallDir (incl. WOW6432Node for
-    32-bit installs and the alternative `Path` value name).
-    """
+    r"""Locate the Tesseract binary on Windows."""
     exe = shutil.which("tesseract")
     if exe:
         return exe
@@ -76,14 +68,7 @@ _OCR_TIMEOUT_S = 30
 
 
 def ocr_image(image_bytes: bytes):
-    """Run Tesseract on an image (in a worker thread with a timeout, so a
-    hung OCR run can never freeze the app indefinitely).
-
-    Returns (text, reason): text is the recognised string (or None), and
-    reason explains a failure — "ocr_not_installed" when the Tesseract binary
-    can't be found, "ocr_failed" on any other error or timeout, None on
-    success.
-    """
+    """Run Tesseract on an image (worker thread with timeout)."""
     result: dict = {}
 
     def _run():
@@ -106,17 +91,12 @@ def ocr_image(image_bytes: bytes):
     worker.start()
     worker.join(_OCR_TIMEOUT_S)
     if worker.is_alive():
-        return None, "ocr_failed"   # timed out; daemon thread dies with the process
+        return None, "ocr_failed"
     return result.get("text"), result.get("reason")
 
 
 def extract_amounts(text: str) -> list[float]:
-    """Parse amounts in 1.234,56 / 1,234.56 / 1234.56 / 12,50 formats and
-    Serbian pure-thousands "1.234" (= 1234).
-
-    Dates are stripped first so a receipt date like 15.05.2024 is never
-    mistaken for an amount.
-    """
+    """Parse amounts; dates stripped first."""
     from pdf_import import _parse_amount_core
     out = []
     if not text:
@@ -130,8 +110,7 @@ def extract_amounts(text: str) -> list[float]:
 
 
 def guess_total_amount(text: str) -> float | None:
-    """Best guess for the receipt total: an amount on a 'total' line, else
-    the largest plausible amount."""
+    """Best guess for receipt total: total-line else largest."""
     amounts = extract_amounts(text)
     if not amounts:
         return None
@@ -150,68 +129,65 @@ def guess_merchant(text: str) -> str | None:
         if not s or len(s) < 3 or len(s) > 60:
             continue
         if extract_amounts(s):
-            continue  # pure amount lines are not merchants
+            continue
         if any(k in s.lower() for k in _TOTAL_KEYS):
             continue
         if re.fullmatch(r"[\d./\-:\s]+", s):
-            continue  # dates / phone numbers / times
+            continue
         return s
     return None
 
 
 def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
-    """Full pipeline: OCR → amount/merchant → category suggestion.
-
-    Returns {"ok", "text", "amount", "merchant", "category", "subcategory",
-    "confidence", "subcategory_confidence", "subcategory_source", "reason"}.
-    Never raises; the UI turns this into an editable prefill that the user
-    accepts/rejects.
-    """
-    text, ocr_reason = ocr_image(image_bytes)
-    if text is None:
-        return {"ok": False, "reason": ocr_reason or "ocr_unavailable",
-                "text": None, "amount": None, "merchant": None,
-                "category": None, "subcategory": "", "confidence": 0.0,
-                "subcategory_confidence": None, "subcategory_source": None}
-
-    amount = guess_total_amount(text)
-    merchant = guess_merchant(text)
-    category, subcategory, confidence = None, "", 0.0
-    subcategory_confidence = None
-    subcategory_source = None
-    source = None
-    model_version = None
-
-    if merchant:
-        # 1) learned classifier (+ per-category subcategorizer)
-        try:
-            from forecasting import (
-                suggest_category_and_subcategory, CATEGORIZER_MODEL_VERSION,
-                CATEGORY_CONFIDENCE, SUBCATEGORY_CONFIDENCE,
-            )
-            cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
-                expenses_df, merchant, user_id=user_id)
-            if cat_conf >= CATEGORY_CONFIDENCE:
-                category, subcategory, confidence = cat, sub, round(cat_conf, 2)
-                source = "classifier"
-                model_version = CATEGORIZER_MODEL_VERSION
-                if sub and sub_conf >= SUBCATEGORY_CONFIDENCE:
-                    subcategory_confidence = round(sub_conf, 2)
-                    subcategory_source = "classifier"
-                elif sub:
+    """Compatibility façade — delegates to ingestion.receipt.service."""
+    try:
+        from ingestion.receipt.service import analyze_receipt as _svc
+        return _svc(image_bytes, expenses_df=expenses_df, user_id=user_id)
+    except Exception:
+        # Fallback to legacy inline (should not happen; keep for safety)
+        text, ocr_reason = ocr_image(image_bytes)
+        if text is None:
+            return {"ok": False, "reason": ocr_reason or "ocr_unavailable",
+                    "text": None, "amount": None, "merchant": None,
+                    "category": None, "subcategory": "", "confidence": 0.0,
+                    "subcategory_confidence": None, "subcategory_source": None}
+        amount = guess_total_amount(text)
+        merchant = guess_merchant(text)
+        category, subcategory, confidence = None, "", 0.0
+        subcategory_confidence = None
+        subcategory_source = None
+        source = None
+        model_version = None
+        if merchant:
+            try:
+                from forecasting import (
+                    suggest_category_and_subcategory, CATEGORIZER_MODEL_VERSION,
+                    CATEGORY_CONFIDENCE, SUBCATEGORY_CONFIDENCE,
+                )
+                cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
+                    expenses_df, merchant, user_id=user_id)
+                if cat_conf >= CATEGORY_CONFIDENCE:
+                    category, subcategory, confidence = cat, sub, round(cat_conf, 2)
+                    source = "classifier"
+                    model_version = CATEGORIZER_MODEL_VERSION
+                    if sub and sub_conf >= SUBCATEGORY_CONFIDENCE:
+                        subcategory_confidence = round(sub_conf, 2)
+                        subcategory_source = "classifier"
+                    elif sub:
+                        subcategory_source = "keywords"
+            except Exception:
+                pass
+            if category is None:
+                try:
+                    from bank_import import categorize_expense
+                    category, subcategory = categorize_expense(merchant)
+                    source = "keywords"
                     subcategory_source = "keywords"
-        except Exception:
-            pass
-        # 2) keyword-map fallback
-        if category is None:
-            from bank_import import categorize_expense
-            category, subcategory = categorize_expense(merchant)
-            source = "keywords"
-            subcategory_source = "keywords"
-
-    return {"ok": True, "text": text, "amount": amount, "merchant": merchant,
-            "category": category, "subcategory": subcategory,
-            "confidence": confidence, "reason": None,
-            "source": source, "model_version": model_version,
-            "subcategory_confidence": subcategory_confidence,
-            "subcategory_source": subcategory_source}
+                except Exception:
+                    pass
+        return {"ok": True, "text": text, "amount": amount, "merchant": merchant,
+                "category": category, "subcategory": subcategory,
+                "confidence": confidence, "reason": None,
+                "source": source, "model_version": model_version,
+                "subcategory_confidence": subcategory_confidence,
+                "subcategory_source": subcategory_source}
