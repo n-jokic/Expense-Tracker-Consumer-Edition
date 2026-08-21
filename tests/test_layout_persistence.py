@@ -7,9 +7,13 @@ save_settings silently dropped the key (logged "ignoring unknown key") and
 get_settings never returned it — load_layout therefore always fell back to
 DEFAULT_LAYOUT. These tests pin the round-trip.
 
-FIN-02 additions pin the namespaced shape, per-area atomic writes, tolerant
-normalization, sanitized values, the never-raise read path, and the
-LayoutSaveError write contract.
+FIN-02 additions pin the six required behaviors:
+  1. collapse persists across reload (raw blob + is_collapsed),
+  2. per-area namespace isolation (one write never clobbers another),
+  3. malformed stored JSON → defaults + logged warning (never raises),
+  4. sanitize_area dedupe / order / unknown-ID drop / non-string drop,
+  5. cross-user isolation of collapse state,
+  6. LayoutSaveError on persistence failure (+ UI-level warning catcher).
 """
 
 import logging
@@ -92,15 +96,23 @@ def test_get_dashboard_order_and_toggle(test_user):
     assert s["ui_layout"]["dashboard"]["order"] == ["alpha", "beta", "gamma"]
 
 
-# ── FIN-02: namespaced shape, isolation, safety, error contract ──────────────
+# ── FIN-02 (1): collapse → save → reload raw blob → still collapsed ─────────
 
 def test_toggle_persists_and_survives_reload(test_user):
     """Collapse → raw stored blob contains the id; is_collapsed true on reload."""
     toggle_collapsed(test_user, "loan_card_auto", area="loans")
+
     raw = get_settings(test_user)[LAYOUT_SETTINGS_KEY]
     assert "loan_card_auto" in raw["loans"]["collapsed"]
     assert is_collapsed(test_user, "loan_card_auto", area="loans") is True
 
+    # The persisted blob carries the full namespaced v1 shape.
+    assert raw["version"] == 1
+    assert set(raw) >= {"dashboard", "loans", "savings", "recurring"}
+    assert raw["recurring"] == {"collapsed_groups": [], "group_order": []}
+
+
+# ── FIN-02 (2): namespace isolation between areas ────────────────────────────
 
 def test_namespaces_are_isolated_per_area(test_user):
     """Writing one area must never clobber another area's namespace."""
@@ -117,6 +129,8 @@ def test_namespaces_are_isolated_per_area(test_user):
     assert raw["dashboard"]["collapsed"] == ["p2"]
     assert raw["savings"]["collapsed"] == ["sav_x"]
 
+
+# ── FIN-02 (3): malformed stored JSON → defaults + warning, never raise ──────
 
 def test_load_layout_malformed_json_falls_back_with_warning(test_user, caplog):
     """Garbage in the settings column → defaults + a warning, never a raise."""
@@ -137,6 +151,8 @@ def test_load_layout_malformed_json_falls_back_with_warning(test_user, caplog):
     ]
     assert layout_warnings, "expected a warning naming ui_layout and the user"
 
+
+# ── FIN-02 (4): sanitize_area coercion rules ─────────────────────────────────
 
 def test_sanitize_area_coerces_and_filters():
     """Duplicates removed, order kept, non-strings dropped, unknown ids filtered."""
@@ -161,6 +177,8 @@ def test_sanitize_area_coerces_and_filters():
         {"things": ["z"]}
 
 
+# ── FIN-02 (5): cross-user isolation ─────────────────────────────────────────
+
 def test_collapse_state_is_per_user(test_user):
     """User A's collapse is invisible to user B (isolated settings rows)."""
     uid_b = create_user("layout_test_user_b", "layout_test_b@example.com",
@@ -176,6 +194,8 @@ def test_collapse_state_is_per_user(test_user):
     finally:
         delete_user_account(uid_b)
 
+
+# ── FIN-02 (6): LayoutSaveError contract + UI-level catcher ──────────────────
 
 def test_update_layout_area_raises_layout_save_error(test_user, monkeypatch):
     """Persistence failure → LayoutSaveError carrying user_id + area."""
