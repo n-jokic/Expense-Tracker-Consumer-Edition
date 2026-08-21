@@ -31,6 +31,8 @@ APP_PORT              = 8501
 TLS_ENABLED           = os.environ.get("EXPENSE_TRACKER_TLS") == "1"
 MAX_AMOUNT            = 1_000_000.0
 MAX_SAVINGS_TARGET    = 10_000_000.0
+DEFAULT_FUN_CATEGORIES    = ["Entertainment","Dining Out"]
+DEFAULT_TRAVEL_CATEGORIES = ["Travel"]
 
 
 def get_currency_symbol(currency: str) -> str:
