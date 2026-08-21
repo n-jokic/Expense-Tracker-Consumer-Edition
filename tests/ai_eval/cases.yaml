@@ -1,0 +1,10 @@
+# Phase 3 A8 — advisor evaluation cases (scaffold; expand to 100 per spec)
+- question: "How much did I spend on groceries last month?"
+  expected_tool: aggregate_spending
+  expected: { category: Groceries, period: previous_month }
+- question: "Was Lidl more expensive this spring than last spring?"
+  expected_tool: compare_periods
+  expected: { merchant: Lidl }
+- question: "What are my subscriptions?"
+  expected_tool: recurring_costs
+  expected: {}
