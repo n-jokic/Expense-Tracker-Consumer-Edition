@@ -98,6 +98,12 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                                                    or DEFAULT_API_MODEL))
                 ai_key = st.text_input("API key", type="password",
                                        placeholder="Leave blank to keep the existing key")
+                # OCR-02: explicit opt-in gate — never on by default.
+                cloud_fb = st.checkbox(
+                    "Allow cloud OCR fallback for unreadable receipts "
+                    "(sends the photo off-device)",
+                    value=bool(settings.get("ocr_cloud_fallback")),
+                    key="ocr_cloud_fallback_cb")
             c_save, c_test = st.columns(2)
             with c_save:
                 ai_saved = st.form_submit_button("Save AI settings", type="primary",
@@ -140,6 +146,8 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                                          or DEFAULT_API_BASE) or "").strip(),
                         "ai_api_model": ((ai_model or settings.get("ai_api_model")
                                           or "") or "").strip(),
+                        # OCR-02: persisted opt-in for the (future) vision fallback
+                        "ocr_cloud_fallback": bool(cloud_fb),
                     })
                     if ai_key:
                         updates["ai_api_key_enc"] = _encrypt(ai_key)

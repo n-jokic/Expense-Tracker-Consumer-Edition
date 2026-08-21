@@ -107,6 +107,19 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
             else:
                 st.warning("OCR couldn't read that image — try a sharper, "
                            "straighter photo, or enter the expense manually below.")
+            # OCR-02: cloud fallback is explicit OPT-IN — images are never
+            # uploaded unless the user enabled it in Settings.
+            try:
+                _cloud_ok = bool(q.get_settings(user_id).get("ocr_cloud_fallback"))
+            except Exception:
+                _cloud_ok = False
+            if _cloud_ok:
+                st.caption(":material/info: Cloud OCR fallback is enabled, but no "
+                           "vision provider is configured yet — nothing was uploaded.")
+            else:
+                st.caption(":material/shield: Images never leave this PC. A cloud "
+                           "vision fallback exists but is OFF (enable it in "
+                           "Settings → Notifications → AI assistant if you ever want it).")
         else:
             st.success("Text recognised — check the details, then save (or fix anything wrong).")
             receipt_result = result.get("receipt_result")
@@ -114,7 +127,94 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
             with st.expander("Raw OCR text", expanded=False):
                 st.code((result["text"] or "")[:500], language=None)
 
-            # Category OUTSIDE the form so changing it rebuilds subcategory options immediately.
+            # ── OCR-02: row-level item review ────────────────────────────
+            from ingestion.receipt.line_item_extractor import (
+                EUR_TOLERANCE, extract_line_items, reconcile)
+            from services.commands import ReceiptItemsError, save_receipt_items
+
+            stated_total = float(result.get("amount") or 0.0)
+            items = extract_line_items(result.get("text"))
+            if items:
+                doc_conf = getattr(getattr(receipt_result, "document", None),
+                                   "mean_confidence", 0.0) or 0.0
+                if 0 < doc_conf < LOW_CONF:
+                    st.warning(
+                        f"Scan confidence is low ({doc_conf:.0%}) — check "
+                        "every row before importing.")
+                rec = reconcile(items, stated_total)
+                if not rec["ok"]:
+                    st.warning(
+                        f"The item rows sum to {rec['items_total']:.2f} but the "
+                        f"receipt says {stated_total:.2f} "
+                        f"(difference {rec['delta']:+.2f}). Accept, edit or "
+                        "reject each row below — nothing imports silently.")
+                kept: list[dict] = []
+                for idx, it in enumerate(items):
+                    c_desc, c_qty, c_unit, c_tot, c_keep = st.columns(
+                        [3, 0.7, 1.1, 1.1, 0.9])
+                    keep = c_keep.checkbox("Keep", value=True,
+                                           key=f"rcpt_item_keep_{idx}")
+                    desc = c_desc.text_input("Item", value=it["description"],
+                                             key=f"rcpt_item_desc_{idx}",
+                                             label_visibility="collapsed")
+                    qty = c_qty.number_input("Qty",
+                                             value=int(it.get("quantity") or 1),
+                                             min_value=1, max_value=999, step=1,
+                                             key=f"rcpt_item_qty_{idx}",
+                                             label_visibility="collapsed")
+                    unit = c_unit.number_input("Unit price",
+                                               value=float(it.get("unit_price") or 0.0),
+                                               min_value=0.0, step=0.01,
+                                               key=f"rcpt_item_unit_{idx}",
+                                               label_visibility="collapsed")
+                    tot = c_tot.number_input("Line total",
+                                             value=float(it.get("line_total") or 0.0),
+                                             min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
+                                             step=0.01,
+                                             key=f"rcpt_item_total_{idx}",
+                                             label_visibility="collapsed")
+                    if keep and desc.strip() and float(tot) > 0:
+                        kept.append({"description": desc.strip(),
+                                     "quantity": int(qty),
+                                     "unit_price": float(unit),
+                                     "line_total": float(tot),
+                                     "amount_eur": to_eur(float(tot), r_cur, rates)})
+                kept_total = round(sum(k["line_total"] for k in kept), 2)
+                live_mismatch = abs(kept_total - stated_total) > EUR_TOLERANCE
+                st.caption(f"{len(kept)} of {len(items)} rows kept · "
+                           f"items total {fmt_dual(kept_total, DC, to_eur(kept_total, DC, rates))}"
+                           + ("" if not live_mismatch else
+                              f" · receipt total {fmt_dual(stated_total, DC, to_eur(stated_total, DC, rates))}"))
+                confirm_mismatch = False
+                if live_mismatch:
+                    confirm_mismatch = st.checkbox(
+                        "Import anyway — I checked the rows against the paper receipt",
+                        key="rcpt_mismatch_confirm")
+                if st.button(
+                    f"Save {len(kept)} items as expenses",
+                    type="primary", icon=":material/save:",
+                    disabled=(live_mismatch and not confirm_mismatch),
+                    key="rcpt_save_items"):
+                    try:
+                        save_receipt_items(
+                            user_id, kept, entry_date=date.today(),
+                            currency=r_cur, category=r_cat,
+                            subcategory=(result.get("subcategory") or ""),
+                            notes=(result.get("merchant") or "").strip(),
+                            source_total_eur=stated_total,
+                            merchant=result.get("merchant"),
+                        )
+                    except ReceiptItemsError as e:
+                        st.error(f"Couldn't save: {e}")
+                    except Exception as e:
+                        st.error(f"Couldn't save: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.success(f"Saved {len(kept)} items from this receipt.",
+                                   icon=":material/check:")
+                        st.rerun()
+
+            # ── Single-expense fallback (no nested form — AppTest-safe) ──
             r_cat = st.selectbox(
                 "Category", CAT_LIST,
                 index=CAT_LIST.index(result["category"])
@@ -125,32 +225,32 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                 index=(list(SUPPORTED_CURRENCIES.keys()).index(st.session_state.get("rcpt_cur", DC))
                        if st.session_state.get("rcpt_cur", DC) in SUPPORTED_CURRENCIES else 0),
                 key="rcpt_cur")
-            with st.form("receipt_form"):
-                r1, r2 = st.columns(2)
-                with r1:
-                    r_date = st.date_input("Date", value=date.today(), key="rcpt_date")
-                    r_sub  = st.selectbox(
-                        "Subcategory", ["—"] + CATEGORIES[r_cat],
-                        index=(list(["—"] + CATEGORIES[r_cat]).index(result["subcategory"])
-                               if result["subcategory"] in CATEGORIES[r_cat] else 0),
-                        key="rcpt_sub")
-                with r2:
-                    _ocr_amt = float(result["amount"]) if pd.notna(result["amount"]) else 0.0
-                    r_amt  = st.number_input(f"Amount ({get_currency_symbol(r_cur)})", value=_ocr_amt,
-                                             min_value=0.0, max_value=MAX_AMOUNT,
-                                             step=0.50, format="%.2f", key="rcpt_amt")
-                    r_desc = st.text_input("Description", value=result["merchant"] or "",
-                                           key="rcpt_desc")
-                r_notes = st.text_input("Notes (optional)", key="rcpt_notes")
-                if result["confidence"] and result["confidence"] > 0:
-                    st.caption(f"Category suggested by your trained classifier "
-                               f"(confidence {result['confidence']:.0%}).")
-                c_save, c_rej = st.columns(2)
-                with c_save:
-                    r_save = st.form_submit_button("Save expense", type="primary", width="stretch",
-                                                   icon=":material/save:")
-                with c_rej:
-                    r_rej = st.form_submit_button("Reject", width="stretch", icon=":material/delete:")
+            r1, r2 = st.columns(2)
+            with r1:
+                r_date = st.date_input("Date", value=date.today(), key="rcpt_date")
+                r_sub  = st.selectbox(
+                    "Subcategory", ["—"] + CATEGORIES[r_cat],
+                    index=(list(["—"] + CATEGORIES[r_cat]).index(result["subcategory"])
+                           if result["subcategory"] in CATEGORIES[r_cat] else 0),
+                    key="rcpt_sub")
+            with r2:
+                _ocr_amt = float(result["amount"]) if pd.notna(result["amount"]) else 0.0
+                r_amt  = st.number_input(f"Amount ({get_currency_symbol(r_cur)})", value=_ocr_amt,
+                                         min_value=0.0, max_value=MAX_AMOUNT,
+                                         step=0.50, format="%.2f", key="rcpt_amt")
+                r_desc = st.text_input("Description", value=result["merchant"] or "",
+                                       key="rcpt_desc")
+            r_notes = st.text_input("Notes (optional)", key="rcpt_notes")
+            if result["confidence"] and result["confidence"] > 0:
+                st.caption(f"Category suggested by your trained classifier "
+                           f"(confidence {result['confidence']:.0%}).")
+            c_save, c_rej = st.columns(2)
+            with c_save:
+                r_save = st.button("Save expense", type="primary", width="stretch",
+                                   icon=":material/save:", key="rcpt_save_btn")
+            with c_rej:
+                r_rej = st.button("Reject", width="stretch", icon=":material/delete:",
+                                  key="rcpt_reject_btn")
 
             if r_save:
                 if not (r_desc.strip() and float(r_amt) > 0):

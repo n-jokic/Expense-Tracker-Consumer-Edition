@@ -965,3 +965,85 @@ def reopen_loan(user_id: int, loan_id: str) -> CommandResult:
         s.close()
     return CommandResult(changed=True, revision=_bump(user_id),
                          affected_ids=(str(loan_id),))
+
+
+# ── OCR-02: atomic multi-item receipt save ───────────────────────────────────
+
+class ReceiptItemsError(CommandError):
+    """Bulk receipt-save rejection (validation happens before any write)."""
+
+
+def save_receipt_items(user_id: int, items: list[dict], *, entry_date=None,
+                       currency: str = "EUR", category: str = "",
+                       subcategory: str = "", notes: str = "",
+                       source_total_eur: float | None = None,
+                       merchant: str | None = None) -> CommandResult:
+    """Persist reviewed receipt line items as expenses in ONE transaction.
+
+    Every item must carry description/amount_eur (already converted by the
+    page); validation of ALL items happens before ANY write, and any
+    mid-transaction failure rolls the whole batch back — the receipt is
+    saved completely or not at all. The source receipt total is retained in
+    each row's notes and in the audit group details.
+    """
+    if not items:
+        raise ReceiptItemsError("No reviewed items to save.")
+    from utils import MAX_AMOUNT
+
+    clean: list[tuple[str, float]] = []
+    for idx, it in enumerate(items):
+        desc = str(it.get("description") or "").strip()
+        amt = float(it.get("amount_eur") or 0.0)
+        if not desc:
+            raise ReceiptItemsError(f"Item {idx + 1} has no description.")
+        if amt <= 0:
+            raise ReceiptItemsError(f"Item {idx + 1} ({desc}) has no amount.")
+        if amt > MAX_AMOUNT:
+            raise ReceiptItemsError(
+                f"Item {idx + 1} ({desc}) exceeds the per-expense limit.")
+        clean.append((desc, round(amt, 2)))
+
+    suffix = ""
+    if source_total_eur is not None:
+        suffix = f" [receipt total {float(source_total_eur):.2f}]"
+    base_notes = " ".join(str(notes or "").split())
+
+    import uuid
+
+    from db import Expense, log_audit
+    s = _session()
+    ids: list[str] = []
+    try:
+        for desc, amt in clean:
+            row_notes = f"{base_notes}{suffix}".strip()
+            kwargs = dict(
+                id=str(uuid.uuid4()), user_id=user_id,
+                date=entry_date,
+                category=category, subcategory=subcategory,
+                description=desc, amount=amt, currency=currency,
+                amount_eur=amt, recurring=False,
+                notes=row_notes,
+            )
+            exp = Expense(**kwargs)
+            # Optional richer columns only when the model has them.
+            if hasattr(exp, "entry_date") and entry_date is not None:
+                exp.entry_date = entry_date
+            if hasattr(exp, "suggest_source"):
+                exp.suggest_source = "ocr"
+            if hasattr(exp, "suggest_merchant"):
+                exp.suggest_merchant = ((merchant or "").strip().lower()) or None
+            s.add(exp)
+            ids.append(exp.id)
+        log_audit(s, user_id, "BULK_CREATE", "expenses", ",".join(ids), {
+            "source": "receipt_review",
+            "items": len(clean),
+            "source_total_eur": source_total_eur,
+        })
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=tuple(ids))
