@@ -121,7 +121,9 @@ Three options, in order of simplicity:
 ## Feature guide
 
 The app is organised into five navigation groups: **Overview**, **Track**,
-**Plan**, **Understand**, and **Household & Data**.
+**Plan**, **Understand**, and **Household & Data**. Your panel collapse/layout
+choices are saved per account (atomically); if a change cannot be saved, a
+small warning tells you it will reset on reload instead of failing silently.
 
 ### Overview — Dashboard
 
@@ -184,9 +186,11 @@ The app is organised into five navigation groups: **Overview**, **Track**,
 
 **Savings** (`app_pages/savings.py`)
 
-- Named goals with a target; log **deposits and withdrawals** (balance is
-  clamped at zero, never negative). Creating a goal is as simple as logging the
-  first entry — the target and interest rate you give it become the goal's.
+- Named goals with a target; log **deposits and withdrawals** (balances are
+  computed from the entry history and displayed verbatim — a legacy negative
+  balance is shown as-is instead of being clamped to zero). Creating a goal is
+  as simple as logging the first entry — the target and interest rate you give
+  it become the goal's.
 - **Goal cards** make a goal easy to manage after creation: every goal has
   **Deposit**, **Withdraw**, **Edit goal** and **Delete goal** actions right on
   the card.
@@ -289,7 +293,9 @@ require confirmation dialogs. Every change is written to the **audit log**.
 - Templates only appear in checklists, reminders, and "upcoming bills" from
   their start month onward; "Remove" deactivates (never deletes).
 - Active templates are grouped by category and can be dragged within or
-  between categories; the order is persisted. Moving a template clears a
+  between categories; the order is persisted. Each category group can also be
+  collapsed/expanded and reordered with keyboard-accessible ▲/▼ buttons, and
+  that arrangement persists across sessions too. Moving a template clears a
   subcategory that is not valid for its new category.
 
 **Loans** (`app_pages/loans.py`)
@@ -896,8 +902,11 @@ tests/                  # 397 pytest regression/AppTest suites (updated for reli
 
 ```bat
 pip install -r requirements-dev.txt
-python -m pytest
+.venv-fin00\Scripts\python.exe -m pytest tests -q
 ```
+
+Run pytest scoped to the `tests` directory — a bare `pytest` from the repo
+root fails on sandbox/temp directories.
 
 The suite (397 tests) covers the currency engine, loan amortization edge
 cases (including interest booked when payments are applied before their due
