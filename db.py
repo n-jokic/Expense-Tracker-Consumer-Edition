@@ -13,6 +13,7 @@ import sqlite3
 import logging
 from contextlib import contextmanager
 from datetime import datetime, date, timezone, timedelta
+from decimal import Decimal
 
 import pandas as pd
 from sqlalchemy import (
@@ -389,6 +390,9 @@ class Income(Base):
     budgeted_eur = Column(Float, default=0.0)
     actual_eur   = Column(Float, default=0.0)
     notes        = Column(String, default="")
+    # FIN-04 idempotency: settlement_ref on the realized-interest income row
+    # ("term-settle:<account_id>") — partial unique index below.
+    settlement_ref = Column(String, nullable=True)
     is_deleted   = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
@@ -408,6 +412,12 @@ class Savings(Base):
     interest_rate = Column(Float, default=0.0)
     balance_eur   = Column(Float, default=0.0)
     notes         = Column(String, default="")
+    # FIN-04 idempotency: accrual_key marks a posted-interest credit row
+    # ("savings-interest:<goal>:<YYYY-MM>"); settlement_ref marks a
+    # term-settlement credit row ("term-settle:<account_id>"). Partial unique
+    # indexes (below) make double-posting impossible at the DB level.
+    accrual_key    = Column(String, nullable=True)
+    settlement_ref = Column(String, nullable=True)
     is_deleted    = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at    = Column(DateTime, nullable=True)
     created_at    = Column(DateTime, default=_utcnow)
@@ -777,9 +787,12 @@ def _migrate(engine):
     })
     _add_missing_columns(engine, "income", {
         "updated_at": "TIMESTAMP",
+        "settlement_ref": "VARCHAR",
     })
     _add_missing_columns(engine, "savings", {
         "updated_at": "TIMESTAMP",
+        "accrual_key": "VARCHAR",
+        "settlement_ref": "VARCHAR",
     })
     _add_missing_columns(engine, "loans", {
         "early_repayment_surcharge_type": "VARCHAR DEFAULT 'fixed'",
@@ -802,6 +815,25 @@ def _migrate(engine):
     _enforce_budget_scopes(engine)
     _enforce_pairing_code_uniqueness(engine)
     _enforce_milestone_uniqueness(engine)
+    _enforce_idempotency_indexes(engine)
+
+
+def _enforce_idempotency_indexes(engine):
+    """FIN-04: partial unique indexes that make interest posting and term
+    settlement idempotent at the storage layer — a repeated command with the
+    same accrual_key / settlement_ref fails on INSERT instead of double-crediting."""
+    from sqlalchemy import text
+    statements = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_savings_accrual_key "
+        "ON savings(accrual_key) WHERE accrual_key IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_savings_settlement_ref "
+        "ON savings(settlement_ref) WHERE settlement_ref IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_income_settlement_ref "
+        "ON income(settlement_ref) WHERE settlement_ref IS NOT NULL",
+    )
+    for stmt in statements:
+        with engine.begin() as conn:
+            conn.execute(text(stmt))
 
 
 def _enforce_milestone_uniqueness(engine):
@@ -1374,6 +1406,7 @@ def restore_income(user_id, income_id):
 
 _SAV_COLS = ["id","user_id","date","goal_name","target_eur","deposited","currency",
              "deposited_eur","interest_rate","balance_eur","notes",
+             "accrual_key","settlement_ref",
              "is_deleted","deleted_at","created_at","updated_at"]
 
 def get_savings(user_id, include_deleted=False):
@@ -1388,62 +1421,50 @@ def get_savings(user_id, include_deleted=False):
 
 
 def _recompute_savings_balances(df: pd.DataFrame, asof: date | None = None) -> pd.DataFrame:
-    """Rebuild each goal's running balance from its deposit history.
+    """Rebuild each goal's POSTED balance chain from its deposit history.
 
-    Interest is compounded monthly on the elapsed months between consecutive
-    deposits (using the earlier deposit's interest rate), so the balance stays
-    consistent even when rows are edited, deleted, or two deposits land in the
-    same month. Withdrawals (negative deposits) are supported.
+    FIN-04 semantics (locked model — intentionally replaces the old chain
+    that compounded interest monthly between deposits and tail-accrued the
+    last entry into the balance):
 
-    FIN-01: the balance is NOT clamped at zero any more — legacy invalid
-    states (overdrawn goals) must stay inspectable. New overdrafts are
-    prevented by validation in services.commands, not by read-time masking.
+    * ``balance_eur`` is the cumulative sum of a goal's deposits in date
+      order (posted principal). Unrealized interest is NEVER compounded
+      into ``balance_eur``.
+    * Unposted accrual (daily ACT/365 on the posted balance, final segment
+      including `asof`, minus already-posted credit rows) is exposed as a
+      separate display-only column ``pending_interest_eur``, carried by
+      every row of the goal so column sums never double-count.
+    * No clamps: negative histories stay verbatim. Overdrafts are prevented
+      by services.commands validation, not read masking.
 
-    With `asof` (default None = no tail accrual), each goal's LAST entry is
-    also compounded forward from its date to `asof` using its own interest
-    rate, so the displayed balance is the value TODAY — a goal with a single
-    deposit still earns interest over time.
+    Signature stays backward compatible; DataFrame gains one column.
     """
+    import finance as fin
+    df = df.copy()
+    if "pending_interest_eur" not in df.columns:
+        df["pending_interest_eur"] = 0.0
     if df.empty:
         return df
-    df = df.copy()
     for goal in df["goal_name"].fillna("").unique():
-        rows = df[df["goal_name"].fillna("") == goal].sort_values("date", na_position="first")
-        prev_date = None
-        prev_rate = 0.0
-        bal = 0.0
-        first = True
-        last_idx = None
-        for idx in rows.index:
-            r = df.loc[idx]
-            # NaN deposits (truthy!) must not poison the chain: treat as 0.
-            dep = float(r["deposited_eur"]) if pd.notna(r["deposited_eur"]) else 0.0
-            d = r["date"]
-            if first:
-                bal = dep
-                first = False
-            elif pd.isna(d) or pd.isna(prev_date):
-                # No usable date info — just add the deposit without interest.
-                bal += dep
-            else:
-                months = (d.year - prev_date.year) * 12 + (d.month - prev_date.month)
-                if months > 0 and prev_rate > 0:
-                    bal = bal * ((1 + prev_rate / 100 / 12) ** months)
-                bal += dep
-            df.at[idx, "balance_eur"] = round(bal, 4)
-            if not pd.isna(d):
-                prev_date = d
-            prev_rate = float(r["interest_rate"]) if pd.notna(r["interest_rate"]) else 0.0
-            last_idx = idx
-        # Tail accrual: roll the last entry forward to `asof` (today) so the
-        # balance reflects the current value, not the last deposit's date.
-        prev_d = prev_date.date() if isinstance(prev_date, pd.Timestamp) else prev_date
-        if (asof is not None and last_idx is not None and prev_d is not None
-                and prev_rate > 0 and asof > prev_d):
-            months = (asof.year - prev_d.year) * 12 + (asof.month - prev_d.month)
-            if months > 0:
-                bal = bal * ((1 + prev_rate / 100 / 12) ** months)
-                df.at[last_idx, "balance_eur"] = round(bal, 4)
+        rows = df[df["goal_name"].fillna("") == goal].sort_values(
+            "date", na_position="first")
+        deps = pd.to_numeric(rows["deposited_eur"], errors="coerce").fillna(0.0)
+        df.loc[rows.index, "balance_eur"] = deps.cumsum().round(2).values
+        pending_total = 0.0
+        if asof is not None:
+            timeline_rows = [{"date": r["date"],
+                              "deposited_eur": r["deposited_eur"],
+                              "interest_rate": r["interest_rate"]}
+                             for _, r in rows.iterrows()]
+            accrued = Decimal(str(fin.goal_balance_timeline(
+                timeline_rows, asof=asof)["accrued_interest_eur"]))
+            posted_mask = rows["accrual_key"].notna() if "accrual_key" in rows.columns \
+                else pd.Series(False, index=rows.index)
+            posted = Decimal(str(round(float(
+                pd.to_numeric(rows.loc[posted_mask, "deposited_eur"],
+                              errors="coerce").fillna(0.0).sum()), 2)))
+            pending_total = float(max(accrued - posted, Decimal("0")))
+        df.loc[rows.index, "pending_interest_eur"] = round(pending_total, 2)
     return df
 
 

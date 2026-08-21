@@ -5,7 +5,8 @@ No I/O or Streamlit dependencies; fully unit-tested.
 
 import calendar
 import math
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 
 def annuity_payment(principal: float, annual_rate_pct: float, term_months: int) -> float:
@@ -271,6 +272,103 @@ def accrued_value(amount: float, annual_rate_pct: float,
     if asof <= start:
         return round(amount, 2)
     return compound_months(amount, annual_rate_pct, months_between(start, asof))
+
+
+# ── Savings goal balance timeline (FIN-01) ────────────────────────────────────
+
+_CENT = Decimal("0.01")
+
+
+def _finite_float(v) -> float:
+    """Coerce to a finite float; None/NaN/inf/garbage all count as 0."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
+
+def goal_balance_timeline(rows, asof: date | None = None) -> dict:
+    """Posted-balance walk + cumulative accrual for ONE savings goal.
+
+    Locked financial-model semantics (FIN-04):
+      * The posted balance starts at the first deposit; every event changes
+        the posted balance starting on its own event date. Unrealized
+        interest is NEVER compounded into the posted balance.
+      * ``accrued_interest_eur`` is the CUMULATIVE daily ACT/365 accrual
+        from inception to ``asof`` over every segment at the balance and
+        rate in effect there. Day-count: an event's new balance applies
+        FROM its own date; the final segment INCLUDES ``asof`` — a deposit
+        held for all of January posts 31 days (€1,000 @ 3.65% → €3.10).
+      * The earning rate is established by DEPOSIT rows; withdrawals and
+        system credit rows (postings/settlements) preserve the in-flight
+        rate so accrual continues uninterrupted.
+      * Postings already made are separate credit rows: callers subtract
+        their sum (accrual_key rows dated ≤ asof) to get the still-unposted
+        remainder. No clamps anywhere; NaN deposits count as 0; rows
+        without a usable date contribute their deposit but open no window.
+
+    ``rows``: iterable of mappings (or pandas Series) with ``date``
+    (date/datetime/None — callers normalize pandas NaT to None),
+    ``deposited_eur`` and ``interest_rate``. Rows may arrive in any order;
+    sorting is stable (input order kept for equal dates, unusable dates
+    first).
+
+    Returns ``{"posted_balance_eur", "accrued_interest_eur",
+    "total_value_eur"}`` as floats quantized to €0.01 (ROUND_HALF_UP).
+    Accrued interest is display/posting valuation, never spendable until
+    posted by the monthly command.
+    """
+    bal = Decimal("0")
+    rate_pct = Decimal("0")
+    accrued = Decimal("0")
+    last_event_date: date | None = None
+    events = []
+    for row in rows:
+        get = row.get if hasattr(row, "get") else (lambda k, _r=row: _r[k])
+        raw_date = get("date")
+        d: date | None = None
+        if isinstance(raw_date, datetime):
+            try:
+                d = raw_date.date()
+            except ValueError:      # pandas NaT subclasses datetime
+                d = None
+        elif isinstance(raw_date, date):
+            d = raw_date
+        events.append({"d": d,
+                       "dep": Decimal(str(_finite_float(get("deposited_eur")))),
+                       "rate": Decimal(str(_finite_float(get("interest_rate"))))})
+    events.sort(key=lambda ev: (ev["d"] is None, ev["d"] or date.min))
+
+    def _accrue(bal_: Decimal, rate_: Decimal, start: date, end: date) -> Decimal:
+        days = (end - start).days
+        if days <= 0 or bal_ == 0:
+            return Decimal("0")
+        return bal_ * rate_ / Decimal("36500") * days
+
+    for ev in events:
+        if ev["d"] is not None and last_event_date is not None \
+                and ev["d"] > last_event_date:
+            # segment between events: balance/rate in effect since the
+            # previous event, up to (excluding) this event's date
+            accrued += _accrue(bal, rate_pct, last_event_date, ev["d"])
+        bal += ev["dep"]
+        if ev["d"] is not None:
+            last_event_date = ev["d"]
+            # The earning rate is established by DEPOSITS; withdrawals and
+            # system credit rows (postings/settlements) preserve the
+            # in-flight rate so accrual continues uninterrupted.
+            if ev["dep"] > 0:
+                rate_pct = ev["rate"]
+
+    posted = bal.quantize(_CENT, rounding=ROUND_HALF_UP)
+    if asof is not None and last_event_date is not None and asof >= last_event_date:
+        # final segment INCLUDES `asof` (locked day-count convention)
+        accrued += _accrue(bal, rate_pct, last_event_date, asof) + (
+            bal * rate_pct / Decimal("36500") if asof >= last_event_date else Decimal("0"))
+    return {"posted_balance_eur": float(posted),
+            "accrued_interest_eur": float(accrued.quantize(_CENT, rounding=ROUND_HALF_UP)),
+            "total_value_eur": float((posted + accrued).quantize(_CENT, rounding=ROUND_HALF_UP))}
 
 
 # ── Portfolio math ────────────────────────────────────────────────────────────

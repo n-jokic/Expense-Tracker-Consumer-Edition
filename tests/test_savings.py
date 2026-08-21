@@ -37,29 +37,43 @@ def test_first_deposit_is_the_balance():
     assert df.iloc[0]["balance_eur"] == 100.0
 
 
-def test_tail_accrual_to_asof():
-    """With an explicit `asof`, the last entry compounds forward from its
-    date to `asof` (single-deposit goals earn interest too)."""
+def test_pending_accrual_to_asof():
+    """FIN-04 semantic change: balances are POSTED principal; unrealized
+    accrual is reported separately as pending_interest_eur (daily ACT/365,
+    final segment including `asof`)."""
     df = pd.DataFrame([{
         "goal_name": "G", "date": "2025-01-01",
         "deposited_eur": 100.0, "interest_rate": 12.0, "balance_eur": 0.0,
     }])
     df["date"] = pd.to_datetime(df["date"])
     out = _recompute_savings_balances(df, asof=date(2025, 4, 1))
-    assert out.iloc[0]["balance_eur"] == pytest.approx(100.0 * 1.01 ** 3, abs=0.01)
-    # without asof the chain is unchanged (pure between-deposit semantics)
+    assert out.iloc[0]["balance_eur"] == pytest.approx(100.0)
+    # Jan 1 .. Apr 1 inclusive = 91 earning days
+    assert out.iloc[0]["pending_interest_eur"] == pytest.approx(
+        100.0 * 0.12 / 365 * 91, abs=0.01)
+    # without asof no accrual window is opened
     out0 = _recompute_savings_balances(df)
     assert out0.iloc[0]["balance_eur"] == 100.0
+    assert out0.iloc[0]["pending_interest_eur"] == 0.0
 
 
-def test_interest_compounds_over_elapsed_months():
-    # 100 deposit on Jan 1 at 12% p.a. (1%/month), +100 on Mar 1
-    # -> 100*1.01^2 + 100 = 202.01
+def test_balance_is_posted_principal_and_accrual_accumulates():
+    # FIN-04 semantic change: balance = cumulative deposits (200), while the
+    # accrual accumulates across BOTH segments (pre- and post-second-deposit).
     df = _savings_df([
         {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
         {"goal_name": "G", "date": "2025-03-01", "deposited_eur": 100.0, "interest_rate": 12.0},
     ])
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(202.01, abs=1e-3)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(200.0)
+    df2 = pd.DataFrame([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
+        {"goal_name": "G", "date": "2025-03-01", "deposited_eur": 100.0, "interest_rate": 12.0},
+    ])
+    df2["date"] = pd.to_datetime(df2["date"])
+    out = _recompute_savings_balances(df2, asof=date(2025, 3, 15))
+    expected = (100.0 * 0.12 / 365 * 59      # Jan 1 -> Mar 1 (exclusive)
+                + 200.0 * 0.12 / 365 * 15)   # Mar 1 .. Mar 15 (inclusive)
+    assert out.iloc[0]["pending_interest_eur"] == pytest.approx(expected, abs=0.01)
 
 
 def test_two_deposits_in_same_month_get_no_interest():
@@ -70,13 +84,22 @@ def test_two_deposits_in_same_month_get_no_interest():
     assert df.iloc[-1]["balance_eur"] == 150.0
 
 
-def test_interest_uses_the_earlier_deposits_rate():
-    # Growth between Jan and Feb uses the January rate (12%), not February's (0%).
+def test_accrual_uses_the_depositing_rows_rate():
+    # FIN-04 semantic change: the segment before Feb earns the January row's
+    # rate (12%); from Feb 1 the 0% row takes over the rate configuration.
     df = _savings_df([
         {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
         {"goal_name": "G", "date": "2025-02-01", "deposited_eur": 100.0, "interest_rate": 0.0},
     ])
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(201.0, abs=1e-3)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(200.0)
+    df2 = pd.DataFrame([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
+        {"goal_name": "G", "date": "2025-02-01", "deposited_eur": 100.0, "interest_rate": 0.0},
+    ])
+    df2["date"] = pd.to_datetime(df2["date"])
+    out = _recompute_savings_balances(df2, asof=date(2025, 2, 10))
+    expected = 100.0 * 0.12 / 365 * 31     # only January earns 12%
+    assert out.iloc[0]["pending_interest_eur"] == pytest.approx(expected, abs=0.01)
 
 
 def test_goals_are_independent():
@@ -87,7 +110,8 @@ def test_goals_are_independent():
     ])
     a = df[df["goal_name"] == "A"].sort_values("date")
     b = df[df["goal_name"] == "B"]
-    assert a.iloc[-1]["balance_eur"] == pytest.approx(202.01, abs=1e-3)
+    # FIN-04 semantic change: posted principal, no compounding between rows
+    assert a.iloc[-1]["balance_eur"] == pytest.approx(200.0)
     assert b.iloc[0]["balance_eur"] == 500.0
 
 
@@ -99,13 +123,23 @@ def test_recompute_handles_missing_dates_gracefully():
     assert df.iloc[-1]["balance_eur"] == 100.0
 
 
-def test_withdrawal_reduces_balance_with_interest():
+def test_withdrawal_reduces_posted_balance_rate_carried():
+    # FIN-04 semantic change: the withdrawal reduces POSTED principal; the
+    # earning rate carries across withdrawals (established by deposit rows).
     df = _savings_df([
         {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
         {"goal_name": "G", "date": "2025-02-01", "deposited_eur": -30.0, "interest_rate": 12.0},
     ])
-    # 100 * 1.01 - 30 = 71.0
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(71.0, abs=1e-3)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(70.0)
+    df2 = pd.DataFrame([
+        {"goal_name": "G", "date": "2025-01-01", "deposited_eur": 100.0, "interest_rate": 12.0},
+        {"goal_name": "G", "date": "2025-02-01", "deposited_eur": -30.0, "interest_rate": 12.0},
+    ])
+    df2["date"] = pd.to_datetime(df2["date"])
+    out = _recompute_savings_balances(df2, asof=date(2025, 2, 28))
+    expected = (100.0 * 0.12 / 365 * 31     # Jan: full balance earns
+                + 70.0 * 0.12 / 365 * 28)   # Feb (incl. asof): reduced balance
+    assert out.iloc[0]["pending_interest_eur"] == pytest.approx(expected, abs=0.01)
 
 
 def test_withdrawal_below_zero_is_preserved_inspectable():
@@ -156,7 +190,7 @@ def test_goal_wide_update_applies_to_all_entries_and_recomputes(test_user):
     _entry(test_user, date(2025, 3, 1), "Car", 0.0)   # 2 months later, no deposit
 
     df = get_savings(test_user)
-    assert df.iloc[-1]["balance_eur"] == 1000.0       # 0% rate -> flat
+    assert df.iloc[-1]["balance_eur"] == 1000.0       # 0% rate -> no accrual
 
     n = update_savings_goal(test_user, "Car", {"target_eur": 5000.0,
                                                "interest_rate": 12.0})
@@ -164,21 +198,25 @@ def test_goal_wide_update_applies_to_all_entries_and_recomputes(test_user):
     df = get_savings(test_user)
     assert set(df["target_eur"]) == {5000.0}
     assert set(df["interest_rate"]) == {12.0}
-    # balance chain recomputed with the new rate AND tail-accrued to today:
-    # 1000 * 1.01^2 (Jan->Mar) * 1.01^months (Mar->today)
-    months = (date.today().year - 2025) * 12 + (date.today().month - 3)
-    expected = 1000.0 * (1.01 ** 2) * (1.01 ** max(months, 0))
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(expected, abs=0.01)
+    # FIN-04 semantic change: balance stays POSTED principal (1000); the new
+    # rate flows into the pending accrual — every day from the first deposit
+    # to today (inclusive) earns 1000 * 12% / 365.
+    total_days = (date.today() - date(2025, 1, 1)).days + 1
+    expected_pending = 1000.0 * 0.12 / 365 * max(total_days, 1)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(1000.0)
+    assert df.iloc[-1]["pending_interest_eur"] == pytest.approx(
+        expected_pending, abs=0.01)
 
 
 def test_single_deposit_goal_accrues_to_today(test_user):
-    """Regression: a goal with a single deposit used to show no interest
-    until a second entry arrived — the tail now accrues to today."""
+    """FIN-04 semantic change: a single-deposit goal shows its accrued
+    interest as pending_interest_eur (balance stays posted principal)."""
     _entry(test_user, date(2024, 1, 1), "Solo", 1000.0, rate=12.0)
     df = get_savings(test_user)
-    months = (date.today().year - 2024) * 12 + (date.today().month - 1)
-    assert df.iloc[-1]["balance_eur"] == pytest.approx(
-        1000.0 * (1.01 ** max(months, 0)), abs=0.01)
+    assert df.iloc[-1]["balance_eur"] == pytest.approx(1000.0)
+    total_days = (date.today() - date(2024, 1, 1)).days + 1
+    assert df.iloc[-1]["pending_interest_eur"] == pytest.approx(
+        1000.0 * 0.12 / 365 * max(total_days, 1), abs=0.01)
 
 
 def test_rename_savings_goal_renames_entries_and_accounts(test_user):

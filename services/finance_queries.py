@@ -444,8 +444,19 @@ def get_savings_summary(user_id: int) -> dict:
         bal = float(last.get("balance_eur") or 0.0)
         tgt = float(last.get("target_eur") or 0.0)
         total_bal += bal
-        dep_sum = float(rows["deposited_eur"].sum())
-        interest_total += bal - dep_sum
+        # FIN-04: balances are POSTED principal, so interest is no longer
+        # balance-minus-deposits. Interest shown = posted credits (rows with
+        # an accrual_key) + still-unposted pending accrual for the goal.
+        posted_interest = 0.0
+        if "accrual_key" in rows.columns:
+            mask = rows["accrual_key"].notna()
+            posted_interest = float(
+                pd.to_numeric(rows.loc[mask, "deposited_eur"],
+                              errors="coerce").fillna(0.0).sum())
+        pending = float(pd.to_numeric(rows.get("pending_interest_eur"),
+                                      errors="coerce").fillna(0.0).sum()) \
+            if "pending_interest_eur" in rows.columns else 0.0
+        interest_total += posted_interest + pending
         goals.append({"goal_name": name, "balance_eur": bal, "target_eur": tgt,
                       "interest_rate_pct": float(last.get("interest_rate") or 0.0)})
     return {"goals": goals, "total_balance_eur": total_bal, "interest_total_eur": interest_total}

@@ -19,6 +19,11 @@ from db import (
     rename_savings_goal, update_savings_goal, soft_delete_savings_goal,
 )
 from finance import accrued_value, maturity_value
+from services.commands import (
+    CommandError, InsufficientFunds,
+    deposit_to_goal, withdraw_from_goal, open_term_from_goal,
+    settle_term_account, soft_delete_goal_checked, soft_delete_account_checked,
+)
 from insights import savings_projection
 from utils import (
     SAVINGS_GOALS, SUPPORTED_CURRENCIES, MAX_AMOUNT, MAX_SAVINGS_TARGET, CHART_COLORS,
@@ -103,12 +108,15 @@ def deposit_dialog(uid: int, goal: str, tgt_eur: float, rate: float, gcur: str):
             st.toast("Already saved — duplicate prevented.", icon=":material/check:")
             st.rerun()
         try:
-            add_savings(uid, {
-                "date": d, "goal_name": goal, "target_eur": tgt_eur,
-                "deposited": float(amt), "currency": gcur,
-                "deposited_eur": de, "interest_rate": rate,
-                "balance_eur": 0.0, "notes": notes,
-            })
+            deposit_to_goal(uid, goal, de, entry_date=d, target_eur=tgt_eur,
+                            deposited=float(amt), currency=gcur,
+                            interest_rate=rate, notes=notes)
+        except InsufficientFunds as e:
+            st.error(f"Couldn't save: {e}")
+            return
+        except CommandError as e:
+            st.error(f"Couldn't save: {e}")
+            return
         except Exception as e:
             st.error(f"Couldn't save: {e}")
             return
@@ -148,12 +156,14 @@ def withdraw_dialog(uid: int, goal: str, bal_eur: float, tgt_eur: float,
             st.toast("Already saved — duplicate prevented.", icon=":material/check:")
             st.rerun()
         try:
-            add_savings(uid, {
-                "date": d, "goal_name": goal, "target_eur": tgt_eur,
-                "deposited": -float(amt), "currency": gcur,
-                "deposited_eur": -de, "interest_rate": rate,
-                "balance_eur": 0.0, "notes": notes or "Withdrawal",
-            })
+            withdraw_from_goal(uid, goal, de, entry_date=d, target_eur=tgt_eur,
+                               currency=gcur, notes=notes or "Withdrawal")
+        except InsufficientFunds as e:
+            st.error(f"Couldn't save: {e}")
+            return
+        except CommandError as e:
+            st.error(f"Couldn't save: {e}")
+            return
         except Exception as e:
             st.error(f"Couldn't save: {e}")
             return
@@ -223,7 +233,10 @@ def delete_goal_dialog(uid: int, goal: str, n_entries: int, locked_eur: float):
     with c2:
         if st.button("Delete goal", key="dlg_goal_del_ok", type="primary", width="stretch"):
             try:
-                soft_delete_savings_goal(uid, goal)
+                soft_delete_goal_checked(uid, goal)
+            except CommandError as e:
+                st.error(f"Couldn't delete: {e}")
+                return
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
                 return
@@ -264,14 +277,15 @@ def withdraw_account_dialog(uid: int, row):
             st.rerun()
         tgt, rate, _ = goal_attrs(goal_rows(dfs_all, str(row["goal_name"])))
         try:
-            add_savings(uid, {
-                "date": payout_date, "goal_name": str(row["goal_name"]),
-                "target_eur": tgt,
-                "deposited": to_display(val, gcur, rates), "currency": gcur,
-                "deposited_eur": val, "interest_rate": rate,
-                "balance_eur": 0.0, "notes": f"Withdrawal: {row['name']}",
-            })
-            update_savings_account(uid, str(row["id"]), {"status": "closed"})
+            # FIN-04: one atomic settlement — principal + realized interest
+            # credited to the goal exactly once, interest booked as income.
+            interest = round(val - float(row["amount_eur"] or 0.0), 2)
+            settle_term_account(uid, str(row["id"]),
+                                realized_interest_eur=interest,
+                                payout_date=payout_date)
+        except CommandError as e:
+            st.error(f"Couldn't save: {e}")
+            return
         except Exception as e:
             st.error(f"Couldn't save: {e}")
             return
@@ -348,7 +362,10 @@ def delete_account_dialog(uid: int, acc_id: str, name: str):
         if st.button("Delete", key=f"dlg_acc_del_ok_{acc_id}", type="primary",
                      width="stretch"):
             try:
-                soft_delete_savings_account(uid, acc_id)
+                soft_delete_account_checked(uid, acc_id)
+            except CommandError as e:
+                st.error(f"Couldn't delete: {e}")
+                return
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
                 return
@@ -491,12 +508,18 @@ if saved:
                      f"({fmt(current_bal, DC, rates)}) — the balance cannot go negative.")
         else:
             try:
-                add_savings(user_id, {
-                    "date": sd, "goal_name": goal_name, "target_eur": te,
-                    "deposited": float(dep), "currency": cur,
-                    "deposited_eur": de, "interest_rate": use_rate,
-                    "balance_eur": 0.0, "notes": notes,
-                })
+                if de >= 0:
+                    deposit_to_goal(user_id, goal_name, de, entry_date=sd,
+                                    target_eur=te, deposited=float(dep),
+                                    currency=cur, interest_rate=use_rate,
+                                    notes=notes)
+                else:
+                    withdraw_from_goal(user_id, goal_name, abs(de), entry_date=sd,
+                                       target_eur=te, currency=cur, notes=notes)
+            except InsufficientFunds as e:
+                st.error(f"Couldn't save: {e}")
+            except CommandError as e:
+                st.error(f"Couldn't save: {e}")
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
             else:
@@ -672,12 +695,16 @@ if not dfs.empty:
                         st.toast("Already saved — duplicate prevented.", icon=":material/check:")
                         st.rerun()
                     try:
-                        add_savings_account(user_id, {
-                            "goal_name": a_goal, "name": a_name.strip(),
-                            "amount": float(a_amt), "currency": a_cur, "amount_eur": ae,
-                            "annual_rate": float(a_rate), "start_date": a_start,
-                            "maturity_date": a_mat, "status": "active", "notes": a_notes,
-                        })
+                        # FIN-04: zero-sum — the account AND its goal debit
+                        # are written in one transaction.
+                        open_term_from_goal(user_id, a_goal, a_name.strip(), ae,
+                                            float(a_rate), a_start, a_mat,
+                                            currency=a_cur, amount=float(a_amt),
+                                            notes=a_notes)
+                    except InsufficientFunds as e:
+                        st.error(f"Couldn't save: {e}")
+                    except CommandError as e:
+                        st.error(f"Couldn't save: {e}")
                     except Exception as e:
                         st.error(f"Couldn't save: {e}")
                     else:
