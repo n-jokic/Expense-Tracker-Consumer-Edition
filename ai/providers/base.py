@@ -21,6 +21,10 @@ class GenerationRequest:
     system: str
     user: str
     max_tokens: int = 256
+    # AI-04: True when the caller expects STRICT JSON back (planner / repair
+    # turns). Providers may map this to their native structured-output mode;
+    # it is never set for prose composition requests.
+    wants_json: bool = False
 
 
 @dataclass

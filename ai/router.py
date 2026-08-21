@@ -40,6 +40,8 @@ DETERMINISTIC_PATTERNS: list[tuple[str, str]] = [
     (r"debt|loan.*summary|how much.*owe", "debt_summary"),
     (r"anomal|unusual.*spending|unusual.*expense", "anomalies"),
     (r"forecast|next month.*spend|predict.*spending", "forecast"),
+    # AI-04: chart requests route to the read-only series tool + validator
+    (r"chart|plot|graph|visuali[sz]e|over time|trend", "__series__"),
 ]
 
 # Lightweight period/category extraction for deterministic tool args.

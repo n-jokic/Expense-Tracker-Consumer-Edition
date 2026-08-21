@@ -37,6 +37,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "anomalies": {"required": [], "optional": ["multiplier"]},
     "forecast": {"required": [], "optional": []},
     "purchase_scenario": {"required": ["purchase_eur", "year", "month"], "optional": []},
+    "spending_series": {"required": [], "optional": ["months"]},
 }
 
 MAX_RESULT_ROWS = 100  # enforced by orchestrator too; kept here for reference
@@ -131,6 +132,37 @@ def aggregate_spending(user_id: int, year: int, month: int, category: str | None
         "month": month,
         "_provenance": _prov("aggregate_spending", row_count=len(breakdown),
                              filters={"category": category} if category else {},
+                             period_start=start, period_end=end),
+    }
+
+
+@_register("spending_series")
+def spending_series(user_id: int, months: int = 12) -> dict:
+    """AI-04: read-only monthly spending series (canonical totals only).
+
+    Every value comes from the same aggregate the numbers pages use
+    (fq.get_category_breakdown) — charts can never invent figures."""
+    try:
+        months = max(1, min(int(months), 24))
+    except (TypeError, ValueError):
+        months = 12
+    today = date.today()
+    keys = []
+    y, m = today.year, today.month
+    for _ in range(months):
+        keys.append((y, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    series = []
+    for yy, mm in reversed(keys):
+        total = float(sum(fq.get_category_breakdown(user_id, yy, mm).values()))
+        series.append({"month": f"{yy:04d}-{mm:02d}", "amount_eur": round(total, 2)})
+    start = date(keys[-1][0], keys[-1][1], 1)
+    end = date(today.year, today.month, 1)
+    return {
+        "series": series,
+        "_provenance": _prov("spending_series", row_count=len(series),
                              period_start=start, period_end=end),
     }
 

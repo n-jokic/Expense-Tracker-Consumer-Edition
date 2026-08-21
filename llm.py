@@ -216,7 +216,8 @@ _RETRY_AFTER_CAP_S = 8.0       # Retry-After is honored but capped
 _backoff_sleep = time.sleep    # module-level so tests can monkeypatch
 
 
-def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalResult:
+def _api_chat(settings: dict, system: str, user: str, max_tokens: int,
+              json_mode: bool = False) -> LocalResult:
     global _last_result
     key = decrypt_str(settings.get("ai_api_key_enc") or "")
     if not key:
@@ -236,6 +237,10 @@ def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalR
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}],
                "max_tokens": int(max_tokens), "temperature": 0.7}
+    # AI-04: direct OpenAI gets its provider-specific structured path —
+    # JSON-object response mode — but ONLY for strict-JSON (planner) turns.
+    if json_mode and "api.openai.com" in base:
+        payload["response_format"] = {"type": "json_object"}
     headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     diag = ""

@@ -104,6 +104,35 @@ if _last_calls:
                 if isinstance(source_rows, list) and source_rows:
                     with st.expander("Show source transactions", expanded=False):
                         st.dataframe(source_rows, use_container_width=True, hide_index=True)
+                # AI-04: validated chart rendering. The spec is re-validated
+                # against the canonical tool rows HERE; any invalid or
+                # tampered spec falls back to the JSON/table view below.
+                _res = tc.get("result") or {}
+                _raw_spec = _res.get("_chart")
+                if isinstance(_raw_spec, dict):
+                    try:
+                        from ai.charts import validate_chart_spec
+                        _spec = validate_chart_spec(
+                            _raw_spec, _res.get("series") or [])
+                        if _spec:
+                            import pandas as pd
+                            import plotly.express as px
+                            cdf = pd.DataFrame(_spec["data"])
+                            if _spec["type"] == "line":
+                                fig = px.line(cdf, x=_spec["x"], y=_spec["y"],
+                                              markers=True)
+                            elif _spec["type"] == "bar":
+                                fig = px.bar(cdf, x=_spec["x"], y=_spec["y"])
+                            else:
+                                fig = px.pie(cdf, names=_spec["x"],
+                                             values=_spec["y"])
+                            fig.update_layout(
+                                title=_spec["title"] or None,
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)")
+                            st.plotly_chart(fig, width="stretch")
+                    except Exception:
+                        pass  # never let a bad spec break the page
                 # brief result preview (no raw row dump beyond cap)
                 preview = str(tc.get("result", {}))
                 if len(preview) > 900:

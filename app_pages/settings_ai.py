@@ -42,8 +42,23 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
             if cur_provider in ("local", "api") else 0,
             format_func={"none": "Off",
                          "local": "Local Gemma model (llama.cpp)",
-                         "api": "External API (OpenRouter / any OpenAI-compatible)"}.get,
+                         "api": "External API"}.get,
             key="ai_provider_select")
+        # AI-04: which external API family? Each has its own adapter, auth
+        # and endpoint; the choice is stored as ai_api_kind.
+        cur_kind = str(settings.get("ai_api_kind") or "").strip().lower()
+        if "anthropic" in str(settings.get("ai_api_base") or "").lower():
+            cur_kind = cur_kind or "anthropic"
+        ai_api_kind = None
+        if ai_provider == "api":
+            ai_api_kind = st.selectbox(
+                "API family",
+                ["openai_compatible", "anthropic"],
+                index=1 if cur_kind == "anthropic" else 0,
+                format_func={"openai_compatible":
+                             "OpenAI-compatible (OpenRouter, OpenAI, …)",
+                             "anthropic": "Anthropic Claude (native)"}.get,
+                key="ai_api_kind_select")
         # Form key includes provider so switching provider reconstructs the form.
         with st.form(f"ai_form_{ai_provider}"):
             ai_model_path = ai_gpu = ai_base = ai_model = ai_key = None
@@ -90,6 +105,19 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
             with c_test:
                 ai_test = st.form_submit_button("Test summary",
                                                 icon=":material/smart_toy:", width="stretch")
+            # AI-04: connection tests disclose exactly what may leave the
+            # device — per provider kind, before the user runs the test.
+            if ai_provider == "api":
+                st.caption(
+                    ":material/info: What this test sends to the external "
+                    "provider: your question plus sanitized aggregate figures "
+                    "(weekly totals, category names). Identifiers, emails, "
+                    "local file paths and anything credential-shaped are "
+                    "redacted first. Raw transactions never leave the device.")
+            elif ai_provider == "local":
+                st.caption(
+                    ":material/shield: Nothing leaves the device with the "
+                    "local model — generation runs entirely on this PC.")
 
             # We render the submit buttons inside the form but handle their
             # actions here at the fragment level so provider is already the
@@ -105,6 +133,9 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                                     "ai_local_gpu_layers": int(ai_gpu)})
                 elif ai_provider == "api":
                     updates.update({
+                        "ai_api_kind": (ai_api_kind or
+                                        str(settings.get("ai_api_kind") or
+                                            "openai_compatible")).strip(),
                         "ai_api_base": ((ai_base or settings.get("ai_api_base")
                                          or DEFAULT_API_BASE) or "").strip(),
                         "ai_api_model": ((ai_model or settings.get("ai_api_model")
@@ -127,6 +158,8 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                     merged.update({"ai_local_model": ai_model_path.strip(),
                                    "ai_local_gpu_layers": int(ai_gpu)})
                 elif ai_provider == "api":
+                    if ai_api_kind is not None:
+                        merged["ai_api_kind"] = ai_api_kind
                     if ai_base is not None:
                         merged["ai_api_base"] = ai_base.strip()
                     if ai_model is not None:

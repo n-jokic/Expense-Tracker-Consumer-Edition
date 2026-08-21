@@ -20,5 +20,7 @@ class OpenAICompatibleProvider:
     def generate(self, request: GenerationRequest) -> GenerationResult:
         from llm import _api_chat
 
-        res = _api_chat(self.settings, request.system, request.user, request.max_tokens)
+        res = _api_chat(self.settings, request.system, request.user,
+                        request.max_tokens,
+                        json_mode=bool(getattr(request, "wants_json", False)))
         return GenerationResult(text=res.text, diagnostic=res.diagnostic)

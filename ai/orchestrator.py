@@ -49,6 +49,13 @@ def _get_provider(settings: dict):
 
             return LlamaCppProvider(settings)
         if provider == "api":
+            # AI-04: native Claude adapter vs OpenAI-compatible endpoints.
+            kind = str(settings.get("ai_api_kind") or "").strip().lower()
+            base = str(settings.get("ai_api_base") or "").lower()
+            if kind == "anthropic" or "anthropic" in base:
+                from ai.providers.anthropic import AnthropicProvider
+
+                return AnthropicProvider(settings)
             from ai.providers.openai_compatible import OpenAICompatibleProvider
 
             return OpenAICompatibleProvider(settings)
@@ -166,6 +173,13 @@ def _deterministic_answer(tool: str, result: dict) -> str:
         if tot is None:
             return f"Forecast: not enough history ({result.get('history_months', 0)} months) — using fallback [{calc}]."
         return f"Forecast next month: €{tot:.2f} (range €{result.get('lower', 0):.2f}–€{result.get('upper', 0):.2f}) [{calc}]."
+    if tool == "spending_series":
+        rows = result.get("series") or []
+        if rows:
+            first, last = rows[0], rows[-1]
+            return (f"Monthly spending from {first.get('month')} to "
+                    f"{last.get('month')}: latest month €{last.get('amount_eur', 0):.2f} "
+                    f"[{calc}] ({len(rows)} months).")
     # Generic
     summary = json.dumps(result, default=str)[:700]
     return f"Based on your data ({calc}): {summary}"
@@ -249,6 +263,34 @@ def orchestrate(
     if fast is not None:
         try:
             from ai.tool_registry import TOOLS
+
+            if fast == "__series__":
+                # AI-04: chart answers — canonical series + validated spec.
+                # The model is not involved in the data path at all.
+                args = {"months": 12}
+                result, exec_err = _execute_tool("spending_series", args, user_id)
+                tc = AdvisorToolCall(tool="spending_series", arguments=args,
+                                     result=result or {}, error=exec_err)
+                tool_calls.append(tc)
+                if exec_err:
+                    return {"answer": None, "error": exec_err,
+                            "tool_calls": [tc.__dict__]}
+                try:
+                    from ai.charts import validate_chart_spec
+                    spec = validate_chart_spec(
+                        {"type": "line", "title": "Spending by month",
+                         "x": "month", "y": "amount_eur"},
+                        (result or {}).get("series") or [])
+                    if spec is not None:
+                        result["_chart"] = spec   # validated: UI renders it
+                except Exception as ce:
+                    log.warning("chart spec validation failed: %s", ce)
+                answer, diag = _compose_answer(q, tool_calls, settings)
+                return {"answer": answer,
+                        "tool_calls": [tc.__dict__ for tc in tool_calls],
+                        "error": None if answer else
+                        "The advisor could not compose a spending-series answer.",
+                        "diagnostic": diag}
 
             if fast == "__coach__":
                 # Deterministic signals; the model only explains these results.
@@ -334,7 +376,8 @@ def orchestrate(
                 "Output ONLY the next JSON tool call {\"tool\": \"...\", \"arguments\": {...}} "
                 "or, if you have enough information to answer, output {\"tool\": \"__answer__\"}."
             )
-            req = GenerationRequest(system=P.PLANNER_SYSTEM, user=planner_user, max_tokens=256)
+            req = GenerationRequest(system=P.PLANNER_SYSTEM, user=planner_user,
+                                    max_tokens=256, wants_json=True)
             res = provider.generate(req)
             text = (res.text or "").strip()
             if not text:
@@ -358,7 +401,7 @@ def orchestrate(
                 repair_req = GenerationRequest(
                     system=P.PLANNER_SYSTEM,
                     user=P.repair_prompt(q, text),
-                    max_tokens=256,
+                    max_tokens=256, wants_json=True,
                 )
                 repair_res = provider.generate(repair_req)
                 parsed = parse_local_tool_json((repair_res.text or "").strip())
@@ -396,7 +439,7 @@ def orchestrate(
                     system=P.PLANNER_SYSTEM,
                     user=P.repair_prompt(q, text, error=err,
                                          schema_text=schema_text),
-                    max_tokens=256,
+                    max_tokens=256, wants_json=True,
                 )
                 repaired = parse_local_tool_json(
                     (provider.generate(repair_req).text or "").strip())
