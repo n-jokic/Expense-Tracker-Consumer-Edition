@@ -27,6 +27,7 @@ credential-shaped strings via ``ai.safety.strip_credentials``.
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -208,6 +209,13 @@ def _local_chat(settings: dict, system: str, user: str, max_tokens: int) -> Loca
 
 # ── External OpenAI-compatible API ────────────────────────────────────────────
 
+# AI-03: transient failures get bounded retries; permanent 4xx never retry.
+_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+_API_MAX_ATTEMPTS = 3          # 1 initial attempt + at most TWO retries
+_RETRY_AFTER_CAP_S = 8.0       # Retry-After is honored but capped
+_backoff_sleep = time.sleep    # module-level so tests can monkeypatch
+
+
 def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalResult:
     global _last_result
     key = decrypt_str(settings.get("ai_api_key_enc") or "")
@@ -220,33 +228,71 @@ def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalR
     model_name = str(settings.get("ai_api_model") or DEFAULT_API_MODEL)
     # AI-01 single egress choke point: everything serialized into an external
     # request body passes the sanitizer boundary. Deterministic + idempotent;
-    # redaction is logged at debug level as counts only.
+    # redaction is logged at debug level as counts only. Retries re-send the
+    # SAME sanitized payload (idempotent request type).
     system = sanitize_outbound_text(system)
     user = sanitize_outbound_text(user)
-    try:
-        resp = requests.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json"},
-            json={"model": model_name,
-                  "messages": [{"role": "system", "content": system},
-                               {"role": "user", "content": user}],
-                  "max_tokens": int(max_tokens), "temperature": 0.7},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        text = resp.json()["choices"][0]["message"]["content"]
-        result = LocalResult(text.strip() or None)
-        _last_result = result
-        return result
-    except Exception as e:
-        # Never echo the key: the exception may carry the request URL only.
-        log.warning("LLM API request failed (%s): %s", type(e).__name__, e)
-        result = LocalResult(
-            None, "The API request failed — check the API key and base URL in "
-                  "Settings → Notifications → AI assistant.")
-        _last_result = result
-        return result
+    payload = {"model": model_name,
+               "messages": [{"role": "system", "content": system},
+                            {"role": "user", "content": user}],
+               "max_tokens": int(max_tokens), "temperature": 0.7}
+    headers = {"Authorization": f"Bearer {key}",
+               "Content-Type": "application/json"}
+    diag = ""
+    for attempt in range(_API_MAX_ATTEMPTS):
+        try:
+            resp = requests.post(f"{base}/chat/completions",
+                                 headers=headers, json=payload, timeout=15)
+            status = getattr(resp, "status_code", None)
+            if status is not None and status in _TRANSIENT_STATUS:
+                if attempt < _API_MAX_ATTEMPTS - 1:
+                    retry_after = resp.headers.get("Retry-After")
+                    try:
+                        delay = min(float(retry_after), _RETRY_AFTER_CAP_S)
+                    except (TypeError, ValueError):
+                        delay = min(2.0 ** attempt, _RETRY_AFTER_CAP_S)
+                    log.info("LLM API transient %s (attempt %d/%d), "
+                             "retrying in %.1fs", status, attempt + 1,
+                             _API_MAX_ATTEMPTS, delay)
+                    diag = f"provider returned {status}; retrying"
+                    _backoff_sleep(delay)
+                    continue
+                diag = ("The AI provider is temporarily unavailable "
+                        f"({status}). Please try again shortly.")
+                break
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"]
+            result = LocalResult(text.strip() or None)
+            _last_result = result
+            return result
+        except requests.exceptions.HTTPError as e:
+            # Permanent client error (4xx beyond the transient set): never retry.
+            status = getattr(e.response, "status_code", None)
+            if status == 401 or status == 403:
+                diag = "The API key was rejected — check it in Settings → Notifications → AI assistant."
+            else:
+                diag = ("The API request failed — check the API key and base "
+                        "URL in Settings → Notifications → AI assistant.")
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < _API_MAX_ATTEMPTS - 1:
+                delay = min(2.0 ** attempt, _RETRY_AFTER_CAP_S)
+                log.info("LLM API %s (attempt %d/%d), retrying in %.1fs",
+                         type(e).__name__, attempt + 1, _API_MAX_ATTEMPTS, delay)
+                diag = "provider unreachable; retrying"
+                _backoff_sleep(delay)
+                continue
+            diag = "The AI provider could not be reached — check your connection."
+            break
+        except Exception as e:
+            # Never echo the key: the exception may carry the request URL only.
+            log.warning("LLM API request failed (%s): %s", type(e).__name__, e)
+            diag = ("The API request failed — check the API key and base URL "
+                    "in Settings → Notifications → AI assistant.")
+            break
+    result = LocalResult(None, diag)
+    _last_result = result
+    return result
 
 
 # ── Public generators ─────────────────────────────────────────────────────────

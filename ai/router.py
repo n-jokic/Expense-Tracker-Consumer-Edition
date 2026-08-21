@@ -92,6 +92,64 @@ def fast_route(question: str) -> str | None:
     return None
 
 
+# Tools whose arguments include a {year, month} period pair.
+_YEAR_MONTH_TOOLS = frozenset({
+    "aggregate_spending", "category_breakdown", "merchant_breakdown",
+    "cashflow_summary", "budget_status", "purchase_scenario",
+})
+
+_INT_FIELDS = ("year", "month", "n", "limit", "term_months")
+
+
+def repair_missing_dates(tool: str, arguments: dict | None, question: str,
+                         today: date | None = None) -> tuple[dict, bool]:
+    """AI-02: deterministic argument repair BEFORE any model repair round.
+
+    Fills missing ``year``/``month`` from the original question (explicit
+    month, month name, or "last month" all resolve correctly via
+    ``_extract_month``; no month named means the current month) and coerces
+    numeric-string arguments to numbers so type validation passes without a
+    second model call.
+
+    Returns ``(arguments, ambiguous)`` — ``ambiguous`` is True when the
+    question names two or more DIFFERENT months and the caller should ask
+    for clarification instead of guessing.
+    """
+    today = today or date.today()
+    args = dict(arguments or {})
+
+    # Numeric coercion first: models often emit "2025" instead of 2025.
+    for k in _INT_FIELDS:
+        v = args.get(k)
+        if isinstance(v, str):
+            try:
+                args[k] = int(v.strip())
+            except (ValueError, TypeError):
+                match = re.match(r"^\s*(\d+)", v)
+                if match:
+                    args[k] = int(match.group(1))
+    for k in ("total_budget_eur", "principal_eur", "annual_rate_pct",
+              "extra_monthly_eur", "purchase_eur", "multiplier"):
+        v = args.get(k)
+        if isinstance(v, str):
+            try:
+                args[k] = float(v.replace(",", "").strip())
+            except (ValueError, TypeError):
+                pass
+
+    # Period ambiguity check on the raw question (distinct month names).
+    months_named = {_MONTHS[m] for m in _MONTHS if re.search(rf"\b{m}\b", question.lower())}
+    ambiguous = len(months_named) > 1
+
+    if tool in _YEAR_MONTH_TOOLS:
+        year, month = _extract_month(question, today)
+        if "year" not in args:
+            args["year"] = year
+        if "month" not in args:
+            args["month"] = month
+    return args, ambiguous
+
+
 def _extract_json_object(text: str) -> dict | None:
     """Extract first JSON object substring and parse it."""
     # Try direct parse first

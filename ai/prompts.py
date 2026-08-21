@@ -31,6 +31,22 @@ REPAIR_INSTRUCTION = (
     "with a valid tool name and required arguments. No extra text."
 )
 
+
+def repair_prompt(question: str, previous_output: str,
+                  error: str | None = None, schema_text: str = "") -> str:
+    """AI-02: full repair context — original question, the target tool's
+    schema, the validation error and the previous output — so one bounded
+    repair attempt has everything needed to succeed deterministically."""
+    parts = [REPAIR_INSTRUCTION]
+    if error:
+        parts.append(f"Validation error: {error}")
+    if schema_text:
+        parts.append(f"Argument schema:\n{schema_text}")
+    parts.append(f"Original question: {question}")
+    parts.append(f"Your previous output:\n{previous_output[:500]}")
+    return "\n".join(parts)
+
+
 # Deterministic template when LLM is unavailable or fails
 DETERMINISTIC_ANSWER_TEMPLATE = (
     "Based on your data ({calculation}): {summary}"

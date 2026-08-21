@@ -8,7 +8,11 @@ from ai.providers.base import AIProvider, GenerationRequest, GenerationResult, P
 
 
 class OpenAICompatibleProvider:
-    capabilities = ProviderCapabilities(native_tool_calls=True, json_schema=True, vision=False, max_context=8192)
+    # AI-02: requests are prompt-only JSON — no native tool calls and no
+    # structured json_schema endpoint are implemented, so the capabilities
+    # must not claim them.
+    capabilities = ProviderCapabilities(native_tool_calls=False, json_schema=False,
+                                        vision=False, max_context=8192)
 
     def __init__(self, settings: dict):
         self.settings = settings

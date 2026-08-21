@@ -29,6 +29,7 @@ from ai.router import (
     parse_local_tool_json,
     validate_tool_call,
     infer_deterministic_args,
+    repair_missing_dates,
 )
 from ai.schemas import AdvisorToolCall, AdvisorResponse
 from ai.safety import sanitize_tool_result
@@ -352,10 +353,11 @@ def orchestrate(
 
             parsed = parse_local_tool_json(text)
             if parsed is None:
-                # One repair attempt
+                # One repair attempt — with full context: original question,
+                # tool schema, previous output (AI-02).
                 repair_req = GenerationRequest(
                     system=P.PLANNER_SYSTEM,
-                    user=P.REPAIR_INSTRUCTION + f"\nYour previous output:\n{text[:500]}",
+                    user=P.repair_prompt(q, text),
                     max_tokens=256,
                 )
                 repair_res = provider.generate(repair_req)
@@ -366,21 +368,57 @@ def orchestrate(
 
             tool = parsed["tool"]
             args = parsed.get("arguments", {})
+            # AI-02: deterministic repair FIRST — fill missing year/month
+            # from the question/current date and coerce numeric strings.
+            # Ambiguous periods (two different months named) become a clear
+            # clarification instead of a guess.
+            args, ambiguous = repair_missing_dates(tool, args, q, today)
+            if ambiguous and not args.get("start_a"):
+                return {
+                    "answer": ("Which month do you mean? Your question names "
+                               "more than one month — please name a single "
+                               "month (e.g. \"in March\") or say \"this "
+                               "month\" / \"last month\"."),
+                    "tool_calls": [],
+                    "error": None,
+                    "diagnostic": "planner clarification: ambiguous period",
+                }
             ok, err = validate_tool_call(tool, args)
             if not ok:
+                schema_text = ""
+                try:
+                    from ai.tool_registry import TOOL_SCHEMAS
+                    schema_text = json.dumps(TOOL_SCHEMAS.get(tool) or {},
+                                             default=str)[:600]
+                except Exception:
+                    pass
                 repair_req = GenerationRequest(
                     system=P.PLANNER_SYSTEM,
-                    user=f"{P.REPAIR_INSTRUCTION}\nValidation error: {err}\nYour previous output:\n{text[:500]}",
+                    user=P.repair_prompt(q, text, error=err,
+                                         schema_text=schema_text),
                     max_tokens=256,
                 )
-                repaired = parse_local_tool_json((provider.generate(repair_req).text or "").strip())
-                if repaired is None:
-                    break
-                tool, args = repaired["tool"], repaired.get("arguments", {})
-                ok, err = validate_tool_call(tool, args)
+                repaired = parse_local_tool_json(
+                    (provider.generate(repair_req).text or "").strip())
+                if repaired is not None:
+                    r_tool = repaired["tool"]
+                    # Deterministic repair applies to model-repaired args too.
+                    r_args, _amb = repair_missing_dates(
+                        r_tool, repaired.get("arguments", {}), q, today)
+                    ok2, err2 = validate_tool_call(r_tool, r_args)
+                    if ok2:
+                        tool, args, ok, err = r_tool, r_args, True, None
                 if not ok:
                     log.warning("planner args invalid after repair: %s", err)
-                    break
+                    return {
+                        "answer": (f"I couldn't work out the details for "
+                                   f"that question ({err}). Try naming one "
+                                   f"month and rephrasing, e.g. \"How much "
+                                   f"did I spend on groceries in March?\""),
+                        "tool_calls": [],
+                        "error": None,
+                        "diagnostic": "planner clarification: unresolved arguments",
+                    }
 
             # Deduplicate: don't call same tool with same args twice
             if any(tc.tool == tool and tc.arguments == args for tc in tool_calls):
