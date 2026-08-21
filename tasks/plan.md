@@ -383,3 +383,112 @@ one test. **Scope:** M. **Dependencies:** OCR-01.
   Recommended default: yes, paired with the liability so net worth does not increase.
 - Confirm whether deleting a purchase means refund/reversal or hiding a mistaken record.
   Recommended default: soft-delete mistakes; use an explicit refund for real-world returns.
+
+---
+
+# Locked financial-model decisions (design review, supersedes open items above)
+
+## Environment recipe (FIN-00, applies to every later venv/build task)
+
+The DSH workspace-write sandbox denies operations outside the session workspace and
+denies parts of uv's sdist build isolation inside it. Working recipe for creating a
+Python 3.12 environment here:
+
+```powershell
+uv venv .venv-fin00 --python 3.12
+$env:UV_CACHE_DIR = "$PWD\.tmp\uv-cache"        # keep uv cache inside the workspace
+$env:UV_PYTHON_INSTALL_DIR = "$PWD\.tmp\uv-python"
+$env:UV_LINK_MODE = "copy"
+uv pip install --only-binary :all: --python .venv-fin00\Scripts\python.exe `
+    -r requirements.txt -r requirements-dev.txt
+```
+
+- Plain `py -3.12 -m venv` fails on this machine (ensurepip exits 1 inside venv creation).
+- Bare `uv pip install` fails: default cache sits outside the workspace; with a
+  workspace cache it still fails building the one sdist in the tree
+  (`antlr4-python3-runtime` via rapidocr→omegaconf) — its wheel exists, hence
+  `--only-binary :all:` resolves everything.
+- Never modify/delete `.venv`, `.venv-clean`, `.venv-managed`, `.venv-repair`.
+
+
+These decisions are final for the implementation. Every service, command, and test must
+follow them; `services/finance_queries.py` documents the operative classification.
+
+## Canonical invariant
+
+```
+unallocated_funds_eur(user_id) =
+      Σ posted external inflows        (income.actual_eur, non-deleted)
+    + Σ financing inflows              (non-deleted loans.principal_eur)
+    − Σ external outflows              (expenses.amount_eur, non-deleted; once each)
+    − Σ allocations                    (net posted savings principal
+                                        + active term principal
+                                        + open holdings cost_eur)
+```
+
+- Soft-deleted rows are excluded explicitly per table. Negative results are displayed
+  verbatim; no `max(balance, 0)` may hide an invalid state. Legacy-user concerns are
+  dropped (app pre-release, no users), but migrations stay additive/idempotent.
+- Money: Decimal-cents internally, quantize to €0.01 at boundaries, equality
+  tolerance €0.01 (never 1e-6/1e-9 on user-facing money).
+
+## Savings interest — daily accrual, monthly payout
+
+- Interest accrues **daily** on each goal's posted balance at `annual_rate/100/365`
+  (ACT/365 fixed; a money event changes the accrual balance starting on its event date).
+- At each completed calendar-month boundary the accrued amount is **posted**: one income
+  row (`income_type="Interest"`, notes marker `savings-interest:<goal>:<YYYY-MM>`) plus
+  one savings credit row, written by an idempotent command (stable per-goal/per-month key
+  + partial unique index). Posting runs inside every money-moving savings/term/purchase
+  command and on savings/dashboard page load; it writes only when a month has completed.
+- Posted interest becomes spendable goal principal. The current month's accrual is
+  display-only valuation and is never spendable, never in the invariant.
+- Posting is invariant-neutral (income +X and allocation +X cancel); total economic value
+  rises by exactly X. Example acceptance numbers (3.65 % = €0.10/day per €1,000):
+  €1,000 held all of January posts €3.10; withdraw €500 on Jan 15 → January posts
+  14×0.10 + 17×0.05 = €2.25, exactly once.
+
+## Term deposits — single payout at the end of the term
+
+- Term interest pays out **exactly once, at settlement** — normally the maturity date.
+  No interim postings; accrued term interest is valuation-only until settlement.
+- The payout amount is **fixed by the product math at term end**: settling a matured term
+  pays `maturity_value(...)` computed to the maturity date, even if settlement happens
+  later. Accrual display caps at `min(maturity_date, today)`.
+- Early closure exists only as the explicit early-withdrawal workflow (never implicit,
+  never a wishlist funding path): `calculate_term_payout(term, as_of, "early")` accrues
+  to the break date at `early_annual_rate` (NULL → normal rate) and returns `is_early`.
+- Opening a term from a goal is zero-sum (goal −X, term +X); settlement to goal books
+  `income += interest` exactly once and `goal += principal + interest`.
+
+## Holdings — cost basis in, sale workflow out
+
+- Open holdings contribute `cost_eur` as allocation (holdings create no expense row;
+  exactly one representation). Deleting an open holding is mistake-correction only.
+- Realized disposal goes through `sell_holding(...)`: proceeds booked as income, realized
+  gain computed automatically, user-entered tax rate booked as a tax expense (gain > 0
+  only), holding marked sold, cost basis released. Unallocated moves by exactly
+  `realized_gain − tax`; losses book no tax and reduce cash honestly.
+
+## Loans — principal/interest split and cash participation
+
+- Loan principal is a financing inflow (+unallocated) paired with the liability in net
+  worth. Payments are expense rows carrying `loan_id` — the single cash outflow
+  representation; the loan table is never subtracted again.
+- Payments record `loan_principal_eur` / `loan_interest_eur` components (schedule-
+  derived) so interest paid over time is reportable; `principal + interest (+ surcharge,
+  per the FIN-01 representation check) == amount_eur` is pinned by test.
+- `paid_off` only when `|remaining balance| ≤ €0.01`, computed canonically from recorded
+  splits (fallback: schedule).
+
+## Market data
+
+- Exchange-rate and stock-ticker refresh intervals are user-configurable settings
+  (NULL = current defaults); fetch paths honor them against existing timestamps.
+
+## Wishlist purchases
+
+- Funding source is explicit (`unallocated | savings_goal`); buying is one atomic
+  command (validate → debit source → one linked expense → bought stamp → revision bump);
+  retries are idempotent via a stable expense reference; refunds are explicit
+  compensating commands that preserve the original expense and audit history.

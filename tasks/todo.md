@@ -5,7 +5,15 @@
 
 ## Financial integrity and integration review (2026-08-21)
 
-- [ ] FIN-00 Restore a runnable Python 3.12 test environment and record the baseline.
+- [x] FIN-00 Restore a runnable Python 3.12 test environment and record the baseline.
+      → `qa/baseline/fin00-baseline.md`: `.venv-fin00` (uv + workspace cache, wheels/TEMP-adjusted),
+      streamlit 1.61.1, 24/24 imports, scoped suite **535 passed / 7 failed / 10 errors**
+      (cross-validated by two independent runs). Classified: 16 deterministic sandbox-temp
+      PermissionErrors (environment), **1 genuine pre-existing bug**:
+      `tests/test_ocr_review.py::test_receipt_review_shows_uncertainty_and_reuses_result`
+      → `StreamlitAPIException: Forms cannot be nested` at `app.py:120` (fix in OCR-02 scope).
+      Bare `pytest` from root still blocked by undeletable foreign-session dirs under
+      `data\_pytest_tmp` (ACL principals from another sandbox product); use `pytest tests`.
 - [ ] FIN-01 Define and test the canonical virtual unallocated-funds invariant.
 - [ ] FIN-02 Persist shared panel collapse/layout state and surface save failures.
 - [ ] FIN-03 Implement accessible recurring-category collapse and reorder.
