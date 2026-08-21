@@ -1,20 +1,26 @@
 """
-ui/board.py — GroupedBoard v2 (Phase 2 U3).
+ui/board.py — GroupedBoard v2 (Phase 2 U3 / FIN-03).
 
 Extracted card board. GroupedBoard does NOT write to DB — it returns a
-BoardResult; the caller interprets cross-group moves (recurring → category)
-or layout changes (dashboard → layout_state). Extracted from the
-utils.draggable_card_board CCv2 component with BoardResult/ItemMove types
-and capability flags.
+BoardResult; the caller interprets cross-group moves (recurring → category),
+layout changes (recurring group order/collapse → layout_state), or
+(dashboard → layout_state). Extracted from the utils.draggable_card_board
+CCv2 component with BoardResult/ItemMove types and capability flags.
 
 Allows the orchestrator's capability matrix:
   Dashboard  → group reorder only
   Wishlist/Recurring → group + item + cross-group
   Savings/Loans/Budgets/Portfolio → per spec collapse/reorder flags
+
+FIN-03: the component now also reports GROUP order and collapsed groups,
+with keyboard-operable native buttons and aria-expanded state on every
+group control. All values returned by the component are validated here
+before the caller persists them.
 """
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +62,45 @@ def _validate_grouped_order(order: dict | None, expected: dict) -> dict | None:
     return {str(k): [str(x) for x in order[k]] for k in expected}
 
 
+def _validate_group_order(seq: Any, known: set[str]) -> list[str] | None:
+    """A valid group order is a permutation of the known group ids."""
+    if not isinstance(seq, (list, tuple)):
+        return None
+    vals = [str(x) for x in seq]
+    if len(vals) != len(set(vals)):
+        return None
+    if set(vals) != set(str(k) for k in known):
+        return None
+    return vals
+
+
+def _validate_collapsed(seq: Any, known: set[str]) -> set[str]:
+    """Collapsed groups must be a subset of the known group ids."""
+    if not isinstance(seq, (list, tuple, set)):
+        return set()
+    return {str(x) for x in seq if str(x) in known}
+
+
+def apply_persisted_group_order(category_order: list[str],
+                                persisted_order: list[str] | None) -> list[str]:
+    """Merge a persisted group order into the current category list.
+
+    Persisted ids that still exist come first (in their stored order);
+    new/unknown categories keep their natural order after them. Duplicates
+    in the persisted value are ignored. Pure helper — used by pages before
+    rendering so the board opens in the saved arrangement.
+    """
+    known = set(category_order)
+    seen: set[str] = set()
+    head: list[str] = []
+    for g in persisted_order or []:
+        g = str(g)
+        if g in known and g not in seen:
+            head.append(g)
+            seen.add(g)
+    return head + [g for g in category_order if g not in seen]
+
+
 _CARD_BOARD = None
 
 
@@ -67,17 +112,24 @@ def grouped_board(
     allow_item_reorder: bool = True,
     allow_cross_group_move: bool = True,
     collapsible: bool = True,
+    initial_collapsed: list[str] | None = None,
+    initial_group_order: list[str] | None = None,
 ) -> BoardResult:
     """Render the draggable card board (CCv2) and return a BoardResult.
 
     - groups: {group_id: [card{id,title,details,amount,actions:[{label,action,type,value,options}]}]}
     - Caps: when a cap is False, any move violating it is rejected (original returned).
-    - Also normalizes collapsed_groups if component reports them; otherwise empty.
+    - initial_collapsed / initial_group_order seed the component with persisted
+      state (FIN-03); the component emits `order`, `group_order`, and
+      `collapsed_groups`, all re-validated here before they reach the caller.
     """
     global _CARD_BOARD
     original: dict[str, list[str]] = {
         str(g): [str(c["id"]) for c in cards] for g, cards in groups.items()
     }
+    known_groups = set(original)
+    seed_order = apply_persisted_group_order(list(original), initial_group_order)
+    seed_collapsed = _validate_collapsed(initial_collapsed, known_groups)
     # Lazy component load so tests that don't render UI can still import this module
     if _CARD_BOARD is None:
         _CARD_BOARD = st.components.v2.component(
@@ -86,11 +138,13 @@ def grouped_board(
             css="""
                 .board{display:grid;gap:1rem}
                 .group{border:1px solid var(--st-border-color);border-radius:.5rem;padding:.75rem;background:var(--st-secondary-background-color)}
-                .group h3{margin:0 0 .5rem;font-size:1rem}
+                .ghead{display:flex;align-items:center;gap:.4rem;margin:0 0 .5rem}
+                .group h3{margin:0;font-size:1rem;flex:1}
                 .drop{min-height:3rem;display:grid;gap:.5rem}
                 .card{display:grid;grid-template-columns:auto 1fr auto;gap:.75rem;align-items:start;padding:.75rem;border:1px solid var(--st-border-color);border-radius:.4rem;background:var(--st-background-color);color:var(--st-text-color)}
                 .card:focus{outline:2px solid var(--st-primary-color)}
                 .handle{cursor:grab;border:0;background:transparent;color:var(--st-text-color);font-size:1.1rem}
+                .gtoggle{border:0;background:transparent;color:var(--st-text-color);font-size:1rem;cursor:pointer;padding:0 .2rem}
                 .meta{color:var(--st-secondary-text-color);font-size:.85rem}
                 .amount{font-weight:600;white-space:nowrap}
                 .actions{grid-column:2 / -1;display:flex;gap:.4rem;flex-wrap:wrap}
@@ -101,29 +155,59 @@ def grouped_board(
 export default function({data,parentElement,setStateValue,setTriggerValue}) {
  const root=parentElement.querySelector('#board'); root.replaceChildren(); root.className='board';
  let drag=null;
- const emit=()=>setStateValue('order',Object.fromEntries([...root.querySelectorAll('.group')].map(g=>[g.dataset.category,[...g.querySelectorAll('.card')].map(c=>c.dataset.id)])));
- const move=(card,delta)=>{const cards=[...card.parentElement.children],i=cards.indexOf(card),to=i+delta;if(to<0||to>=cards.length)return; card.parentElement.insertBefore(card,delta<0?cards[to]:cards[to].nextSibling);emit();card.focus();};
- for(const [category,cards] of Object.entries(data.groups||{})){
-  const group=document.createElement('section');group.className='group';group.dataset.category=category;const title=document.createElement('h3');title.textContent=category;const drop=document.createElement('div');drop.className='drop';group.append(title,drop);
+ const collapsed=new Set(data.collapsed_groups||[]);
+ const emit=()=>{
+  setStateValue('order',Object.fromEntries([...root.querySelectorAll('.group')].map(g=>[g.dataset.category,[...g.querySelectorAll('.card')].map(c=>c.dataset.id)])));
+  setStateValue('group_order',[...root.querySelectorAll('.group')].map(g=>g.dataset.category));
+  setStateValue('collapsed_groups',[...collapsed]);
+ };
+ const moveCard=(card,delta)=>{const cards=[...card.parentElement.children],i=cards.indexOf(card),to=i+delta;if(to<0||to>=cards.length)return;card.parentElement.insertBefore(card,delta<0?cards[to]:cards[to].nextSibling);emit();card.focus();};
+ const moveGroup=(group,delta)=>{const gs=[...root.children],i=gs.indexOf(group),to=i+delta;if(to<0||to>=gs.length)return;root.insertBefore(group,delta<0?gs[to]:gs[to].nextSibling);emit();};
+ const entries=Object.entries(data.groups||{});
+ const savedOrder=Array.isArray(data.group_order)?data.group_order.filter(c=>Object.prototype.hasOwnProperty.call(data.groups||{},c)):[];
+ const seen=new Set(savedOrder);
+ const seq=[...savedOrder,...entries.map(([c])=>c).filter(c=>!seen.has(c))];
+ for(const category of seq){
+  const cards=data.groups[category]||[];
+  const group=document.createElement('section');group.className='group';group.dataset.category=category;
+  const drop=document.createElement('div');drop.className='drop';drop.style.display=collapsed.has(category)?'none':'';
+  const head=document.createElement('div');head.className='ghead';
+  const toggle=document.createElement('button');toggle.type='button';toggle.className='gtoggle';
+  const setToggleState=()=>{toggle.textContent=collapsed.has(category)?'\\u25B6':'\\u25BC';toggle.setAttribute('aria-expanded',collapsed.has(category)?'false':'true');};
+  toggle.setAttribute('aria-label',(collapsed.has(category)?'Expand':'Collapse')+' group '+category);
+  setToggleState();
+  toggle.onclick=()=>{if(collapsed.has(category)){collapsed.delete(category);}else{collapsed.add(category);}setToggleState();drop.style.display=collapsed.has(category)?'none':'';emit();};
+  const title=document.createElement('h3');title.textContent=category;
+  const up=document.createElement('button');up.type='button';up.className='handle';up.textContent='\\u2191';
+  up.title='Move group '+category+' up';up.setAttribute('aria-label','Move group '+category+' up');up.onclick=()=>moveGroup(group,-1);
+  const down=document.createElement('button');down.type='button';down.className='handle';down.textContent='\\u2193';
+  down.title='Move group '+category+' down';down.setAttribute('aria-label','Move group '+category+' down');down.onclick=()=>moveGroup(group,1);
+  head.append(toggle,title,up,down);
   drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();if(drag){drop.append(drag);emit();}};
   for(const dataCard of cards){const card=document.createElement('article');card.className='card';card.dataset.id=dataCard.id;card.tabIndex=0;card.draggable=true;card.ondragstart=()=>drag=card;card.ondragend=()=>drag=null;
-   card.onkeydown=e=>{if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();move(card,e.key==='ArrowUp'?-1:1);}};
-   const handle=document.createElement('button');handle.className='handle';handle.type='button';handle.textContent='\u2195';handle.title='Drag, or Alt+Up / Alt+Down to move';handle.setAttribute('aria-label','Move '+dataCard.title);
+   card.onkeydown=e=>{if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();moveCard(card,e.key==='ArrowUp'?-1:1);}};
+   const handle=document.createElement('button');handle.className='handle';handle.type='button';handle.textContent='\\u2195';handle.title='Drag, or Alt+Up / Alt+Down to move';handle.setAttribute('aria-label','Move '+dataCard.title);
    const body=document.createElement('div');const name=document.createElement('strong');name.textContent=dataCard.title;const meta=document.createElement('div');meta.className='meta';meta.textContent=dataCard.details;body.append(name,meta);
    const amount=document.createElement('div');amount.className='amount';amount.textContent=dataCard.amount;const actions=document.createElement('div');actions.className='actions';
    for(const action of dataCard.actions||[]){if(action.type==='select'){const select=document.createElement('select');select.setAttribute('aria-label',action.label);for(const value of action.options){const option=document.createElement('option');option.value=value;option.textContent=value;option.selected=value===action.value;select.append(option);}select.onchange=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:select.value});actions.append(select);}else{const button=document.createElement('button');button.type='button';button.textContent=action.label;button.onclick=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:action.value||null});actions.append(button);}}
    card.append(handle,body,amount,actions);drop.append(card);
-  } root.append(group);
+  }
+  group.append(head,drop);
+  root.append(group);
  } return ()=>{};
 }""",
         )
 
-    # Component invocation — data slot is groups. We pass it directly and
-    # let the component emit 'order' + 'action' trigger values.
+    # Component invocation — data slot carries groups plus the persisted
+    # group state so the board opens exactly as saved.
     result = _CARD_BOARD(
-        data={"groups": groups},
+        data={"groups": groups,
+              "collapsed_groups": sorted(seed_collapsed),
+              "group_order": seed_order},
         key=key,
-        default={"order": original},
+        default={"order": original,
+                 "collapsed_groups": sorted(seed_collapsed),
+                 "group_order": seed_order},
         on_order_change=lambda: None,
     )
     order_raw = getattr(result, "order", None)
@@ -147,14 +231,19 @@ export default function({data,parentElement,setStateValue,setTriggerValue}) {
                     order = dict(original)
                     break
 
-    # Collapsed groups — component doesn't report yet; keep empty for now.
-    collapsed: set[str] = set()
-    try:
-        cg = getattr(result, "collapsed_groups", None)
-        if isinstance(cg, (list, set, tuple)):
-            collapsed = {str(x) for x in cg}
-    except Exception:
-        pass
+    # Group order (FIN-03): must be a permutation of the known groups,
+    # otherwise fall back to the seeded/original arrangement.
+    group_order = _validate_group_order(getattr(result, "group_order", None),
+                                        known_groups)
+    if group_order is None:
+        group_order = seed_order if allow_group_reorder else list(original)
+
+    # Collapsed groups (FIN-03): subset of known groups; respect the
+    # collapsible cap by reporting the seeded state when collapse is off.
+    collapsed = _validate_collapsed(getattr(result, "collapsed_groups", None),
+                                    known_groups)
+    if not collapsible:
+        collapsed = set(seed_collapsed)
 
     # Moved items: diff original vs returned order
     moved: list[ItemMove] = []
@@ -183,9 +272,8 @@ export default function({data,parentElement,setStateValue,setTriggerValue}) {
     except Exception:
         action = None
 
-    # Back-compat aliases
-    group_order = list(order.keys())
-    item_order = {k: list(v) for k, v in order.items()}
+    # Back-compat alias: item_order keyed in group_order sequence
+    item_order = {k: list(order[k]) for k in group_order if k in order}
 
     return BoardResult(
         group_order=group_order,
@@ -194,6 +282,11 @@ export default function({data,parentElement,setStateValue,setTriggerValue}) {
         moved_items=moved,
         action=action,
     )
+
+
+def component_source_contract() -> str:
+    """Source of the registered component JS (test contract for a11y)."""
+    return inspect.getsource(grouped_board)
 
 
 # Back-compat alias for pages still importing from utils

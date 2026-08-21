@@ -178,13 +178,14 @@ def load_layout(user_id: int) -> dict:
 # ── Write paths (raise LayoutSaveError on failure) ────────────────────────────
 
 def update_layout_area(user_id: int, area: str,
-                       mutate: Callable[[dict], dict]) -> dict:
+                       mutate: Callable[[dict], dict],
+                       known_ids: Iterable[str] | None = None) -> dict:
     """Atomically read-modify-write ONE area namespace inside ui_layout.
 
     mutate receives the current sanitized area dict and returns the new one;
-    the result is sanitized again before persisting. Built on
-    db.atomic_update_setting_json so concurrent page writes serialize instead
-    of clobbering each other's namespaces.
+    the result is sanitized again before persisting (with known_ids filtering
+    when provided). Built on db.atomic_update_setting_json so concurrent page
+    writes serialize instead of clobbering each other's namespaces.
 
     Raises LayoutSaveError (user_id + area attached) on failure.
     """
@@ -195,7 +196,7 @@ def update_layout_area(user_id: int, area: str,
         area_val = layout.get(area)
         base = dict(area_val) if isinstance(area_val, dict) else {}
         new_area = mutate(base)
-        layout[area] = sanitize_area(area, new_area)
+        layout[area] = sanitize_area(area, new_area, known_ids)
         layout["version"] = 1
         return layout
 
@@ -234,7 +235,7 @@ def set_area_ids(user_id: int, area: str, key: str, ids: list[str],
         area_val[key] = list(ids)
         return area_val
 
-    return update_layout_area(user_id, area, _mutate)
+    return update_layout_area(user_id, area, _mutate, known_ids=known_ids)
 
 
 # ── Convenience readers/writers (backward-compatible signatures) ─────────────

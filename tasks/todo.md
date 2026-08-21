@@ -25,7 +25,11 @@
       it couples to interest posting and would force touching summary/page KPI code
       before its numbers become load-bearing. The invariant never reads balance_eur
       (it sums deposited_eur), so clamps were the only FIN-01-relevant part.
-- [ ] FIN-02 Persist shared panel collapse/layout state and surface save failures.
+- [x] FIN-02 Persist shared panel collapse/layout state and surface save failures.
+      → RMW per area via atomic_update_setting_json; sanitize_area with known-id
+      filtering; load never raises (warn+default), writes raise LayoutSaveError;
+      panel chevrons get accessible labels; failures log + non-fatal st.warning.
+      8 new tests; suite 555/7/10 = baseline +8, identical failure set. (`7dd5e0a`)
 - [ ] FIN-03 Implement accessible recurring-category collapse and reorder.
 - [ ] FIN-04 Make savings and term-account movements zero-sum and atomic.
 - [ ] FIN-05 Model early-withdrawal policy and nest term accounts under goals.

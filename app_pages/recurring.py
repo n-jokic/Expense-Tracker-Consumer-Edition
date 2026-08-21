@@ -247,6 +247,21 @@ else:
     categories = {str(category) for category in active["category"].dropna()}
     category_order = [category for category in CAT_LIST if category in categories]
     category_order += sorted(categories - set(category_order))
+    # FIN-03: open the board in the persisted arrangement — group order and
+    # collapsed groups live in the "recurring" layout namespace (FIN-02).
+    from ui.layout_state import load_layout, set_area_ids, LayoutSaveError
+    try:
+        from ui.panel import warn_layout_unsaved
+    except Exception:  # pragma: no cover - panel import guard parity
+        def warn_layout_unsaved(exc):
+            st.warning("Layout change could not be saved — it will reset on reload.")
+    _layout = load_layout(user_id)
+    _rec_area = _layout.get("recurring") if isinstance(_layout.get("recurring"), dict) else {}
+    from ui.board import apply_persisted_group_order
+    category_order = apply_persisted_group_order(
+        category_order, list(_rec_area.get("group_order", [])))
+    collapsed_init = [g for g in (_rec_area.get("collapsed_groups") or [])
+                      if g in categories]
     # One source of truth for "logged this month": the same helper the email/
     # sidebar reminders use, including the legacy description+amount fallback.
     from notifications import _unlogged_templates
@@ -277,7 +292,8 @@ else:
                     {"label": "Edit", "action": "edit"}, {"label": "Remove", "action": "remove"}]})
         groups[category] = cards
     rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
-    st.caption("Drag complete cards between categories. Use Alt+Up / Alt+Down to move by keyboard.")
+    st.caption("Drag complete cards between categories · Alt+Up / Alt+Down moves a card by keyboard · "
+               "▲ / ▼ buttons reorder and collapse categories (all keyboard-accessible).")
     # Phase 2 U3: grouped_board is canonical; utils.draggable_card_board is compat alias.
     try:
         from ui.board import grouped_board
@@ -285,8 +301,26 @@ else:
             f"recurring_order_{user_id}", groups,
             allow_group_reorder=True, allow_item_reorder=True,
             allow_cross_group_move=True, collapsible=True,
+            initial_collapsed=collapsed_init,
+            initial_group_order=category_order,
         )
         ordered, action = _br.item_order, _br.action
+        # FIN-03: persist the group arrangement (values already validated by
+        # the board: group order is a permutation, collapse set a subset).
+        if _br.group_order and _br.group_order != category_order:
+            try:
+                set_area_ids(user_id, "recurring", "group_order",
+                             _br.group_order, known_ids=categories)
+                category_order = list(_br.group_order)
+            except LayoutSaveError as exc:
+                warn_layout_unsaved(exc)
+        if _br.collapsed_groups != set(collapsed_init):
+            try:
+                set_area_ids(user_id, "recurring", "collapsed_groups",
+                             sorted(_br.collapsed_groups), known_ids=categories)
+                collapsed_init = sorted(_br.collapsed_groups)
+            except LayoutSaveError as exc:
+                warn_layout_unsaved(exc)
     except Exception:
         ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
     if not action:
