@@ -27,7 +27,7 @@ from services.commands import (
 from insights import savings_projection
 from utils import (
     SAVINGS_GOALS, SUPPORTED_CURRENCIES, MAX_AMOUNT, MAX_SAVINGS_TARGET, CHART_COLORS,
-    fmt, to_display, to_eur, get_currency_symbol,
+    fmt, to_display, to_eur, get_currency_symbol, progress_ratio,
     help_expander, to_excel,
 )
 from ui.panel import PanelSpec, panel
@@ -702,7 +702,9 @@ if not dfs.empty:
                    if a["maturity_date"].date() < today else today)
             g_locked += accrued_value(float(a["amount_eur"]), float(a["annual_rate"]),
                                       a["start_date"].date(), end)
-        pct = min((bal + g_locked) / tgtv * 100, 100) if tgtv > 0 else 0
+        _net_goal = bal + g_locked
+        ratio = progress_ratio(_net_goal, tgtv)
+        pct = ratio * 100
         avg_dep = float(rows["deposited_eur"].tail(3).mean()) if not rows.empty else 0.0
 
         spec = PanelSpec(id=f"sav_goal_{g}", title=g,
@@ -713,7 +715,10 @@ if not dfs.empty:
                 h1, h2 = st.columns([4, 1])
                 with h1:
                     st.markdown(f"**{g}**")
-                    st.progress(pct / 100, text=f"{pct:.0f}% of target" if tgtv > 0 else "No target set")
+                    prog_text = f"{pct:.0f}% of target" if tgtv > 0 else "No target set"
+                    if _net_goal < 0:
+                        prog_text += " · overdrawn — balance below zero"
+                    st.progress(ratio, text=prog_text)
                     proj = savings_projection(dfs, g)
                     proj_str = ""
                     if proj["months_to_goal"] and proj["months_to_goal"] > 0 and proj["projected_date"]:

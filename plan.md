@@ -27,7 +27,7 @@
 - `app_pages/log_expense.py`: hoist receipt-review widgets (currency `r_cur`, category `r_cat`, other `rcpt_*` inputs, :218-228) **above** the item-review block (:131-216). Keep identical keys/session state.
 - Acceptance: OCR on test image completes with zero exceptions; kept rows convert with selected currency.
 
-### [ ] A2. Progress-bar crash + clamp sweep (item 6)
+### [x] A2. Progress-bar crash + clamp sweep (item 6)
 - Add `utils.progress_ratio(value, target) -> float` clamped [0.0, 1.0] (None/≤0 target → 0.0).
 - Replace unclamped sites: `savings.py:705/716`; `dashboard.py:397/399`, `:420/425`; `forecast.py:159-161`; `travel.py:84/94`; `budgets.py:63/66`, `:171/174`; `rewards.py:66/70`.
 - Clamped-from-negative shows hint text (e.g. "overdrawn"); write-side negative producers stay as-is (intentional no-clamp ledger policy, `db.py:1499-1500`).
@@ -116,3 +116,4 @@ Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence rewor
 ## Progress log
 - [x] Plan stored (this file).
 - [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
+- [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.

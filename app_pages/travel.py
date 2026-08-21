@@ -14,7 +14,7 @@ import streamlit as st
 import queries as q
 from utils import (
     CATEGORIES, CAT_LIST, ALL_SUBCATS, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
-    travel_spent, fmt, get_currency_symbol,
+    travel_spent, fmt, get_currency_symbol, progress_ratio,
     help_expander,
 )
 
@@ -91,7 +91,7 @@ with st.container(horizontal=True):
 if budget > 0:
     st.markdown(f"**{budget_pct:.0f}%** of the travel budget used — "
                 f"**{year_pct:.0f}%** of the year has passed.")
-    st.progress(min(budget_pct, 100) / 100, text=f"{budget_pct:.0f}% used")
+    st.progress(progress_ratio(budget_pct, 100), text=f"{budget_pct:.0f}% used")
 
     if spent > budget:
         st.error(f"✈️ Travel budget exceeded by {fmt(spent - budget, DC, rates)} this year.")

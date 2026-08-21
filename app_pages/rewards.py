@@ -17,7 +17,7 @@ from gamification import (MILESTONES, get_earned_milestones,
                           get_logging_streak, _next_milestone_hint,
                           CUSTOM_METRIC_LABELS, custom_metric_value)
 from utils import (CAT_LIST, DEFAULT_FUN_CATEGORIES,
-                   fmt, to_eur, to_display, fun_spent)
+                   fmt, to_eur, to_display, fun_spent, progress_ratio)
 
 user_id  = st.session_state.user_id
 DC       = st.session_state.dc
@@ -63,7 +63,7 @@ if not math.isfinite(bonus):
     bonus = 0.0
 allowance = fun_allowance + bonus
 if allowance > 0:
-    pct = min(fun_month / allowance, 1.0)
+    pct = progress_ratio(fun_month, allowance)
     st.markdown(f"**{fmt(fun_month, DC, rates)}** of {fmt(allowance, DC, rates)} "
                 f"({pct * 100:.0f}%) spent this month"
                 + (f" · incl. +{fmt(bonus, DC, rates)} milestone bonus" if bonus > 0 else ""))

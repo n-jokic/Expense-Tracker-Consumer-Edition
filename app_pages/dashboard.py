@@ -16,7 +16,7 @@ from db import add_expense
 from utils import (
     NEAR_LIMIT_THRESHOLD, SAVINGS_TARGET_PCT, SAVINGS_GOAL_PCT, CHART_COLORS,
     fmt, fmt_row, to_display, get_currency_symbol, effective_category_budgets,
-    filter_started_templates,
+    filter_started_templates, progress_ratio,
 )
 from ui.panel import PanelSpec, panel
 
@@ -394,7 +394,7 @@ if personal_view and sm > 0 and not dfb.empty and not exp.empty:
             if b <= 0:
                 continue
             a = float(ca3.get(c, 0))
-            pct = min(a / b, 1.0)
+            pct = progress_ratio(a, b)
             st.markdown(f"**{c}** — {fmt(a, DC, rates)} of {fmt(b, DC, rates)} ({pct*100:.0f}%)")
             st.progress(pct)
 
@@ -417,7 +417,7 @@ if personal_view and fun_allowance > 0:
     if not math.isfinite(bonus):
         bonus = 0.0
     allowance = fun_allowance + bonus
-    fpct = min(fun_month / allowance, 1.0) if allowance > 0 else 0.0
+    fpct = progress_ratio(fun_month, allowance)
     st.subheader("Fun money")
     bonus_str = f" · incl. +€{bonus:.0f} milestone bonus" if bonus > 0 else ""
     st.markdown(f"**{fmt(fun_month, DC, rates)}** of {fmt(allowance, DC, rates)} "

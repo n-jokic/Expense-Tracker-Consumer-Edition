@@ -13,6 +13,7 @@ import queries as q
 from forecasting import forecast_next_month
 from utils import (
     compute_salary_cycle, fmt, safe_warning, get_currency_symbol, to_display,
+    progress_ratio,
 )
 
 user_id = st.session_state.user_id
@@ -156,10 +157,10 @@ else:
              icon=":material/error:")
 
 if total_budget > 0:
-    pct_spent = min(total_spent / total_budget * 100, 100)
+    ratio_spent = progress_ratio(total_spent, total_budget)
     st.progress(
-        pct_spent / 100,
-        text=f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({pct_spent:.1f}%)",
+        ratio_spent,
+        text=f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({ratio_spent * 100:.1f}%)",
     )
 
 # Per-category ML forecast table

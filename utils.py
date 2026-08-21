@@ -237,6 +237,23 @@ def to_excel(df) -> bytes:
     safe.to_excel(buf, index=False, engine="openpyxl")
     return buf.getvalue()
 
+def progress_ratio(value, target) -> float:
+    """value/target clamped to [0.0, 1.0] — safe for st.progress.
+
+    st.progress rejects values outside [0.0, 1.0]; overdrawn/negative
+    balances (intentionally unclamped in the ledger) must render as 0.
+    Returns 0.0 when the target is missing or not positive.
+    """
+    try:
+        v = float(value)
+        t = float(target)
+    except (TypeError, ValueError):
+        return 0.0
+    if t <= 0:
+        return 0.0
+    return min(max(v / t, 0.0), 1.0)
+
+
 def safe_error(msg: str):
     st.error(msg, icon=":material/error:")
 

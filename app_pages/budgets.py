@@ -16,7 +16,7 @@ from db import add_budget, delete_budget
 from ui.panel import PanelSpec, panel
 from utils import (CATEGORIES, CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
                    fmt, to_eur, to_display, get_currency_symbol,
-                   effective_category_budgets)
+                   effective_category_budgets, progress_ratio)
 
 user_id  = st.session_state.user_id
 DC       = st.session_state.dc
@@ -60,7 +60,7 @@ if expanded:
                               & (dfe["date"].dt.month == _today.month)]["amount_eur"].sum()) \
             if not dfe.empty else 0.0
         if cur_eur > 0:
-            pct = min(spent_eur / cur_eur, 1.0)
+            pct = progress_ratio(spent_eur, cur_eur)
             st.markdown(f"**{fmt(spent_eur, DC, rates)}** of {fmt(cur_eur, DC, rates)} "
                         f"({pct * 100:.0f}%) — {fmt(max(cur_eur - spent_eur, 0.0), DC, rates)} left this month")
             st.progress(pct)
@@ -168,7 +168,7 @@ if not dfb.empty:
                                       ["amount_eur"].sum()) if not exp.empty else 0.0
                         lbl = f"{r['category']} › {r['subcategory']}"
                     if b > 0:
-                        pct = min(spent / b, 1.0)
+                        pct = progress_ratio(spent, b)
                         st.markdown(f"**{lbl}** — {fmt(spent, DC, rates)} of "
                                     f"{fmt(b, DC, rates)} ({pct * 100:.0f}%)")
                         st.progress(pct)
