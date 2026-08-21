@@ -11,13 +11,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import logging
+
 import streamlit as st
 
 try:
-    from ui.layout_state import is_collapsed as _is_collapsed, toggle_collapsed as _toggle
+    from ui.layout_state import (
+        is_collapsed as _is_collapsed,
+        toggle_collapsed as _toggle,
+        LayoutSaveError as _LayoutSaveError,
+    )
 except Exception:  # pragma: no cover - import guard
     _is_collapsed = None  # type: ignore
     _toggle = None  # type: ignore
+    _LayoutSaveError = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+# Shown (non-fatally) when a collapse/order change cannot be persisted.
+LAYOUT_UNSAVED_MESSAGE = (
+    "Layout change could not be saved — it will reset on reload.")
+
+
+def warn_layout_unsaved(exc: Exception) -> None:
+    """Log a failed layout write and surface it as a small warning.
+
+    Never interrupts the page: persistence failures are transient UX noise,
+    not errors worth breaking the render for.
+    """
+    logger.warning("Panel layout change could not be saved: %s", exc)
+    try:
+        st.warning(LAYOUT_UNSAVED_MESSAGE)
+    except Exception:  # pragma: no cover - headless/test contexts
+        pass
 
 from ui.layout_state import DEFAULT_LAYOUT  # for type reference
 
@@ -88,12 +114,19 @@ def panel(
                         cb()
             if spec.collapsible:
                 chevron = "▼" if expanded else "▶"
-                if st.button(chevron, key=f"panel_toggle_{spec.id}", help="Collapse/expand"):
+                # Icon-only control: the accessible meaning lives in help=
+                # ("Collapse {title}" / "Expand {title}"), not a bare chevron.
+                toggle_help = (f"Collapse {spec.title}" if expanded
+                               else f"Expand {spec.title}")
+                if st.button(chevron, key=f"panel_toggle_{spec.id}", help=toggle_help):
                     if user_id is not None and _toggle is not None:
                         try:
                             _toggle(user_id, spec.id, area=area)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            if _LayoutSaveError is not None and isinstance(exc, _LayoutSaveError):
+                                warn_layout_unsaved(exc)
+                            else:
+                                raise
                     st.rerun()
 
         if not expanded:
