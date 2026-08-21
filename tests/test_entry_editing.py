@@ -216,33 +216,21 @@ def test_bulk_update_expenses_no_poisoning_in_sum(test_user):
     assert math.isfinite(total_amount)
 
 
-# ── log_expense.py batch-editor guard (_valid_amount) ─────────────────────────
+# ── Batch-editor amount guard (canonical: domain.validation.is_valid_amount) ──
+#
+# The guard used to live on the page and was tested by importing
+# app_pages/log_expense.py in bare mode. A bare page import executes the
+# whole Streamlit script WITHOUT a ScriptRunContext; its top-level
+# st.form("exp_form") then leaks an open form context that made the NEXT
+# AppTest run fail with "Forms cannot be nested" (the recorded order-
+# dependent ocr_review flake). The logic now lives in domain/validation.py,
+# which is Streamlit-free, so these tests import it directly.
 
 
 @pytest.fixture()
-def log_expense_module():
-    """Import log_expense.py with a mocked Streamlit session state so the
-    module-level st.session_state accesses don't blow up. Yields the module
-    object so tests can call _valid_amount directly.
-    """
-    import streamlit as st
-    # Pre-seed the session_state keys that log_expense.py reads at import time.
-    for key, val in [
-        ("user_id", 1),
-        ("dc", "EUR"),
-        ("rates", {"EUR": 1.0}),
-    ]:
-        if key not in st.session_state:
-            st.session_state[key] = val
-    # The Streamlit page lives at app_pages/log_expense.py relative to repo root.
-    page_dir = os.path.join(os.path.dirname(__file__), "..", "app_pages")
-    sys.path.insert(0, os.path.abspath(page_dir))
-    # Remove any cached copy so we get a fresh import with our mocked state.
-    if "log_expense" in sys.modules:
-        del sys.modules["log_expense"]
-    module = importlib.import_module("log_expense")
-    yield module
-    sys.path.pop(0)
+def valid_amount():
+    from domain.validation import is_valid_amount
+    return is_valid_amount
 
 
 @pytest.mark.parametrize("bad_amount", [
@@ -253,11 +241,11 @@ def log_expense_module():
     0.0,              # zero — not positive
     -5.0,             # negative
 ])
-def test_valid_amount_guard_rejects_bad(log_expense_module, bad_amount):
-    assert log_expense_module._valid_amount(bad_amount) is False
+def test_valid_amount_guard_rejects_bad(valid_amount, bad_amount):
+    assert valid_amount(bad_amount) is False
 
 
-def test_valid_amount_guard_accepts_good(log_expense_module):
-    assert log_expense_module._valid_amount(0.01) is True
-    assert log_expense_module._valid_amount(MAX_AMOUNT) is True
-    assert log_expense_module._valid_amount(42.5) is True
+def test_valid_amount_guard_accepts_good(valid_amount):
+    assert valid_amount(0.01) is True
+    assert valid_amount(MAX_AMOUNT) is True
+    assert valid_amount(42.5) is True

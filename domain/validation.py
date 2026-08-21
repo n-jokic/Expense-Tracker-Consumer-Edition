@@ -79,3 +79,18 @@ def normalize_currency(currency: str | None) -> str:
 def normalize_amount(amount, field: str = "amount") -> float:
     """Alias for validate_amount with the common call-site name."""
     return validate_amount(amount, field=field)
+
+
+def is_valid_amount(value) -> bool:
+    """Predicate form of validate_amount for data-editor row filtering.
+
+    Accepts only finite floats strictly greater than 0 and within the money
+    cap (MAX_AMOUNT); everything else (None, strings, inf/NaN, zero,
+    negatives, oversize) returns False so callers can surface per-row
+    messaging instead of poisoning SQLite REAL columns and downstream sums.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(f) and f > 0 and f <= MAX_AMOUNT

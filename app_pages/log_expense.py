@@ -19,6 +19,7 @@ from utils import (
     fmt_row, fmt_dual, to_eur, get_currency_symbol,
     safe_error, help_expander, to_excel,
 )
+from domain.validation import is_valid_amount
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -382,18 +383,13 @@ if saved:
 def _valid_amount(value) -> bool:
     """Reject non-finite / out-of-range amounts for the batch editor.
 
-    Guards the shared expense ledger against inf/NaN poisoning sourced through
-    the data_editor Amount cell: accepts only finite floats strictly greater than
-    0 and within the money cap (utils.MAX_AMOUNT). Mirrors the service-layer
-    guard in services.commands._is_valid_expense_numeric so the UI surfaces bad
-    rows with the existing per-row messaging before they ever reach SQLite.
+    Thin alias for the canonical domain guard (see domain.validation
+    .is_valid_amount): accepts only finite floats > 0 and <= MAX_AMOUNT so
+    bad data-editor rows are surfaced with per-row messaging before they ever
+    reach SQLite. Kept as an import alias rather than a local copy so tests
+    can exercise the logic without executing this page in bare mode.
     """
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        # str/"nan"/None inputs that can't be a finite positive amount
-        return False
-    return math.isfinite(f) and f > 0 and f <= MAX_AMOUNT
+    return is_valid_amount(value)
 
 
 # ── Expense history ───────────────────────────────────────────────────────────
