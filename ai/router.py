@@ -20,6 +20,7 @@ MAX_RESULT_ROWS = 100
 # Each pattern maps to a canonical tool; orchestrator infers args from question
 # and current date without invoking the LLM.
 DETERMINISTIC_PATTERNS: list[tuple[str, str]] = [
+    (r"improve.*financ|financial.*improve|doing financially|help.*financ", "__coach__"),
     (r"can i afford|afford.*(?:€|eur|euro)|purchase", "purchase_scenario"),
     (r"compare|higher.*than|more expensive|spending.*vs|vs.*spending", "compare_periods"),
     (r"top.*merchant|merchant.*breakdown|where.*shop", "merchant_breakdown"),

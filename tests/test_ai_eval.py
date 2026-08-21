@@ -93,13 +93,14 @@ def test_fast_route_handles_common_breakdown_and_comparison_questions():
     assert router.fast_route("What were my top merchants this month?") == "merchant_breakdown"
     assert router.fast_route("How does this month compare to last month?") == "compare_periods"
     assert router.fast_route("What did I spend at Lidl this month?") == "search_transactions"
+    assert router.fast_route("How can I improve my finances?") == "__coach__"
 
 
 def test_purchase_scenario_route_extracts_amount():
     assert router.fast_route("Can I afford a €1,500 laptop in October?") == "purchase_scenario"
     assert router.infer_deterministic_args(
         "purchase_scenario", "Can I afford a €1,500 laptop in October?", __import__("datetime").date(2026, 8, 21)
-    ) == {"purchase_eur": 1500.0, "year": 2026, "month": 8}
+    ) == {"purchase_eur": 1500.0, "year": 2026, "month": 10}
 
 
 def test_parse_local_tool_json_valid():

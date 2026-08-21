@@ -230,6 +230,23 @@ def orchestrate(
         try:
             from ai.tool_registry import TOOLS
 
+            if fast == "__coach__":
+                # Deterministic signals; the model only explains these results.
+                coach_tools = [
+                    ("cashflow_summary", infer_deterministic_args("cashflow_summary", q, today)),
+                    ("budget_status", infer_deterministic_args("budget_status", q, today)),
+                    ("recurring_costs", {}),
+                    ("savings_status", {}),
+                ]
+                for tool, args in coach_tools:
+                    result, exec_err = _execute_tool(tool, args, user_id)
+                    tool_calls.append(AdvisorToolCall(tool=tool, arguments=args,
+                                                      result=result or {}, error=exec_err))
+                answer, diag = _compose_answer(q, tool_calls, settings)
+                return {"answer": answer, "tool_calls": [tc.__dict__ for tc in tool_calls],
+                        "error": None if answer else "The advisor could not compose a financial-health summary.",
+                        "diagnostic": diag}
+
             if fast in TOOLS:
                 args = infer_deterministic_args(fast, q, today)
                 # Validate before execution
