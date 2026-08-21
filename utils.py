@@ -42,10 +42,15 @@ from domain.periods import (
 )
 # ── ui/formatting ──────────────────────────────────────────────────────────
 from ui.formatting import _fmt_number, fmt, fmt_row, fmt_dual  # noqa: F401
-# ── ui/board + styles (legacy lives in utils.py until extracted boards land)
+# ── ui/board + styles (canonical) + compat re-export
 import ui.styles as _ui_styles  # ensure module loads without circular import
+import ui.board as _ui_board
 CHART_COLORS = _ui_styles.CHART_COLORS
 QUADRANT_COLORS = _ui_styles.QUADRANT_COLORS
+# Expose board types on utils for old imports: utils.ItemMove etc. remain resolvable
+ItemMove = _ui_board.ItemMove
+BoardResult = _ui_board.BoardResult
+BoardAction = _ui_board.BoardAction
 # Re-export effectful UI helpers from the real utils implementation via
 # dynamic import so that stylistic functions still resolve to their callers.
 # Keep the heavy board/export/network helpers here for now (no circular deps):

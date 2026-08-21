@@ -48,15 +48,15 @@ refresh, OCR review. Not "every 5 lines".
 
 | Step | File(s) | Owner | Status |
 |---|---|---|---|
-| U1 Panel | `ui/panel.py` | — | ☐ planned |
-| U2 layout_state | `ui/layout_state.py` | — | ☐ planned |
-| U3 GroupedBoard v2 | `ui/board.py` | — | ☐ planned |
-| U4 semantics matrix | (docs + component props) | — | ☐ planned |
-| Migration 1 | `app_pages/recurring.py` | — | ☐ planned |
-| Migration 2 | `app_pages/big_purchases.py` | — | ☐ planned |
-| Migration 3 | `app_pages/dashboard.py` | — | ☐ planned |
-| Migration 4 | `app_pages/savings.py` | — | ☐ planned |
-| Migration 5 | `app_pages/loans.py` | — | ☐ planned |
-| Migration 6 | `app_pages/budgets.py` | — | ☐ planned |
-| Migration 7 | `app_pages/portfolio.py` | — | ☐ planned |
-| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☐ planned |
+| U1 Panel | `ui/panel.py` | — | ☑ done (PanelSpec + header/collapse/actions/drag slot, no DB writes) |
+| U2 layout_state | `ui/layout_state.py` | — | ☑ done (JSON in user_settings `ui_layout`, normalize + load/save/toggle) |
+| U3 GroupedBoard v2 | `ui/board.py` | — | ☑ done (grouped_board w/ BoardResult+moved_items+action, caps enforced, utils compat) |
+| U4 semantics matrix | (docs + component props) | — | ☑ enforced via grouped_board allow_* flags |
+| Migration 1 | `app_pages/recurring.py` | — | ☑ done (grouped_board w/ allow_cross_group_move) |
+| Migration 2 | `app_pages/big_purchases.py` | — | ☑ done (grouped_board w/ allow_cross_group_move) |
+| Migration 3 | `app_pages/dashboard.py` | — | ☐ deferred |
+| Migration 4 | `app_pages/savings.py` | — | ☐ deferred |
+| Migration 5 | `app_pages/loans.py` | — | ☐ deferred |
+| Migration 6 | `app_pages/budgets.py` | — | ☐ deferred |
+| Migration 7 | `app_pages/portfolio.py` | — | ☐ deferred |
+| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☐ deferred (R1 already fragments AI settings) |

@@ -278,7 +278,17 @@ else:
         groups[category] = cards
     rows_by_id = {str(row["id"]): row for _, row in active.iterrows()}
     st.caption("Drag complete cards between categories. Use Alt+Up / Alt+Down to move by keyboard.")
-    ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
+    # Phase 2 U3: grouped_board is canonical; utils.draggable_card_board is compat alias.
+    try:
+        from ui.board import grouped_board
+        _br = grouped_board(
+            f"recurring_order_{user_id}", groups,
+            allow_group_reorder=True, allow_item_reorder=True,
+            allow_cross_group_move=True, collapsible=True,
+        )
+        ordered, action = _br.item_order, _br.action
+    except Exception:
+        ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
     _persist_grouped_order(ordered, active)
     if action:
         row = rows_by_id[action["id"]]

@@ -380,7 +380,16 @@ if not active.empty:
                     {"label": "Edit", "action": "edit"}, {"label": "Delete", "action": "delete"}]})
         groups[category] = cards
     st.caption("Drag complete cards between categories. Use Alt+Up / Alt+Down to move by keyboard.")
-    ordered, action = draggable_card_board(groups, f"big_purchase_order_{user_id}")
+    try:
+        from ui.board import grouped_board
+        _br = grouped_board(
+            f"big_purchase_order_{user_id}", groups,
+            allow_group_reorder=True, allow_item_reorder=True,
+            allow_cross_group_move=True, collapsible=True,
+        )
+        ordered, action = _br.item_order, _br.action
+    except Exception:
+        ordered, action = draggable_card_board(groups, f"big_purchase_order_{user_id}")
     _persist_grouped_order(ordered, active)
     if action:
         row = rows_by_id[action["id"]]
