@@ -163,14 +163,38 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
     mixing '1.200' (thousands) with '1.50' (decimal) parses correctly.
     EU fallback is kept but applied per-value, never column-wide."""
     def _pure_dot_thousands(v):
-        """True when the token is digits split ONLY into 3-digit dot groups
-        (Serbian thousands), e.g. '1.234' or '12.345.678'."""
+        """True when the token is an optional sign followed by digits split ONLY
+        into 3-digit dot groups (Serbian thousands), e.g. '1.234',
+        '12.345.678' or '-1.234'."""
         if not isinstance(v, str):
             return False
         t = v.strip()
         if not t or "," in t or "." not in t:
             return False
+        # Strip an optional leading sign so the digit-group check is not
+        # fooled by '-1' (which .isdigit() rejects) on a signed token.
+        sign = ""
+        if t[0] in "+-":
+            sign = t[0]
+            t = t[1:]
         groups = t.split(".")
+        return (len(groups) >= 2
+                and all(len(g) == 3 for g in groups[1:])
+                and groups[0].isdigit())
+
+    def _pure_comma_thousands(v):
+        """True when the token is an optional sign followed by digits split ONLY
+        into 3-digit comma groups (e.g. '1,234', '-1,234', '12,345,678')."""
+        if not isinstance(v, str):
+            return False
+        t = v.strip()
+        if not t or "." in t or "," not in t:
+            return False
+        sign = ""
+        if t[0] in "+-":
+            sign = t[0]
+            t = t[1:]
+        groups = t.split(",")
         return (len(groups) >= 2
                 and all(len(g) == 3 for g in groups[1:])
                 and groups[0].isdigit())
@@ -181,9 +205,19 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
         s = v.strip()
         if not s:
             return v
-        # Per-value Serbian thousands: pure dot-thousands -> strip dots
+        # Pull off an optional leading sign so the thousands/decimal heuristics
+        # see only the numeric body, then re-apply the sign afterwards.
+        sign = ""
+        if s[0] in "+-":
+            sign = s[0]
+            s = s[1:].strip()
+        # Per-value Serbian dot-thousands: pure dot-thousands -> strip dots
         if _pure_dot_thousands(s):
-            return s.replace(".", "")
+            return sign + s.replace(".", "")
+        # Comma thousands ('1,234' / '-1,234'): single comma + 3-digit group
+        # -> thousands separator; genuine decimals ('1,5') stay decimal.
+        if _pure_comma_thousands(s):
+            return sign + s.replace(",", "")
         if "," in s and "." in s:
             if s.rfind(",") > s.rfind("."):   # EU: dots are thousands
                 s = s.replace(".", "").replace(",", ".")
@@ -191,7 +225,7 @@ def _to_numeric_locale(series: pd.Series) -> pd.Series:
                 s = s.replace(",", "")
         elif "," in s:
             s = s.replace(",", ".")
-        return s
+        return sign + s
 
     # Per-value conversion (no column-wide all-or-nothing heuristic).
     alt = pd.to_numeric(series.map(conv), errors="coerce")
@@ -261,8 +295,12 @@ def normalize_bank_csv(df: pd.DataFrame, bank_format: str) -> pd.DataFrame:
             desc_col = next((c for c in df.columns
                              if any(x in c.lower() for x in ["desc","payee","merchant","name","detail"])),
                             df.columns[1] if df.shape[1] > 1 else None)
-            amt_col  = next((c for c in df.columns if "amount" in c.lower()),
-                            df.columns[-1] if df.shape[1] else None)
+            amt_col  = next((c for c in df.columns
+                              if any(a in c.lower() for a in ("amount", "value", "debit",
+                                                               "credit", "sum", "total",
+                                                               "bedrag", "betrag",
+                                                               "iznos", "kwota", "montant"))),
+                             df.columns[-1] if df.shape[1] else None)
             cur_col  = next((c for c in df.columns if "currency" in c.lower()), None)
             out["date"]        = _parse_date_series(df[date_col]) if date_col else pd.Series(dtype=object)
             out["description"] = df[desc_col].fillna("").astype(str) if desc_col else pd.Series(dtype=object)
@@ -344,7 +382,13 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
             # both unknown — still allow legacy cat with known sub, else skip
             if "Food & Dining" not in cat and "Housing" != cat and "Personal" != cat:
                 return "skipped"
-    if not str(row.get("description") or "").strip():
+    desc_raw = row.get("description")
+    if desc_raw is None or (isinstance(desc_raw, float) and pd.isna(desc_raw)):
+        desc = ""
+    else:
+        sv = str(desc_raw)
+        desc = "" if sv.strip().lower() == "nan" else sv
+    if not desc.strip():
         return "skipped"
     d = (row["date"].date() if hasattr(row["date"], "date")
          else pd.Timestamp(row["date"]).date())

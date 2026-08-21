@@ -289,7 +289,8 @@ else:
         ordered, action = _br.item_order, _br.action
     except Exception:
         ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
-    _persist_grouped_order(ordered, active)
+    if not action:
+        _persist_grouped_order(ordered, active)
     if action:
         row = rows_by_id[action["id"]]
         if action["action"] == "log":

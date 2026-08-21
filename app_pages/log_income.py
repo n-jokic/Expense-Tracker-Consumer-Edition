@@ -216,30 +216,30 @@ def edit_income_dialog(uid: int, row):
     st.caption("Editing an income entry updates only this entry — no other history changes.")
 
     e_date   = st.date_input("Date", value=row["date"].date() if pd.notna(row["date"]) else today,
-                             key="inc_edit_date")
+                             key=f"inc_edit_date_{row['id']}")
     e_source = st.selectbox("Source", INCOME_SOURCES,
                             index=INCOME_SOURCES.index(str(row["source"]))
                             if str(row["source"]) in INCOME_SOURCES else 0,
-                            key="inc_edit_source")
+                            key=f"inc_edit_source_{row['id']}")
     e_type   = st.selectbox("Income type", INCOME_TYPES,
                             index=INCOME_TYPES.index(str(row["income_type"]))
                             if str(row["income_type"]) in INCOME_TYPES else 0,
-                            key="inc_edit_type")
+                            key=f"inc_edit_type_{row['id']}")
     e_cur    = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
                             index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
                             if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
-                            key="inc_edit_cur")
+                            key=f"inc_edit_cur_{row['id']}")
     esym     = get_currency_symbol(e_cur)
     e_actual = st.number_input(f"Actual amount ({esym})", min_value=0.01,
                                max_value=MAX_AMOUNT, step=10.0, format="%.2f",
                                value=0.01 if pd.isna(row["actual"]) else max(float(row["actual"]), 0.01),
-                               key="inc_edit_actual")
+                               key=f"inc_edit_actual_{row['id']}")
     e_budgeted = st.number_input(f"Budgeted amount ({esym}) — optional", min_value=0.0,
                                  max_value=MAX_AMOUNT, step=10.0, format="%.2f",
                                  value=float(row["budgeted"]) if pd.notna(row["budgeted"]) else 0.0,
-                                 key="inc_edit_budgeted")
+                                 key=f"inc_edit_budgeted_{row['id']}")
     e_notes  = st.text_input("Notes", value=str(row["notes"]) if pd.notna(row["notes"]) else "",
-                             key="inc_edit_notes")
+                             key=f"inc_edit_notes_{row['id']}")
 
     c1, c2 = st.columns(2)
     with c1:

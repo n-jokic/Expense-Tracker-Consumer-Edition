@@ -46,5 +46,6 @@ models/*.gguf
 *.bak
 # ── QA ephemeral repro artifacts ─────────────────────────────────────────────
 qa/_tmp/
+qa/_tmp_audit/
 # ── ephemeral test tmp leftovers ──────────────────────────────────────────────
 .tmp/

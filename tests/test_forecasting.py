@@ -81,6 +81,37 @@ def test_forecast_falls_back_when_a_month_is_missing():
     assert out["history_months"] == 7
 
 
+def test_forecast_never_leaks_nonfinite_total():
+    """A corrupt legacy amount_eur (NaN/inf) must not turn the selected
+    model's mean into a NaN 'prediction' that bypasses the is-None guards
+    and renders as '€nan' — it falls back like missing history."""
+    import numpy as np
+    rows = []
+    for m in range(1, 8):
+        amount = 100.0 + m
+        if m == 4:
+            amount = float("nan")
+        elif m == 6:
+            amount = float("inf")
+        rows.append({"date": pd.Timestamp(2025, m, 5), "category": "X",
+                     "description": "x", "amount_eur": amount})
+    out = forecast_next_month(pd.DataFrame(rows))
+    total = out["total"]
+    assert total is None or np.isfinite(total)
+    if not out["fallback"]:
+        assert np.isfinite(out["lower"]) and np.isfinite(out["upper"])
+
+
+def test_candidate_prediction_returns_none_on_nonfinite():
+    from forecasting import _candidate_prediction
+    import numpy as np
+    values = [100.0, 110.0, float("nan")]
+    for name in ("last_month", "mean_3"):
+        assert _candidate_prediction(values, name) is None
+    assert _candidate_prediction([100.0, 200.0, 300.0], "mean_3") \
+        == pytest.approx(200.0)
+
+
 def test_anomalies_flags_outlier():
     rows = [{"date": pd.Timestamp(2025, 1, d), "category": "Groceries",
              "description": f"t{d}", "amount_eur": 10.0 + (d % 3)}

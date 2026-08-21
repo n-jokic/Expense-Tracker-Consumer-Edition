@@ -139,36 +139,36 @@ def edit_loan_dialog(uid: int, row):
     st.caption("Editing loan terms does not change logged payments — the payoff math simply recomputes.")
     c1, c2 = st.columns(2)
     with c1:
-        e_name = st.text_input("Loan name", value=str(row["name"]), key="loan_edit_name")
+        e_name = st.text_input("Loan name", value=str(row["name"]), key=f"loan_edit_name_{row['id']}")
         e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
                               index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
                               if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
-                              key="loan_edit_cur")
+                              key=f"loan_edit_cur_{row['id']}")
         e_principal = st.number_input(f"Principal ({get_currency_symbol(e_cur)})",
                                       min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                       step=100.0, format="%.2f",
                                       value=0.01 if pd.isna(row["principal"]) else max(float(row["principal"]), 0.01),
-                                      key="loan_edit_principal")
+                                      key=f"loan_edit_principal_{row['id']}")
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",
                                  value=float(row["annual_rate"]) if pd.notna(row["annual_rate"]) else 0.0,
-                                 key="loan_edit_rate")
+                                 key=f"loan_edit_rate_{row['id']}")
     with c2:
         e_start = st.date_input("Start date",
                                 value=row["start_date"].date() if pd.notna(row["start_date"]) else today,
-                                key="loan_edit_start")
+                                key=f"loan_edit_start_{row['id']}")
         e_term = st.number_input("Duration (months)", min_value=1, max_value=600,
                                  value=int(row["term_months"]) if pd.notna(row["term_months"]) else 12,
-                                 step=1, key="loan_edit_term")
+                                 step=1, key=f"loan_edit_term_{row['id']}")
         e_day = st.number_input("Payment day (1-31)", min_value=1, max_value=31,
                                 value=int(row["payment_day"]) if pd.notna(row["payment_day"]) else 1,
-                                step=1, key="loan_edit_day")
+                                step=1, key=f"loan_edit_day_{row['id']}")
         e_status = st.selectbox("Status", ["active", "paid_off"],
                                 index=0 if str(row["status"]) == "active" else 1,
-                                key="loan_edit_status")
+                                key=f"loan_edit_status_{row['id']}")
     e_notes = st.text_input("Notes (optional)",
                             value=str(row["notes"]) if pd.notna(row["notes"]) else "",
-                            key="loan_edit_notes")
+                            key=f"loan_edit_notes_{row['id']}")
     e_surcharge_type = str(row.get("early_repayment_surcharge_type") or "fixed")
     if e_surcharge_type not in {"fixed", "percent"}:
         e_surcharge_type = "fixed"
@@ -176,7 +176,7 @@ def edit_loan_dialog(uid: int, row):
         "Early repayment surcharge", ["fixed", "percent"],
         index=["fixed", "percent"].index(e_surcharge_type),
         format_func=lambda v: "Fixed amount" if v == "fixed" else "Percentage",
-        key="loan_edit_surcharge_type",
+        key=f"loan_edit_surcharge_type_{row['id']}",
     )
     e_surcharge_raw = (float(row.get("early_repayment_surcharge_value") or 0.0)
                        if pd.notna(row.get("early_repayment_surcharge_value")) else 0.0)
@@ -187,7 +187,7 @@ def edit_loan_dialog(uid: int, row):
         step=0.1 if e_surcharge_type == "percent" else 10.0,
         format="%.2f",
         value=min(e_surcharge_raw, e_surcharge_max),
-        key="loan_edit_surcharge_value",
+        key=f"loan_edit_surcharge_value_{row['id']}",
     )
 
     c1, c2 = st.columns(2)
@@ -373,10 +373,14 @@ else:
                              + (today.month - first_due.month))
                         due_this_month = _next_due(start_date, int(row["payment_day"]), k)
                         overdue = (not month_paid and today > due_this_month)
+                mo_str = ("never at this payment"
+                          if sched["remaining_months"] == 0
+                          and sched["remaining_balance"] > 0.005
+                          else f"{sched['remaining_months']} mo")
                 st.caption(
                     f"Monthly: **{fmt(sched['monthly_payment'], DC, rates)}** · "
                     f"Remaining: **{fmt(sched['remaining_balance'], DC, rates)}** "
-                    f"({sched['remaining_months']} mo) · "
+                    f"({mo_str}) · "
                     f"Payoff: **{payoff_str}** · "
                     f"Interest paid (incl. fees): {fmt(sched['total_interest_paid'], DC, rates)} · "
                     f"Next split: {fmt(sched['next_payment_interest'], DC, rates)} interest + "

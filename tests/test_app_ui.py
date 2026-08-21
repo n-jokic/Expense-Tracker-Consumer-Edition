@@ -248,7 +248,7 @@ def test_ask_page_error_does_not_pollute_history(ui_user, tmp_path, monkeypatch)
     assert not at.exception, at.exception
     assert at.chat_input, "chat input missing from ask page"
 
-    at.chat_input[0].set_value("How much did I spend?")
+    at.chat_input[0].set_value("Give me a detailed financial narrative.")
     at.run()
     assert not at.exception, at.exception
 

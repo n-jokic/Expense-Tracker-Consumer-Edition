@@ -78,6 +78,7 @@ def normalize_merchant(raw: str) -> str:
     s = _MASKED_CARD.sub(" ", s)
     s = _TX_ID.sub(" ", s)
     s = _STORE_ID.sub(" ", s)
+    s = re.sub(r"['’`´]", "", s)
     s = _PUNCT.sub(" ", s)
     s = _strip_suffix_words(s)
     s = _WS.sub(" ", s).strip()

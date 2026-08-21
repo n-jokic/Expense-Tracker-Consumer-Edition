@@ -31,6 +31,7 @@ from ai.router import (
     infer_deterministic_args,
 )
 from ai.schemas import AdvisorToolCall, AdvisorResponse
+from ai.safety import sanitize_tool_result
 from ai import prompts as P
 
 log = logging.getLogger("ai.orchestrator")
@@ -166,7 +167,7 @@ def _compose_answer(
     # Build tool results block for prompt — aggregate, no raw row dump beyond caps
     blocks = []
     for tc in tool_calls:
-        blocks.append(f"[{tc.tool}] arguments={json.dumps(tc.arguments, default=str)} result={json.dumps(tc.result, default=str)[:2000]}")
+        blocks.append(f"[{tc.tool}] arguments={json.dumps(tc.arguments, default=str)} result={json.dumps(sanitize_tool_result(tc.result), default=str)[:2000]}")
     tool_block = "\n".join(blocks)
 
     provider = _get_provider(settings)
@@ -289,7 +290,7 @@ def orchestrate(
         prior_results = ""
         if tool_calls:
             prior_results = "\nPRIOR TOOL RESULTS:\n" + "\n".join(
-                f"- {tc.tool}({json.dumps(tc.arguments, default=str)}) -> {json.dumps(tc.result, default=str)[:800]}"
+                f"- {tc.tool}({json.dumps(tc.arguments, default=str)}) -> {json.dumps(sanitize_tool_result(tc.result), default=str)[:800]}"
                 for tc in tool_calls
             )
         hist_block = ""

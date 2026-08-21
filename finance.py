@@ -189,9 +189,12 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
                 remaining_months = int(math.ceil(
                     -math.log(1 - bal * r / monthly) / math.log(1 + r)))
             else:
-                # payment doesn't even cover interest; no finite payoff
+                # Payment doesn't even cover interest: the balance GROWS every
+                # month, so the loan never amortizes under this payment.
+                # remaining_months stays 0 -> payoff_date stays None and the
+                # schedule reports an unbounded future instead of fabricating
+                # a one-month payoff.
                 remaining_months = 0
-        remaining_months = max(remaining_months, 1)
         if remaining_months:
             # k = last simulated month index + 1. The current month's payment
             # slot is still owed ONLY when its due date hasn't arrived AND no
@@ -206,7 +209,9 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
             payoff = _next_due(start_date, payment_day,
                                next_idx + remaining_months - 1)
 
-    interest_remaining = (monthly * remaining_months - bal) if remaining_months else 0.0
+    # None marks "never pays off at this payment": future interest is unbounded.
+    interest_remaining = ((monthly * remaining_months - bal)
+                          if remaining_months else None)
     next_interest = min(max(bal * r, 0.0), monthly) if bal > 0.005 else 0.0
     next_principal = min(max(monthly - next_interest, 0.0), bal) if bal > 0.005 else 0.0
     total_interest = interest_paid + surcharge_paid
@@ -219,11 +224,14 @@ def loan_schedule(principal: float, annual_rate_pct: float, term_months: int,
         "total_interest_paid": round(total_interest, 2),
         "scheduled_interest_paid": round(interest_paid, 2),
         "total_surcharge_paid": round(surcharge_paid, 2),
-        "total_interest_remaining": round(max(interest_remaining, 0.0), 2),
+        "total_interest_remaining": (round(max(interest_remaining, 0.0), 2)
+                                     if interest_remaining is not None else None),
         "next_payment_interest": round(next_interest, 2),
         "next_payment_principal": round(next_principal, 2),
         "months_paid": months_paid,
-        "total_cost": round(principal + total_interest + max(interest_remaining, 0.0), 2),
+        "total_cost": round(principal + total_interest
+                            + (max(interest_remaining, 0.0)
+                               if interest_remaining is not None else 0.0), 2),
     }
 
 

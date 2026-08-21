@@ -321,6 +321,24 @@ def test_term_deposit_math():
         == pytest.approx(1030.30, abs=0.01)
 
 
+def test_negative_amortization_reports_honest_schedule():
+    """When capitalized interest pushes the balance so far that the fixed
+    annuity no longer covers one month's interest, the loan NEVER amortizes:
+    remaining_months stays 0, payoff_date stays None ('never at this
+    payment') and future interest is unbounded (None) — never a fabricated
+    one-month payoff."""
+    # 120% APR, long term -> annuity ~= 1000.00; two missed months capitalize
+    # the balance to 12100 whose monthly interest (1210) exceeds it.
+    s = loan_schedule(10000, 120, 360, date(2026, 1, 1), 25, [],
+                      asof=date(2026, 3, 10))
+    assert 999.0 < s["monthly_payment"] < 1000.01
+    assert s["remaining_balance"] > 10000            # balance grew
+    assert s["remaining_balance"] * 0.1 > s["monthly_payment"]  # precondition
+    assert s["remaining_months"] == 0
+    assert s["payoff_date"] is None
+    assert s["total_interest_remaining"] is None
+
+
 def test_portfolio_metrics():
     m = portfolio_metrics([
         {"quantity": 2, "last_price_eur": 50.0, "cost_eur": 80.0},

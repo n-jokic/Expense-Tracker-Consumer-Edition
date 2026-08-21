@@ -270,6 +270,37 @@ def _is_noise(s: str) -> bool:
     return bool(_NOISE_RE.search(s or ""))
 
 
+def _is_real_amount_token(tok: str) -> bool:
+    """True when a bare number token looks like a genuine transaction amount.
+    A lone page number such as '2' is NOT a real amount (it would complete a
+    pending transaction with amount=2.0 and orphan the real amount on the next
+    line). Require a decimal separator OR at least three digits to qualify.
+    Parenthesised/trailing-minus/currency prefixes are counted as amount-like
+    regardless, since '(2)' is not a realistic page reference.
+    """
+    if tok is None:
+        return False
+    s = str(tok).strip()
+    if not s:
+        return False
+    # Parenthesised negatives and trailing-minus accounting forms are amounts.
+    has_paren = s.startswith("(") and s.endswith(")")
+    has_trailing_minus = s.endswith("-")
+    if has_paren:
+        s = s[1:-1].strip()
+    if has_trailing_minus:
+        s = s[:-1].strip()
+    # Strip currency symbols/codes that do not affect the digit count.
+    s = _CURRENCY_CODE_STRIP_RE.sub("", s).strip()
+    s = s.strip(_CURRENCY_SYMBOLS + " \t")
+    # Anything with a decimal separator (dot or comma) qualifies.
+    if "." in s or "," in s:
+        return True
+    # Otherwise require three or more digits (rejects page numbers like '2').
+    digits = sum(ch.isdigit() for ch in s)
+    return digits >= 3
+
+
 def _is_monotonic(vals) -> bool:
     if len(vals) < 2:
         return False
@@ -370,17 +401,22 @@ def parse_text_lines(text: str) -> list[dict]:
         s2 = s
         for rx in _DATE_RES:
             s2 = rx.sub(" ", s2)
-        amts = [a for a in (_parse_amount_token(t) for t in s2.split()) if a is not None]
+        amts = [(t, a) for t in s2.split() if (a := _parse_amount_token(t)) is not None]
         if d is None:
-            # Noise lines (summary/balance/page furniture) are never continuations.
+            # Noise lines (summary/balance/page furniture) are never
+            # continuations: skip them without clearing the pending
+            # transaction. A page footer like 'Page 2 of 5' between a dated
+            # line and its amount fragment must NOT orphan that transaction.
+            # The pending tx clears only when a NEW dated line begins (below).
             if _is_noise(s):
-                pending_tx = None
                 continue
-            if amts:
+            if any(_is_real_amount_token(t) for t, _ in amts):
                 # Bare amount fragment: complete the previous dated line if one
-                # is waiting (transaction split across lines).
+                # is waiting (transaction split across lines). Only tokens that
+                # look like real amounts (decimal separator or 3+ digits) may
+                # complete a pending tx, so a page number '2' does not win.
                 if pending_tx is not None:
-                    amount = amts[-1]
+                    amount = amts[-1][1]
                     if not (amount == 0 or abs(amount) > 1_000_000):
                         out.append({**pending_tx, "amount": amount})
                     pending_tx = None
@@ -403,7 +439,7 @@ def parse_text_lines(text: str) -> list[dict]:
         pending_tx = None
         # Trailing balance heuristic: with 2+ amounts the last is the running
         # balance, so the transaction amount is the FIRST amount.
-        amount = amts[0] if len(amts) >= 2 else amts[-1]
+        amount = amts[0][1] if len(amts) >= 2 else amts[-1][1]
         if amount == 0 or abs(amount) > 1_000_000:
             continue
         desc = _AMOUNT_RE.sub("", s2).strip()
@@ -458,10 +494,14 @@ def parse_table_rows(rows) -> list[dict]:
                     a = abs(a)
                 amounts.append((col, a))
                 continue
-            # Description candidate.
+            # Description candidate. (Row-level protection already drops
+            # rows without a date/amount, so a cell-level _is_noise filter is
+            # intentionally NOT applied here — _NOISE_RE matches merchant names
+            # like 'TOTAL ENERGY DRINK', 'IBAN CAFE', 'VAT SOLUTIONS'.
+            # _is_noise remains in use for line-level filtering in
+            # parse_text_lines.)
             if (role in (None, "description")
-                    and cell.lower() not in _HEADER_WORDS
-                    and not _is_noise(cell)):
+                    and cell.lower() not in _HEADER_WORDS):
                 desc_parts.append(cell)
         if d is None or not amounts:
             continue

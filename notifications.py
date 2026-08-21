@@ -97,7 +97,7 @@ def _html_wrap(title: str, body: str) -> str:
 
 
 def build_budget_alert_email(display_name: str, category: str,
-                              spent_eur: float, budget_eur: float, rate: float) -> str:
+                              spent_eur: float, budget_eur: float, rates: dict, DC: str) -> str:
     pct  = int(spent_eur / budget_eur * 100) if budget_eur > 0 else 0
     over = spent_eur > budget_eur
     color = "#E94560" if over else "#F4A261"
@@ -108,11 +108,11 @@ def build_budget_alert_email(display_name: str, category: str,
     <table style="width:100%;border-collapse:collapse;margin:16px 0;">
       <tr style="background:#f5f5f5;">
         <td style="padding:10px;border-radius:6px 0 0 6px;"><strong>Spent</strong></td>
-        <td style="padding:10px;color:#E94560;font-weight:bold;">€{spent_eur:,.2f}</td>
+        <td style="padding:10px;color:#E94560;font-weight:bold;">{fmt(spent_eur, DC, rates)}</td>
       </tr>
       <tr>
         <td style="padding:10px;"><strong>Budget</strong></td>
-        <td style="padding:10px;color:#0F3460;font-weight:bold;">€{budget_eur:,.2f}</td>
+        <td style="padding:10px;color:#0F3460;font-weight:bold;">{fmt(budget_eur, DC, rates)}</td>
       </tr>
     </table>
     <p>{'Consider cutting back on ' + _esc(category) + ' spending for the rest of the month.' if over else 'You are close to your limit — keep an eye on ' + _esc(category) + ' spending.'}</p>
@@ -329,7 +329,7 @@ def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                     settings.get("smtp_host") and settings.get("smtp_user")):
                 html = build_budget_alert_email(
                     st.session_state.get("display_name", ""),
-                    cat, act_val, bud_val, rates.get("RSD", 117.0)
+                    cat, act_val, bud_val, rates, DC
                 )
                 send_email_async(
                     settings["smtp_host"], int(settings.get("smtp_port", 587)),

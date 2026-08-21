@@ -110,3 +110,59 @@ def test_savings_projection_nan_inputs_have_no_bogus_projection():
     p = savings_projection(df, "G")
     assert p["months_to_goal"] is None
     assert p["projected_date"] is None
+
+
+def test_savings_projection_excludes_opening_deposit_from_run_rate():
+    """The first deposit creates the goal and must not inflate the monthly run-rate.
+
+    Deposits [1000, 100, 100] with a large opening seed of 1000 must compute a
+    run-rate of ~100/mo (last 2 months), not 400/mo (all 3 months avg).
+    """
+    df = _df([
+        {"goal_name": "G", "date": "2025-01-01", "balance_eur": 1000.0,
+         "target_eur": 50000.0, "deposited_eur": 1000.0, "interest_rate": 0.0},
+        {"goal_name": "G", "date": "2025-02-01", "balance_eur": 1100.0,
+         "target_eur": 50000.0, "deposited_eur": 100.0, "interest_rate": 0.0},
+        {"goal_name": "G", "date": "2025-03-01", "balance_eur": 1200.0,
+         "target_eur": 50000.0, "deposited_eur": 100.0, "interest_rate": 0.0},
+    ])
+    p = savings_projection(df, "G")
+
+    # With the 1000 seed excluded, run-rate ~= 100/mo. Starting from 1200
+    # balance toward 50000 target: (50000 - 1200) / 100 = 488 months.
+    # Without exclusion, run-rate would be ~400/mo → ~120 months.
+    assert p["months_to_goal"] is not None
+    assert p["months_to_goal"] > 200, (
+        f"Expected >200 months with 100/mo run-rate, got {p['months_to_goal']}")
+
+
+def test_savings_projection_two_rows_uses_second_deposit():
+    """Two-row case [500, 100] excludes the first row, uses the 100/mo deposit."""
+    df = _df([
+        {"goal_name": "G", "date": "2025-01-01", "balance_eur": 500.0,
+         "target_eur": 5500.0, "deposited_eur": 500.0, "interest_rate": 0.0},
+        {"goal_name": "G", "date": "2025-02-01", "balance_eur": 600.0,
+         "target_eur": 5500.0, "deposited_eur": 100.0, "interest_rate": 0.0},
+    ])
+    p = savings_projection(df, "G")
+
+    # Excluding the 500 seed: run-rate = 100/mo. (5500 - 600) / 100 = 49 months.
+    assert p["months_to_goal"] is not None
+    assert p["months_to_goal"] == 49, (
+        f"Expected 49 months with 100/mo run-rate, got {p['months_to_goal']}")
+
+
+def test_savings_projection_single_deposit_matches_old_behavior():
+    """Single-deposit goal: first row == only row, falls back to all-rows logic."""
+    df = _df([
+        {"goal_name": "G", "date": "2025-01-01", "balance_eur": 100.0,
+         "target_eur": 500.0, "deposited_eur": 100.0, "interest_rate": 0.0},
+    ])
+    p = savings_projection(df, "G")
+
+    # Single deposit → monthly_dep = mean(deposited_eur) = 100.
+    # (500 - 100) / 100 = 4 months.
+    assert p["months_to_goal"] is not None
+    assert p["months_to_goal"] == 4, (
+        f"Expected 4 months with 100/mo run-rate, got {p['months_to_goal']}")
+    assert p["projected_date"] is not None

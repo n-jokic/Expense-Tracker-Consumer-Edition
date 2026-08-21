@@ -285,26 +285,26 @@ def withdraw_account_dialog(uid: int, row):
 def edit_account_dialog(uid: int, row):
     c1, c2 = st.columns(2)
     with c1:
-        e_name = st.text_input("Account name", value=str(row["name"]), key="dlg_acc_name")
+        e_name = st.text_input("Account name", value=str(row["name"]), key=f"dlg_acc_name_{row['id']}")
         e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
                               index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
                               if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
-                              key="dlg_acc_cur")
+                              key=f"dlg_acc_cur_{row['id']}")
         e_amt = st.number_input(f"Amount ({get_currency_symbol(e_cur)})",
                                 min_value=0.01, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
                                 value=0.01 if pd.isna(row["amount"]) else max(float(row["amount"]), 0.01),
-                                key="dlg_acc_amt")
+                                key=f"dlg_acc_amt_{row['id']}")
     with c2:
         e_rate = st.number_input("Annual interest rate (%)", min_value=0.0,
                                  max_value=100.0, step=0.01, format="%.2f",
-                                 value=float(row["annual_rate"]), key="dlg_acc_rate")
+                                 value=float(row["annual_rate"]), key=f"dlg_acc_rate_{row['id']}")
         e_start = st.date_input("Start date",
                                 value=row["start_date"].date() if pd.notna(row["start_date"]) else today,
-                                key="dlg_acc_start")
+                                key=f"dlg_acc_start_{row['id']}")
         e_mat = st.date_input("Maturity date",
                               value=row["maturity_date"].date() if pd.notna(row["maturity_date"]) else today,
-                              key="dlg_acc_mat")
+                              key=f"dlg_acc_mat_{row['id']}")
     row_goal = str(row["goal_name"])
     goal_missing = row_goal not in goals
     if goal_missing:
@@ -315,7 +315,7 @@ def edit_account_dialog(uid: int, row):
     else:
         goal_opts = goals
         goal_idx = goals.index(row_goal)
-    e_goal = st.selectbox("Goal", goal_opts, index=goal_idx, key="dlg_acc_goal")
+    e_goal = st.selectbox("Goal", goal_opts, index=goal_idx, key=f"dlg_acc_goal_{row['id']}")
     if st.button("Save", icon=":material/save:", type="primary", width="stretch",
                  key="dlg_acc_save"):
         if e_mat <= e_start:
@@ -365,17 +365,17 @@ def edit_savings_dialog(uid: int, row):
     c1, c2 = st.columns(2)
     with c1:
         e_date = st.date_input("Date", value=row["date"].date() if pd.notna(row["date"]) else today,
-                               key="sav_edit_date")
+                               key=f"sav_edit_date_{row['id']}")
         e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
                               index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
                               if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
-                              key="sav_edit_cur")
+                              key=f"sav_edit_cur_{row['id']}")
     with c2:
         e_dep = st.number_input(f"Amount deposited ({get_currency_symbol(e_cur)}) — negative = withdrawal",
                                 min_value=-MAX_AMOUNT, max_value=MAX_AMOUNT,
                                 step=10.0, format="%.2f",
                                 value=float(row["deposited"]) if pd.notna(row["deposited"]) else 0.0,
-                                key="sav_edit_dep")
+                                key=f"sav_edit_dep_{row['id']}")
         # Target is entered in the DISPLAY currency: prefill the stored EUR
         # value converted to display, and convert back to EUR on save.
         _tgt_eur = float(row["target_eur"]) if pd.notna(row["target_eur"]) else 0.0
@@ -384,13 +384,13 @@ def edit_savings_dialog(uid: int, row):
                                 step=100.0, format="%.2f",
                                 value=min(to_display(_tgt_eur, DC, rates),
                                           to_display(MAX_SAVINGS_TARGET, DC, rates)),
-                                key="sav_edit_tgt")
+                                key=f"sav_edit_tgt_{row['id']}")
     e_ir = st.number_input("Annual interest rate (%)", min_value=0.0,
                            max_value=100.0, step=0.01, format="%.2f",
                            value=float(row["interest_rate"]) if pd.notna(row["interest_rate"]) else 0.0,
-                           key="sav_edit_ir")
+                           key=f"sav_edit_ir_{row['id']}")
     e_notes = st.text_input("Notes", value=str(row["notes"]) if pd.notna(row["notes"]) else "",
-                            key="sav_edit_notes")
+                            key=f"sav_edit_notes_{row['id']}")
 
     c1, c2 = st.columns(2)
     with c1:

@@ -1,11 +1,27 @@
 from datetime import datetime, timezone, date
 
+import pytest
+
 from db import (
-    init_db, create_user, add_expense, update_expense,
+    init_db, create_user, delete_user_account, add_expense, update_expense,
     list_ml_models, save_ml_model, activate_ml_model,
-    record_ml_feedback, get_ml_feedback,
+    record_ml_feedback, get_ml_feedback, username_exists,
+    get_user_by_username,
 )
+from auth import hash_password
 from ml.registry import ModelInfo
+
+
+@pytest.fixture()
+def test_user():
+    init_db()
+    username = "ml_registry_test_user"
+    email = "ml_registry_test@example.com"
+    if username_exists(username):
+        delete_user_account(get_user_by_username(username)["id"])
+    uid = create_user(username, email, hash_password("test1234"), "ML Registry Tester")
+    yield uid
+    delete_user_account(uid)
 
 
 def test_model_registry_is_per_user_and_requires_explicit_activation(test_user):
@@ -33,3 +49,13 @@ def test_ml_feedback_is_append_only_and_canonicalized(test_user):
 def test_record_ml_feedback_rejects_mutation_payload(test_user):
     record_ml_feedback(test_user, {"raw_description": "Lidl", "predicted_category": "Groceries"})
     assert get_ml_feedback(test_user)[0]["raw_description"] == "Lidl"
+
+
+def test_account_deletion_removes_ml_records(test_user):
+    info = ModelInfo("categorizer", 0, 3, datetime.now(timezone.utc), "abc", {"f1": .9})
+    save_ml_model(test_user, info)
+    record_ml_feedback(test_user, {"raw_description": "Lidl", "predicted_category": "Groceries"})
+
+    assert delete_user_account(test_user) is True
+    assert list_ml_models(test_user) == []
+    assert get_ml_feedback(test_user) == []

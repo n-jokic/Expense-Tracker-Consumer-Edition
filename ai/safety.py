@@ -104,3 +104,45 @@ def check_mutation_proposal(question: str) -> dict | None:
 def tool_result_with_provenance_check(result: dict) -> bool:
     """Verify tool result carries _provenance (A3 gate)."""
     return isinstance(result, dict) and "_provenance" in result
+
+
+_WHITESPACE_COLLAPSE = re.compile(r"\s+")
+
+# Cap for individual sanitised string leaves in tool results.
+MAX_UNSANITIZED_STR_LEN = 200
+_MAX_SANITIZE_DEPTH = 6
+
+
+def sanitize_untrusted_text(value: Any, max_len: int = MAX_UNSANITIZED_STR_LEN) -> str:
+    """Make a tool-result string leaf safe for prompt embedding.
+
+    Mirrors llm._sanitize_stat semantics exactly: newlines become spaces,
+    internal whitespace runs are collapsed, and the result is hard-capped
+    to max_len characters so stored data cannot inject instructions into
+    the prompt."""
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.replace("\r", " ").replace("\n", " ")
+    s = _WHITESPACE_COLLAPSE.sub(" ", s)
+    if len(s) > max_len:
+        s = s[:max_len]
+    return s.strip()
+
+
+def sanitize_tool_result(obj: Any, _depth: int = 0) -> Any:
+    """Recursively sanitize untrusted tool results before prompt embedding.
+
+    dict/list/tuple containers are preserved; every str leaf is sanitized via
+    sanitize_untrusted_text; non-string leaves are returned untouched.
+    Recursion is depth-capped to defend against pathological nesting."""
+    if _depth > _MAX_SANITIZE_DEPTH:
+        return obj
+    if isinstance(obj, str):
+        return sanitize_untrusted_text(obj)
+    if isinstance(obj, dict):
+        return {k: sanitize_tool_result(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_tool_result(v, _depth + 1) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(sanitize_tool_result(v, _depth + 1) for v in obj)
+    return obj

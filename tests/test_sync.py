@@ -15,6 +15,7 @@ from db import (
     update_expense,
 )
 from auth import hash_password
+from utils import INCOME_TYPES
 import sync_core
 from sync_core import (
     fields_differ, coerce_fields, parse_since, apply_changes, snapshot,
@@ -59,6 +60,14 @@ def _expense_change(rid, **fields):
             "amount_eur": 5.0}
     base.update(fields)
     return {"table": "expenses", "id": rid, "fields": base}
+
+
+def _income_change(rid, **fields):
+    base = {"date": "2025-06-01", "source": "Salary",
+            "income_type": "Salary", "budgeted": 100.0, "actual": 100.0,
+            "currency": "EUR", "budgeted_eur": 100.0, "actual_eur": 100.0}
+    base.update(fields)
+    return {"table": "income", "id": rid, "fields": base}
 
 
 # ── Pure logic (v1) ───────────────────────────────────────────────────────────
@@ -335,3 +344,38 @@ def test_snapshot_truncation_flag(two_users):
     snap, truncated = snapshot(uid_a, limit=3)
     assert truncated is True
     assert len(snap["expenses"]) == 3
+
+
+# ── income_type enum (v2) ──────────────────────────────────────────────────────
+
+def test_validate_accepts_valid_income_type():
+    """Every canonical INCOME_TYPES value passes validate_fields cleanly."""
+    for itype in INCOME_TYPES:
+        clean, errors = validate_fields("income", {"income_type": itype})
+        assert not errors, "expected no errors for income_type=" + repr(itype)
+        assert clean["income_type"] == itype
+
+
+def test_validate_rejects_unknown_income_type():
+    """A non-whitelisted income_type produces an 'unknown income_type' error."""
+    clean, errors = validate_fields("income", {"income_type": "BOGUS"})
+    assert any("unknown income_type" in e for e in errors)
+    assert "income_type" not in clean
+
+    # case-folded / lowercase labels are NOT silently accepted (strict equality,
+    # matching MCP's validate_income_type contract)
+    _, errors = validate_fields("income", {"income_type": "salary"})
+    assert any("unknown income_type" in e for e in errors)
+
+
+def test_apply_changes_bad_income_type_lands_in_failed(two_users):
+    """A CREATE with a bad income_type is rejected and reported in failed[]."""
+    uid_a, _ = two_users
+    result = apply_changes(uid_a, [_income_change("inc-bad", income_type="BOGUS")])
+    assert result["applied"] == []
+    assert len(result["failed"]) == 1
+    assert result["failed"][0]["id"] == "inc-bad"
+    assert "unknown income_type" in result["failed"][0]["error"]
+    from db import get_income
+    df = get_income(uid_a)
+    assert len(df) == 0

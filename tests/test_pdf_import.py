@@ -326,3 +326,54 @@ def test_transaction_split_across_lines_is_joined():
     assert rows[0]["amount"] == pytest.approx(-20.0)
     assert "LIDL" in rows[0]["description"]
     assert rows[1]["amount"] == pytest.approx(-5.0)
+
+
+# --- FIX 1: merchant-name preservation through parse_table_rows --------------
+
+@pytest.mark.parametrize("merchant", [
+    "TOTAL ENERGY DRINK",
+    "IBAN CAFE",
+    "Opening Hours Pub",
+    "SUBTOTAL BAKERY",
+    "VAT SOLUTIONS",
+    "SWIFT FOOD",
+])
+def test_parse_table_rows_preserves_merchant_names(merchant):
+    """Regression: merchant names that match the statement-level _NOISE_RE
+    pattern (total/opening/iban/subtotal/vat/swift) used to be replaced by the
+    generic "Bank transaction" fallback. The per-cell noise filter was removed;
+    only row-level date/amount checks remain."""
+    rows = [
+        ["Date", "Description", "Amount"],
+        ["01.02.2025", merchant, "-45.00"],
+    ]
+    out = parse_table_rows(rows)
+    assert len(out) == 1
+    assert out[0]["description"] == merchant
+    assert out[0]["amount"] == pytest.approx(-45.0)
+
+
+# --- FIX 2: page-footer handling in parse_text_lines ------------------------
+
+def test_parse_text_lines_bare_page_number_does_not_complete_pending():
+    """A bare page number (e.g. "2" on its own line) is NOT a real amount and
+    must not complete a pending transaction. The real amount on the next line
+    is the transaction amount."""
+    text = "01.02.2025 SUPERMARKET\n2\n120,00\n"
+    rows = parse_text_lines(text)
+    assert len(rows) == 1
+    assert rows[0]["date"] == date(2025, 2, 1)
+    assert rows[0]["description"] == "SUPERMARKET"
+    assert rows[0]["amount"] == pytest.approx(120.0)
+
+
+def test_parse_text_lines_noise_line_does_not_lose_pending_transaction():
+    """A noise footer line (e.g. "Page 2 of 5") between a dated line and its
+    amount must NOT reset/clear the pending transaction — otherwise the whole
+    entry is lost and the amount fragment finds nothing to attach to."""
+    text = "01.02.2025 SUPERMARKET\nPage 2 of 5\n-50.00\n"
+    rows = parse_text_lines(text)
+    assert len(rows) == 1
+    assert rows[0]["date"] == date(2025, 2, 1)
+    assert rows[0]["description"] == "SUPERMARKET"
+    assert rows[0]["amount"] == pytest.approx(-50.0)

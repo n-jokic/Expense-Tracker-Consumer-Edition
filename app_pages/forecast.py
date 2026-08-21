@@ -88,7 +88,8 @@ ml_result = None
 if method == "ML model":
     ml_result = forecast_next_month(
         dfe if not dfe.empty else pd.DataFrame(), q.recurring(user_id))
-    if ml_result["fallback"] or ml_result["total"] is None:
+    if (ml_result["fallback"] or ml_result["total"] is None
+            or not math.isfinite(float(ml_result["total"]))):
         st.caption("Not enough history for the model yet (needs 6+ months) — "
                    "showing the period-average projection instead.")
         daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0

@@ -35,6 +35,7 @@ from db import (
 from utils import (
     CATEGORIES, ALL_SUBCATS, remap_category_subcategory,
     MAX_AMOUNT, MAX_SAVINGS_TARGET, SUPPORTED_CURRENCIES,
+    INCOME_TYPES,
     get_rates, to_eur,
 )
 
@@ -248,6 +249,11 @@ def validate_fields(table: str, fields: dict, rates: dict | None = None):
                         errors.append("unknown loan_payment_type")
                         continue
                     clean[k] = s
+                elif k == "income_type":
+                    if s not in INCOME_TYPES:
+                        errors.append("unknown income_type")
+                        continue
+                    clean[k] = s
                 else:
                     clean[k] = s
             elif spec == "float":
@@ -451,6 +457,17 @@ def _apply_update(user_id, table, record_id, clean, since):
             # Treat recompute failure as a validation failure: do not apply
             return {"error": str(e)}
         server_record = _serialize(obj)
+        # Resurrection gate (T4-003): a soft-deleted row must NOT be
+        # undeleted by a device push. If the stored row is tombstoned and the
+        # incoming change carries an explicitly falsy is_deleted (the
+        # deleted->live transition), treat it as a conflict so it lands in
+        # sync_conflicts for manual resolution instead of silently reviving
+        # deleted data. Updates that omit is_deleted, and re-affirming
+        # is_deleted=true, still apply as today; the cursor-based conflict
+        # check below is untouched.
+        if getattr(obj, "is_deleted", False) and not clean.get("is_deleted", True):
+            return {"conflict": json_safe(clean),
+                    "server": json_safe(server_record)}
         server_updated = _norm_dt(obj.updated_at)
         changed_on_server = (since is not None and server_updated is not None
                              and server_updated > since)

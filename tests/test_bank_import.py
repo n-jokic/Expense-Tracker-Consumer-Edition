@@ -14,8 +14,9 @@ import pytest
 
 from bank_import import (
     detect_bank_format, normalize_bank_csv, categorize_expense,
-    _clean_currency, _save_edited_row, _to_eur_amount,
+    _clean_currency, _save_edited_row, _to_eur_amount, _to_numeric_locale,
 )
+from pdf_import import _parse_amount_token
 from db import (
     init_db, create_user, delete_user_account, get_expenses,
     username_exists, get_user_by_username,
@@ -288,3 +289,96 @@ def test_corrected_suggestion_recorded_as_not_accepted(test_user):
     assert saved["suggest_source"] == "keywords"
     assert saved["suggest_accepted"] == False  # noqa: E712 (numpy bool)
     assert saved["suggest_model_version"] is None
+
+
+# ── FIX 1: NaN description cleared in the editor must not persist as 'nan' ───────
+
+def test_cleared_description_cell_skipped(test_user):
+    """A description cleared in st.data_editor arrives as float NaN; that must
+    be coerced to empty and the row skipped (not stored as literal 'nan')."""
+    row = _row(description=float("nan"))
+    assert _save_edited_row(test_user, row, RATES, set()) == "skipped"
+    assert get_expenses(test_user).empty
+
+
+def test_literal_nan_description_skipped(test_user):
+    """The string 'nan'/'NaN' (case-insensitive) must also be treated as empty."""
+    row = _row(description="NaN")
+    assert _save_edited_row(test_user, row, RATES, set()) == "skipped"
+    assert get_expenses(test_user).empty
+
+
+# ── FIX 2: signed thousands separators must match pdf_import parity ─────────────
+
+_PARITY_TOKENS = ["1.234", "-1.234", "1,234", "-1,234", "+1,234", "12.345.678"]
+
+
+@pytest.mark.parametrize("tok", _PARITY_TOKENS)
+def test_signed_thousands_parity_with_pdf_import(tok):
+    """Every locale-aware amount token must parse identically through
+    bank_import._to_numeric_locale and pdf_import._parse_amount_token."""
+    series = pd.Series([tok])
+    bank_val = float(_to_numeric_locale(series).iloc[0])
+    pdf_val = _parse_amount_token(tok)
+    assert pdf_val is not None
+    assert bank_val == pytest.approx(pdf_val)
+
+
+def test_signed_dot_thousands_pure_value():
+    assert float(_to_numeric_locale(pd.Series(["-1.234"])).iloc[0]) == -1234.0
+    assert float(_to_numeric_locale(pd.Series(["+1.234"])).iloc[0]) == 1234.0
+
+
+def test_signed_comma_thousands_pure_value():
+    assert float(_to_numeric_locale(pd.Series(["-1,234"])).iloc[0]) == -1234.0
+    assert float(_to_numeric_locale(pd.Series(["1,234"])).iloc[0]) == 1234.0
+
+
+def test_comma_decimal_unaffected_by_sign_fix():
+    """'1,5' is a decimal (not thousands) and must stay 1.5; sign preserved."""
+    assert float(_to_numeric_locale(pd.Series(["1,5"])).iloc[0]) == 1.5
+    assert float(_to_numeric_locale(pd.Series(["-1,5"])).iloc[0]) == -1.5
+
+
+# ── FIX 3: generic CSV picks the right amount column ─────────────────────────────
+
+def test_generic_csv_finds_amount_by_alias():
+    """A generic CSV with {Date, Payee, Value, Currency} must use the 'Value'
+    column (not 'Currency') so amounts are parsed and rows are retained."""
+    df = pd.DataFrame({
+        "Date": ["2025-01-01", "2025-01-02"],
+        "Payee": ["Lidl", "Shell"],
+        "Value": ["-10.00", "-20.00"],
+        "Currency": ["USD", "USD"],
+    })
+    out = normalize_bank_csv(df, "generic")
+    assert list(out.columns) == ["date", "description", "amount", "currency"]
+    assert len(out) == 2
+    assert out.iloc[0]["amount"] == -10.00
+    assert out.iloc[1]["amount"] == -20.00
+
+
+def test_generic_csv_currency_not_selected_as_amount():
+    """Regression guard: 'Currency' must never be mistaken for the amount
+    column (which previously dropped every row via dropna on NaN amounts)."""
+    df = pd.DataFrame({
+        "Date": ["2025-01-01", "2025-01-02"],
+        "Payee": ["Lidl", "Shell"],
+        "Value": ["10.00", "20.00"],
+        "Currency": ["EUR", "EUR"],
+    })
+    out = normalize_bank_csv(df, "generic")
+    assert len(out) == 2
+    assert out.iloc[0]["amount"] == 10.00
+
+
+def test_generic_csv_falls_back_to_last_column_for_unknown_schema():
+    """Truly unknown schemas still fall back to the last column (unchanged)."""
+    df = pd.DataFrame({
+        "Date": ["2025-01-01", "2025-01-02"],
+        "Payee": ["Lidl", "Shell"],
+        "Stuff": ["10.00", "20.00"],
+    })
+    out = normalize_bank_csv(df, "generic")
+    assert len(out) == 2
+    assert out.iloc[0]["amount"] == 10.00

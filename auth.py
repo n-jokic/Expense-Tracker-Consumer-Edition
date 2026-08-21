@@ -6,6 +6,7 @@ Handles registration, login, session management via bcrypt + SQLite.
 import os
 import re
 import logging
+import secrets
 from collections import defaultdict, deque
 from datetime import datetime
 
@@ -40,6 +41,18 @@ def verify_password(plain: str, hashed: str) -> bool:
 _attempts = defaultdict(deque)
 MAX_ATTEMPTS   = 5
 WINDOW_SECONDS = 60
+
+# Lazily-initialised dummy hash used to keep the user-miss login path at
+# bcrypt cost (~160ms) so an attacker can't distinguish "no such user" from
+# "wrong password" by timing. Computed once on first miss, then reused.
+_dummy_password_hash: str | None = None
+
+
+def _get_dummy_password_hash() -> str:
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = hash_password(secrets.token_urlsafe(32))
+    return _dummy_password_hash
 
 
 def _client_key() -> str:
@@ -142,6 +155,12 @@ def login_user(username: str, password: str) -> tuple[bool, dict | None, str]:
     user = get_user_by_username(username)
 
     if not user:
+        # Run an equivalent-cost bcrypt verification against a dummy hash so a
+        # non-existent-user probe takes ~the same time as a wrong-password
+        # attempt, closing the timing-enumeration oracle. The result is
+        # discarded: the failure message is identical to the wrong-password
+        # path (and to the real check below).
+        verify_password(password, _get_dummy_password_hash())
         return False, None, "Incorrect username or password."
     if not verify_password(password, user["password_hash"]):
         return False, None, "Incorrect username or password."

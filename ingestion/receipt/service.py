@@ -36,6 +36,19 @@ def _image_cache_key(image_bytes: bytes) -> str:
 def _best_total(cands: list[FieldCandidate]):
     return cands[0] if cands else None
 
+
+def _tokens_to_text(document: OCRDocument) -> str:
+    """Group document tokens by line_id, joining tokens within a line with a
+    single space and lines with newlines. Mirrors the canonical raw_text used
+    by raw_text1 so pass2 text does not bias the 'pick better' comparison."""
+    if not document.tokens:
+        return ""
+    by_line: dict[int, list[str]] = {}
+    for tok in document.tokens:
+        by_line.setdefault(tok.line_id, []).append(tok.text)
+    return "\n".join(" ".join(by_line[lid]) for lid in sorted(by_line))
+
+
 def _build_receipt_result(document: OCRDocument, raw_text: str) -> ReceiptResult:
     total_cands = extract_total_candidates(document, raw_text)
     merch_cands = extract_merchant_candidates(document, raw_text)
@@ -102,9 +115,7 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
             if key:
                 _CACHE[key] = compat
             return compat
-        raw_text1 = "\n".join(" ".join(t.text for t in [tok for tok in doc1.tokens if tok.line_id==lid]) for lid in sorted({t.line_id for t in doc1.tokens})) if doc1.tokens else ""
-        if not raw_text1 and doc1.tokens:
-            raw_text1 = "\n".join(t.text for t in doc1.tokens)
+        raw_text1 = _tokens_to_text(doc1)
         result1 = _build_receipt_result(doc1, raw_text1)
         total_conf1 = result1.total.confidence if result1.total else 0
         use_pass2 = not (doc1.mean_confidence >= 0.75 and total_conf1 >= 0.80)
@@ -123,7 +134,7 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
             # back to RGB for RapidOCR
             img2 = gray.convert("RGB")
             doc2 = run_rapidocr(img2, stage="pass2")
-            raw_text2 = "\n".join(t.text for t in doc2.tokens) if doc2.tokens else ""
+            raw_text2 = _tokens_to_text(doc2)
             result2 = _build_receipt_result(doc2, raw_text2) if raw_text2 else result1
             # pick better by OCR conf + field conf
             score1 = doc1.mean_confidence + (total_conf1 or 0)
@@ -188,7 +199,21 @@ def _to_compat_dict(document: OCRDocument, raw_text: str, receipt_result: Receip
     if not merchant and raw_text:
         try:
             from ocr import guess_merchant as _gm
-            merchant = _gm(raw_text)
+            _guessed = _gm(raw_text)
+            if _guessed:
+                merchant = _guessed
+                # Record the fallback on receipt_result.merchant so callers
+                # (e.g. _render_receipt_uncertainty) see a low-confidence
+                # candidate instead of a None that contradicts the pre-filled
+                # compat['merchant']. confidence=0.0 falls below LOW_CONF.
+                from dataclasses import replace as _replace
+                fallback_cand = FieldCandidate(
+                    value=_guessed,
+                    confidence=0.0,
+                    reasons=("fallback:guess_merchant",),
+                )
+                if receipt_result.merchant is None:
+                    receipt_result = _replace(receipt_result, merchant=fallback_cand)
         except Exception:
             pass
     if amount is None and raw_text:

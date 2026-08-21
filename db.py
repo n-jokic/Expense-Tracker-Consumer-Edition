@@ -642,6 +642,8 @@ class UserSettings(Base):
     ai_api_base          = Column(String, nullable=True)      # OpenAI-compatible
     ai_api_model         = Column(String, nullable=True)
     ai_api_key_enc       = Column(String, nullable=True)      # Fernet-encrypted
+    # Persistent UI layout state (panel order/collapse) — see ui/layout_state.py
+    ui_layout            = Column(JSON, nullable=True)
 
 
 class MlModel(Base):
@@ -741,6 +743,7 @@ def _migrate(engine):
         "ai_api_base": "VARCHAR",
         "ai_api_model": "VARCHAR",
         "ai_api_key_enc": "VARCHAR",
+        "ui_layout": "JSON",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -2049,6 +2052,7 @@ _SETTINGS_DEFAULTS = {
     "gh_last_status": None, "gh_last_error": None,
     "ai_provider": "none", "ai_local_model": None, "ai_local_gpu_layers": -1,
     "ai_api_base": None, "ai_api_model": None, "ai_api_key_enc": None,
+    "ui_layout": {},
 }
 
 def get_settings(user_id):
@@ -2342,6 +2346,10 @@ def delete_user_account(user_id):
         if holding_ids:
             s.query(HoldingPrice).filter(HoldingPrice.holding_id.in_(holding_ids)).delete(
                 synchronize_session=False)
+        s.query(MlFeedbackEvent).filter(MlFeedbackEvent.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(MlModel).filter(MlModel.user_id == user_id).delete(
+            synchronize_session=False)
         s.query(Holding).filter(Holding.user_id == user_id).delete(
             synchronize_session=False)
         s.query(Device).filter(Device.user_id == user_id).delete(

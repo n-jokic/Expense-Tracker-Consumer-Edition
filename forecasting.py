@@ -79,17 +79,25 @@ def _ets_forecast(expenses_df: pd.DataFrame):
 def _candidate_prediction(values, name: str, recurring_templates=None):
     """One-step forecast for a compact monthly series."""
     import numpy as np
+    import math as _math
     values = np.asarray(values, dtype=float)
     if not len(values):
         return None
+
+    def _finite(x) -> float | None:
+        # A NaN/inf candidate (e.g. a corrupt legacy amount_eur row feeding a
+        # monthly mean) must fall back like a missing prediction, never leak.
+        x = float(x)
+        return x if _math.isfinite(x) else None
+
     if name == "last_month":
-        return float(values[-1])
+        return _finite(values[-1])
     if name == "mean_3":
-        return float(values[-3:].mean())
+        return _finite(values[-3:].mean())
     if name == "mean_6":
-        return float(values[-6:].mean())
+        return _finite(values[-6:].mean())
     if name == "ewma":
-        return float(pd.Series(values).ewm(span=min(6, len(values)), adjust=False).mean().iloc[-1])
+        return _finite(pd.Series(values).ewm(span=min(6, len(values)), adjust=False).mean().iloc[-1])
     if name == "ets":
         try:
             from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -179,8 +187,11 @@ def forecast_next_month(expenses_df: pd.DataFrame, recurring_templates=None) -> 
         "reason": "baseline (no history)"}
     selected = selection["selected_model"]
     total = _candidate_prediction(totals["amount_eur"].tolist(), selected, recurring_templates) if ets_total is not None else None
-    if total is None:
+    if total is None or not math.isfinite(total):
         total, lower, upper = ets_total, ets_lower, ets_upper
+        if total is not None and not math.isfinite(total):
+            # Even the ETS path cannot produce a sane number from corrupt data.
+            total, lower, upper = None, None, None
     elif selected == "ets":
         lower, upper = ets_lower, ets_upper
     else:
@@ -338,7 +349,7 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
     X = df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
 
     model = IsolationForest(contamination=contamination, random_state=42)
-    labels = model.fit_predict(X)
+    labels = np.asarray(model.fit_predict(X))
     df["anomaly_score"] = model.decision_function(X)
     flagged = df[labels == -1].sort_values("anomaly_score").copy()
 

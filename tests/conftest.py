@@ -24,6 +24,11 @@ _TMP_BASE = _WS / "data" / "_pytest_tmp"
 _TMP_BASE.mkdir(parents=True, exist_ok=True)
 _TMP = str(_TMP_BASE / f"expense_tracker_tests_{uuid.uuid4().hex[:8]}")
 os.makedirs(_TMP, exist_ok=True)
+_PYTEST_TMP = os.path.join(_TMP, "pytest_runtime")
+os.makedirs(_PYTEST_TMP, exist_ok=True)
+for _temp_var in ("TEMP", "TMP", "TMPDIR"):
+    os.environ[_temp_var] = _PYTEST_TMP
+tempfile.tempdir = _PYTEST_TMP
 os.environ["DB_PATH"] = os.path.join(_TMP, "test_expense_tracker.db")
 os.environ["BACKUP_DIR"] = os.path.join(_TMP, "backups")
 # The suite exercises the real encryption path (SQLCipher). A fixed key keeps

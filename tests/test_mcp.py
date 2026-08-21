@@ -292,9 +292,9 @@ def test_read_tools_return_errors_not_exceptions(test_user, monkeypatch):
     assert res["ok"] is False and "error" in res
 
 
-def test_ask_data_tool(monkeypatch):
+def test_ask_data_tool(test_user, monkeypatch):
     # MCP delegates to the bounded advisor and preserves its clean errors.
-    monkeypatch.setattr(mcp, "_USER_ID", 1)
+    monkeypatch.setattr(mcp, "_USER_ID", test_user)
     import ai.orchestrator as advisor
     monkeypatch.setattr(advisor, "orchestrate", lambda *args, **kwargs: {
         "answer": "123 EUR.", "tool_calls": [{"tool": "aggregate_spending"}]})

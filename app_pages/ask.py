@@ -165,6 +165,8 @@ if st.session_state.pop("ask_pending", None):
         err = result.get("error") or result.get("diagnostic") or "The assistant could not answer this time."
         diag = llm.local_diagnostic()
         hint = diag if diag else "Try a common spending, budget, or recurring-cost question, or configure an AI provider for complex questions."
+        if diag and "Settings" not in diag:
+            hint += " Configure the provider in Settings → Notifications → AI assistant."
         st.error(f"{err} {hint}")
 
 if st.session_state.ask_history:

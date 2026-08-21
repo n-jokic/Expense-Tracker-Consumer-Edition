@@ -130,7 +130,11 @@ def savings_projection(savings_df: pd.DataFrame, goal_name: str) -> dict:
         return {"current_balance": balance, "target": target,
                 "months_to_goal": 0, "projected_date": date.today()}
     if len(rows) >= 2:
-        monthly = (rows.set_index("date")["deposited_eur"].resample("MS").sum().dropna())
+        # Exclude the first deposit row (goal-creation seed deposit) from the
+        # run-rate resample — it's not representative of ongoing deposits.
+        # If excluding it leaves zero rows, fall back to all-rows computation.
+        trailing = rows.iloc[1:] if len(rows) >= 2 else rows
+        monthly = (trailing.set_index("date")["deposited_eur"].resample("MS").sum().dropna())
         if monthly.empty:
             monthly_dep = float(rows["deposited_eur"].mean())
         else:

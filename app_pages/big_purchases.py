@@ -210,29 +210,29 @@ def edit_purchase_dialog(uid: int, row):
                "when it was bought (if any).")
     c1, c2 = st.columns(2)
     with c1:
-        e_name = st.text_input("Item name", value=str(row["name"]), key="bp_edit_name")
+        e_name = st.text_input("Item name", value=str(row["name"]), key=f"bp_edit_name_{row['id']}")
         e_cat  = st.selectbox("Category", CAT_LIST,
                               index=CAT_LIST.index(str(row["category"]))
                               if str(row["category"]) in CAT_LIST else 0,
-                              key="bp_edit_cat")
+                              key=f"bp_edit_cat_{row['id']}")
         e_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
                               index=list(SUPPORTED_CURRENCIES.keys()).index(str(row["currency"]))
                               if str(row["currency"]) in SUPPORTED_CURRENCIES else 0,
-                              key="bp_edit_cur")
+                              key=f"bp_edit_cur_{row['id']}")
     with c2:
         e_price = st.number_input(f"Price ({get_currency_symbol(e_cur)})",
                                   min_value=0.01, max_value=MAX_SAVINGS_TARGET,
                                   step=10.0, format="%.2f",
                                   value=0.01 if pd.isna(row["price"]) else max(float(row["price"]), 0.01),
-                                  key="bp_edit_price")
+                                  key=f"bp_edit_price_{row['id']}")
         e_use = st.number_input("Expected use (hours / month)", min_value=0.0,
                                 step=1.0, format="%.1f",
-                                value=float(row["usage_hours"]), key="bp_edit_use")
+                                value=float(row["usage_hours"]), key=f"bp_edit_use_{row['id']}")
         e_imp = st.slider("Importance", 1, 5, int(row["importance"]),
-                          help="1 = nice to have · 5 = life-changing", key="bp_edit_imp")
+                          help="1 = nice to have · 5 = life-changing", key=f"bp_edit_imp_{row['id']}")
     e_notes = st.text_input("Notes (optional)",
                             value=str(row["notes"]) if pd.notna(row["notes"]) else "",
-                            key="bp_edit_notes")
+                            key=f"bp_edit_notes_{row['id']}")
 
     c1, c2 = st.columns(2)
     with c1:

@@ -4,6 +4,7 @@ Log expense page: entry form, searchable history with inline editing, trash & re
 
 from datetime import date
 import hashlib
+import math
 import re
 
 import pandas as pd
@@ -278,6 +279,23 @@ if saved:
             st.success(f"**{desc}** — {fmt_dual(amount, cur, ae)}", icon=":material/check:")
             st.balloons()
 
+def _valid_amount(value) -> bool:
+    """Reject non-finite / out-of-range amounts for the batch editor.
+
+    Guards the shared expense ledger against inf/NaN poisoning sourced through
+    the data_editor Amount cell: accepts only finite floats strictly greater than
+    0 and within the money cap (utils.MAX_AMOUNT). Mirrors the service-layer
+    guard in services.commands._is_valid_expense_numeric so the UI surfaces bad
+    rows with the existing per-row messaging before they ever reach SQLite.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        # str/"nan"/None inputs that can't be a finite positive amount
+        return False
+    return math.isfinite(f) and f > 0 and f <= MAX_AMOUNT
+
+
 # ── Expense history ───────────────────────────────────────────────────────────
 st.subheader("Expense history")
 df_exp = q.expenses(user_id)
@@ -365,7 +383,8 @@ if not df_exp.empty:
             # T4-001: keep broad options for display but whitelist is enforced on save (per CATEGORIES[cat])
             "subcategory": st.column_config.SelectboxColumn("Subcategory", options=["—"] + ALL_SUBCATS),
             "description": st.column_config.TextColumn("Description"),
-            "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+            "amount": st.column_config.NumberColumn("Amount", format="%.2f",
+                                                  min_value=0.0, max_value=MAX_AMOUNT),
             "currency": st.column_config.SelectboxColumn("Currency",
                                                          options=list(SUPPORTED_CURRENCIES.keys())),
             "notes": st.column_config.TextColumn("Notes"),
@@ -419,7 +438,7 @@ if not df_exp.empty:
                 upd["subcategory"] = ""
             elif upd.get("subcategory") == "—":
                 upd["subcategory"] = ""
-            if "amount" in upd and (pd.isna(coerced["amount"]) or float(coerced["amount"]) <= 0):
+            if "amount" in upd and not _valid_amount(coerced["amount"]):
                 rejected += 1
                 continue
             if "description" in upd and not str(coerced["description"]).strip():

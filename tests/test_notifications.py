@@ -198,12 +198,25 @@ def test_email_builders_escape_user_text():
     html = notifications.build_bill_reminder_email(payload, payload, "12.00", "due soon")
     assert "<img src=x" not in html
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
-    html2 = notifications.build_budget_alert_email(payload, payload, 50.0, 100.0, 1.0)
+    html2 = notifications.build_budget_alert_email(payload, payload, 50.0, 100.0, {"EUR": 1.0}, "EUR")
     assert "<img src=x" not in html2
     rows = pd.DataFrame({"category": [payload], "amount_eur": [100.0]})
     html3 = notifications.build_weekly_summary_email(payload, rows,
                                                      {"EUR": 1.0}, "EUR")
     assert "<img src=x" not in html3
+
+
+def test_budget_alert_email_uses_display_currency():
+    """The budget alert body must format amounts in the user's display
+    currency via fmt() — never hardcoded euros."""
+    rates = {"RSD": 117.0, "EUR": 1.0, "USD": 1.08}
+    html = notifications.build_budget_alert_email(
+        "Tester", "Food & Dining", 50.0, 100.0, rates, "USD")
+    # USD amounts should appear (54.00 / 108.00 with $ symbol).
+    assert "$54.00" in html
+    assert "$108.00" in html
+    # No hardcoded euro sign on the amount cells.
+    assert "€" not in html
 
 
 def test_email_subject_strips_newlines(monkeypatch):

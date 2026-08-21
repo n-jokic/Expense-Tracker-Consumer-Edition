@@ -240,11 +240,16 @@ require confirmation dialogs. Every change is written to the **audit log**.
 
 - CSV import for **Revolut, N26, Wise, and generic** formats, plus **PDF bank
   statements** (pdfplumber extracts both tables and free text).
-- Locale-aware number parsing (e.g. `1.234,56` and Serbian dot-thousands
-  `1.234` = 1234), day-first date parsing with an ambiguity heuristic (so
-  `05/02/2025` is 5 February, never May 2), and debit/credit detection —
-  statements whose bank exports debits as POSITIVE amounts get an "inverted
-  sign convention" checkbox.
+- Locale-aware number parsing (e.g. `1.234,56`, Serbian dot-thousands
+  `1.234` = 1234, and signed/comma-thousands forms like `-1.234` or `1,234`
+  = ∓1234 — identical to the PDF parser), day-first date parsing with an
+  ambiguity heuristic (so `05/02/2025` is 5 February, never May 2), and
+  debit/credit detection — statements whose bank exports debits as POSITIVE
+  amounts get an "inverted sign convention" checkbox.
+- The **generic** CSV format detects the amount column by common names
+  (`Amount`, `Value`, `Debit/Credit`, `Sum/Total`, plus localized ones like
+  `Betrag`, `Iznos`, `Bedrag`), falling back to the last column only for
+  truly unknown schemas.
 - **Auto-categorisation**: your learned classifier first (see ML section),
   then a keyword map as fallback.
 - A review editor lets you correct categories and untick rows before import;
