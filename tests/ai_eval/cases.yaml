@@ -1,10 +1,513 @@
-# Phase 3 A8 — advisor evaluation cases (scaffold; expand to 100 per spec)
-- question: "How much did I spend on groceries last month?"
+# Phase 3 A8 - advisor evaluation cases (100 per spec)
+- question: How much did I spend on groceries last month?
   expected_tool: aggregate_spending
-  expected: { category: Groceries, period: previous_month }
-- question: "Was Lidl more expensive this spring than last spring?"
+  expected:
+    category: Groceries
+    period: previous_month
+  category: simple_aggregation
+- question: How much did I spend on Dining Out this month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Dining Out
+    period: current_month
+  category: simple_aggregation
+- question: How much did I spend on Transport in June 2025?
+  expected_tool: aggregate_spending
+  expected:
+    category: Transport
+    period: 2025-06
+  category: simple_aggregation
+- question: Total spending this month?
+  expected_tool: aggregate_spending
+  expected:
+    period: current_month
+  category: simple_aggregation
+- question: How much did I spend on Entertainment last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Entertainment
+    period: previous_month
+  category: simple_aggregation
+- question: How much did I spend on Utilities in May 2025?
+  expected_tool: aggregate_spending
+  expected:
+    category: Housing & Utilities
+    period: 2025-05
+  category: simple_aggregation
+- question: How much did I spend on Shopping this month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Shopping
+    period: current_month
+  category: simple_aggregation
+- question: How much did I spend on Travel in July 2025?
+  expected_tool: aggregate_spending
+  expected:
+    category: Travel
+    period: 2025-07
+  category: simple_aggregation
+- question: How much did I spend on Healthcare last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Health
+    period: previous_month
+  category: simple_aggregation
+- question: How much did I spend on Housing & Utilities this month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Housing & Utilities
+  category: simple_aggregation
+- question: What was my total spend in June 2025?
+  expected_tool: aggregate_spending
+  expected:
+    period: 2025-06
+  category: simple_aggregation
+- question: How much did I spend on groceries in June 2025?
+  expected_tool: aggregate_spending
+  expected:
+    category: Groceries
+    period: 2025-06
+  category: simple_aggregation
+- question: Groceries spending this month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Groceries
+  category: simple_aggregation
+- question: Dining Out spending last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Dining Out
+    period: previous_month
+  category: simple_aggregation
+- question: How much on Transport last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Transport
+  category: simple_aggregation
+- question: Total spent on Shopping in May 2025?
+  expected_tool: aggregate_spending
+  expected:
+    category: Shopping
+    period: 2025-05
+  category: simple_aggregation
+- question: How much did I spend this month overall?
+  expected_tool: aggregate_spending
+  expected:
+    period: current_month
+  category: simple_aggregation
+- question: How much did I spend on Fees & Taxes this month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Fees & Taxes
+  category: simple_aggregation
+- question: Other category spending last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Other
+  category: simple_aggregation
+- question: How much did I spend on Subscriptions & Software last month?
+  expected_tool: aggregate_spending
+  expected:
+    category: Subscriptions & Software
+  category: simple_aggregation
+- question: Was my spending higher this month than last month?
   expected_tool: compare_periods
-  expected: { merchant: Lidl }
-- question: "What are my subscriptions?"
+  expected:
+    period_a: current_month
+    period_b: previous_month
+  category: date_comparison
+- question: Compare my spending June 2025 vs June 2024
+  expected_tool: compare_periods
+  expected:
+    period_a: 2025-06
+    period_b: 2024-06
+  category: date_comparison
+- question: Was Lidl more expensive this spring than last spring?
+  expected_tool: compare_periods
+  expected:
+    merchant: Lidl
+    period_a: this_spring
+    period_b: last_spring
+  category: date_comparison
+- question: How does this month compare to last month?
+  expected_tool: compare_periods
+  expected:
+    period_a: current_month
+    period_b: previous_month
+  category: date_comparison
+- question: Compare Dining Out spending Q2 2025 vs Q2 2024
+  expected_tool: compare_periods
+  expected:
+    category: Dining Out
+  category: date_comparison
+- question: Was June more expensive than May?
+  expected_tool: compare_periods
+  expected:
+    period_a: 2025-06
+    period_b: 2025-05
+  category: date_comparison
+- question: Compare my grocery spending this month vs same month last year
+  expected_tool: compare_periods
+  expected:
+    category: Groceries
+  category: date_comparison
+- question: Is my Travel spending up compared to last quarter?
+  expected_tool: compare_periods
+  expected:
+    category: Travel
+  category: date_comparison
+- question: Did I spend more on Transport this spring than last spring?
+  expected_tool: compare_periods
+  expected:
+    category: Transport
+  category: date_comparison
+- question: Compare total spending last 30 days vs previous 30 days
+  expected_tool: compare_periods
+  expected: {}
+  category: date_comparison
+- question: Was May 2025 more expensive than May 2024?
+  expected_tool: compare_periods
+  expected:
+    period_a: 2025-05
+    period_b: 2024-05
+  category: date_comparison
+- question: How does my July spending compare to June?
+  expected_tool: compare_periods
+  expected:
+    period_a: 2025-07
+    period_b: 2025-06
+  category: date_comparison
+- question: Was this winter more expensive than last winter for Utilities?
+  expected_tool: compare_periods
+  expected:
+    category: Housing & Utilities
+  category: date_comparison
+- question: Compare Shopping spending this month vs last month
+  expected_tool: compare_periods
+  expected:
+    category: Shopping
+  category: date_comparison
+- question: Did I spend more on Healthcare this year than last year?
+  expected_tool: compare_periods
+  expected:
+    category: Health
+  category: date_comparison
+- question: What were my top merchants this month?
+  expected_tool: merchant_breakdown
+  expected:
+    period: current_month
+  category: merchant_category
+- question: Show my category breakdown for June 2025
+  expected_tool: category_breakdown
+  expected:
+    period: 2025-06
+  category: merchant_category
+- question: What did I spend at Lidl this month?
+  expected_tool: search_transactions
+  expected:
+    merchant: Lidl
+  category: merchant_category
+- question: How much did I spend at Maxi last month?
+  expected_tool: search_transactions
+  expected:
+    merchant: Maxi
+  category: merchant_category
+- question: Top spending categories last month?
+  expected_tool: category_breakdown
+  expected:
+    period: previous_month
+  category: merchant_category
+- question: Where did I shop most this month - merchant breakdown?
+  expected_tool: merchant_breakdown
+  expected: {}
+  category: merchant_category
+- question: Search my Idea purchases
+  expected_tool: search_transactions
+  expected:
+    query: Idea
+  category: merchant_category
+- question: Category breakdown for May 2025
+  expected_tool: category_breakdown
+  expected:
+    period: 2025-05
+  category: merchant_category
+- question: How much at Lidl in June 2025?
+  expected_tool: search_transactions
+  expected:
+    merchant: Lidl
+    period: 2025-06
+  category: merchant_category
+- question: What is my biggest expense category this month?
+  expected_tool: category_breakdown
+  expected: {}
+  category: merchant_category
+- question: Show merchant breakdown for last month
+  expected_tool: merchant_breakdown
+  expected:
+    period: previous_month
+  category: merchant_category
+- question: Search transactions for 'bus'
+  expected_tool: search_transactions
+  expected:
+    query: bus
+  category: merchant_category
+- question: Which category did I spend most on in July?
+  expected_tool: category_breakdown
+  expected:
+    period: 2025-07
+  category: merchant_category
+- question: How much did I spend at grocery stores overall?
+  expected_tool: search_transactions
+  expected:
+    query: grocer
+  category: merchant_category
+- question: Top 5 merchants last month?
+  expected_tool: merchant_breakdown
+  expected:
+    n: 5
+  category: merchant_category
+- question: What is my savings status?
+  expected_tool: savings_status
+  expected: {}
+  category: savings
+- question: How are my savings goals doing?
+  expected_tool: savings_status
+  expected: {}
+  category: savings
+- question: Show my Vacation savings progress
+  expected_tool: project_savings
+  expected:
+    goal_name: Vacation
+  category: savings
+- question: When will I reach my Emergency Fund goal?
+  expected_tool: project_savings
+  expected:
+    goal_name: Emergency Fund
+  category: savings
+- question: Project my Down Payment savings
+  expected_tool: project_savings
+  expected:
+    goal_name: Down Payment
+  category: savings
+- question: How much do I need to save each month to have 10000 next June?
+  expected_tool: project_savings
+  expected:
+    goal_name: Vacation
+  category: savings
+- question: Savings goal Vacation - months to goal?
+  expected_tool: project_savings
+  expected:
+    goal_name: Vacation
+  category: savings
+- question: What are my term deposits?
+  expected_tool: savings_status
+  expected: {}
+  category: savings
+- question: How much have I saved for Investment Account?
+  expected_tool: project_savings
+  expected:
+    goal_name: Investment Account
+  category: savings
+- question: Savings status for all goals?
+  expected_tool: savings_status
+  expected: {}
+  category: savings
+- question: What is my debt summary?
+  expected_tool: debt_summary
+  expected: {}
+  category: debt
+- question: How much do I owe on loans?
+  expected_tool: debt_summary
+  expected: {}
+  category: debt
+- question: Show my loan payoff date
+  expected_tool: debt_summary
+  expected: {}
+  category: debt
+- question: What if I pay 150 extra per month on the car loan?
+  expected_tool: loan_scenario
+  expected:
+    extra_monthly_eur: 150
+  category: debt
+- question: 'Loan scenario: 50000 principal 5% 240 months'
+  expected_tool: loan_scenario
+  expected:
+    principal_eur: 50000
+    annual_rate_pct: 5
+    term_months: 240
+  category: debt
+- question: Simulate paying 200 extra on my loan
+  expected_tool: loan_scenario
+  expected:
+    extra_monthly_eur: 200
+  category: debt
+- question: How much monthly payment for 10000 loan at 7% for 36 months?
+  expected_tool: loan_scenario
+  expected:
+    principal_eur: 10000
+    annual_rate_pct: 7
+    term_months: 36
+  category: debt
+- question: Debt overview including monthly payments
+  expected_tool: debt_summary
+  expected: {}
+  category: debt
+- question: What is my total debt and monthly commitment?
+  expected_tool: debt_summary
+  expected: {}
+  category: debt
+- question: Loan scenario with extra 100 EUR monthly
+  expected_tool: loan_scenario
+  expected:
+    extra_monthly_eur: 100
+  category: debt
+- question: What are my subscriptions?
   expected_tool: recurring_costs
   expected: {}
+  category: recurring
+- question: Show recurring bills
+  expected_tool: recurring_costs
+  expected: {}
+  category: recurring
+- question: How much do I pay monthly for recurring costs?
+  expected_tool: recurring_costs
+  expected: {}
+  category: recurring
+- question: Any subscription price increases?
+  expected_tool: subscription_changes
+  expected: {}
+  category: recurring
+- question: Which subscriptions changed price recently?
+  expected_tool: subscription_changes
+  expected: {}
+  category: recurring
+- question: List my monthly bills
+  expected_tool: recurring_costs
+  expected: {}
+  category: recurring
+- question: Recurring costs total?
+  expected_tool: recurring_costs
+  expected: {}
+  category: recurring
+- question: Did Spotify increase from 7.99 to 8.99?
+  expected_tool: subscription_changes
+  expected:
+    merchant: Spotify
+  category: recurring
+- question: Show subscription changes
+  expected_tool: subscription_changes
+  expected: {}
+  category: recurring
+- question: What are my monthly recurring obligations?
+  expected_tool: recurring_costs
+  expected: {}
+  category: recurring
+- question: And what about groceries?
+  expected_tool: aggregate_spending
+  expected:
+    category: Groceries
+    followup: true
+  category: followup
+- question: What about last month then?
+  expected_tool: aggregate_spending
+  expected:
+    period: previous_month
+    followup: true
+  category: followup
+- question: And for Dining Out?
+  expected_tool: aggregate_spending
+  expected:
+    category: Dining Out
+    followup: true
+  category: followup
+- question: How does that compare to groceries?
+  expected_tool: compare_periods
+  expected:
+    category: Groceries
+    followup: true
+  category: followup
+- question: What about Lidl specifically?
+  expected_tool: search_transactions
+  expected:
+    merchant: Lidl
+    followup: true
+  category: followup
+- question: And my savings?
+  expected_tool: savings_status
+  expected:
+    followup: true
+  category: followup
+- question: What about my loans then?
+  expected_tool: debt_summary
+  expected:
+    followup: true
+  category: followup
+- question: And what about my subscriptions in that period?
+  expected_tool: subscription_changes
+  expected:
+    followup: true
+  category: followup
+- question: How about Transport instead?
+  expected_tool: aggregate_spending
+  expected:
+    category: Transport
+    followup: true
+  category: followup
+- question: And the previous quarter?
+  expected_tool: compare_periods
+  expected:
+    followup: true
+  category: followup
+- question: How am I doing financially?
+  expected_tool: aggregate_spending
+  expected:
+    ambiguous: true
+  category: ambiguous
+- question: What's up with my money?
+  expected_tool: cashflow_summary
+  expected:
+    ambiguous: true
+  category: ambiguous
+- question: Tell me about last period
+  expected_tool: compare_periods
+  expected:
+    ambiguous: true
+  category: ambiguous
+- question: Budget thing?
+  expected_tool: budget_status
+  expected:
+    ambiguous: true
+  category: ambiguous
+- question: Spending?
+  expected_tool: aggregate_spending
+  expected:
+    ambiguous: true
+  category: ambiguous
+- question: What will Bitcoin be worth next year?
+  expected_tool: forecast
+  expected:
+    unanswerable: true
+  category: impossible
+- question: Who is the president of Serbia?
+  expected_tool: search_transactions
+  expected:
+    unanswerable: true
+    expect_error: true
+  category: impossible
+- question: What will my spending be in 2030?
+  expected_tool: forecast
+  expected:
+    unanswerable: true
+  category: impossible
+- question: Can you transfer money to my friend?
+  expected_tool: search_transactions
+  expected:
+    unanswerable: true
+    expect_error: true
+  category: impossible
+- question: What is the meaning of life?
+  expected_tool: search_transactions
+  expected:
+    unanswerable: true
+    expect_error: true
+  category: impossible
