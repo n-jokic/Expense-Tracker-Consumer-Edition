@@ -1,6 +1,11 @@
 """
 Big purchases page: wishlist items with a 4-quadrant priority matrix
-(expected usage vs work-hours needed) and a "bought → expense" handoff.
+(expected usage vs work-hours needed), optional savings-goal funding
+links (FIN-06) and an atomic buy/refund flow (FIN-07).
+
+Money rules: buying and refunding go through services/purchase_commands.py
+(one transaction = one audit group = one revision bump). The free status
+selector cannot reach "bought" — the buy command is the only path.
 """
 
 from datetime import date
@@ -11,10 +16,16 @@ import streamlit as st
 
 import queries as q
 from db import (
-    add_big_purchase, update_big_purchase, delete_big_purchase, add_expense,
-    BIG_STATUSES,
+    add_big_purchase, update_big_purchase, delete_big_purchase,
 )
 from finance import derive_hourly_rate
+from services.commands import CommandError
+from services.purchase_commands import (
+    FUNDING_SAVINGS_GOAL, FUNDING_UNALLOCATED,
+    SELECTABLE_STATUSES, buy_wishlist_item, create_wishlist_target,
+    funding_summary, is_selectable_status, refund_wishlist_item,
+    resolve_linked_goal_name, set_purchase_funding,
+)
 from utils import (
     CAT_LIST, SUPPORTED_CURRENCIES, MAX_SAVINGS_TARGET,
     QUADRANT_COLORS, classify_quadrant,
@@ -28,13 +39,51 @@ rates    = st.session_state.rates
 settings = st.session_state.settings
 today    = date.today()
 
+_SELECTABLE = list(SELECTABLE_STATUSES)
+
 def _bp_update_status(item_id: str):
+    value = st.session_state[f"bp_status_{item_id}"]
+    # FIN-07: arbitrary status changes cannot bypass the buy command.
+    if not is_selectable_status(value):
+        st.error("'bought' can only be set through the buy flow.")
+        return
     try:
-        update_big_purchase(user_id, item_id, {"status": st.session_state[f"bp_status_{item_id}"]})
+        update_big_purchase(user_id, item_id, {"status": value})
     except Exception as e:
         st.error(f"Couldn't save: {e}")
         return
     q.bump_db_version()
+
+
+def _bump_to_revision(res):
+    """Adopt the command's revision so queries refresh immediately."""
+    if res.revision is not None:
+        try:
+            st.session_state.db_version = int(res.revision)
+            st.session_state["_snap_version"] = int(res.revision)
+        except Exception:
+            pass
+
+
+def _goal_choices() -> dict[str, str]:
+    """Existing savings goals -> stable anchor reference (earliest row id)."""
+    try:
+        dfg = q.savings(user_id)
+    except Exception:
+        return {}
+    if dfg.empty:
+        return {}
+    choices: dict[str, str] = {}
+    for _, r in dfg.iterrows():
+        name = str(r.get("goal_name") or "").strip()
+        if not name:
+            continue
+        rid = str(r.get("id"))
+        cur = choices.get(name)
+        if cur is None or rid < cur:
+            choices[name] = rid
+    return choices
+
 
 st.title(":material/shopping_cart: Big purchases")
 st.caption("Decide what's worth it: how many work-hours it costs vs how much you'll actually use it.")
@@ -81,16 +130,49 @@ with st.form("bp_form", clear_on_submit=True):
     with c2:
         bp_cur  = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()))
         bp_use  = st.number_input("Expected use (hours / month)", min_value=0.0,
-                                  step=1.0, format="%.1f",
-                                  help="How many hours per month will you actually use it?")
+                                   step=1.0, format="%.1f",
+                                   help="How many hours per month will you actually use it?")
         bp_imp  = st.slider("Importance", 1, 5, 3,
                             help="1 = nice to have · 5 = life-changing")
     bp_notes = st.text_input("Notes (optional)")
+
+    # FIN-06: every wishlist item may declare where the money will come from.
+    bp_fund_mode = st.radio(
+        "Savings target",
+        ["No target — pay from unallocated funds",
+         "Create a new savings target",
+         "Link an existing goal"],
+        index=0, horizontal=True,
+        help="Optional: tie this wish to a savings goal so you can fund "
+             "the purchase from it later.")
+    bp_new_goal   = ""
+    bp_new_target = 0.0
+    bp_link_goal  = ""
+    _goal_opts = sorted(_goal_choices())
+    if bp_fund_mode == "Create a new savings target":
+        b1, b2 = st.columns([2, 1])
+        with b1:
+            bp_new_goal = st.text_input("New target name", placeholder="e.g. Laptop fund")
+        with b2:
+            bp_new_target = st.number_input("Target amount (EUR)", min_value=0.0,
+                                            max_value=MAX_SAVINGS_TARGET, step=50.0,
+                                            format="%.2f", value=0.0)
+    elif bp_fund_mode == "Link an existing goal":
+        if _goal_opts:
+            bp_link_goal = st.selectbox("Goal", _goal_opts)
+        else:
+            st.caption("No savings goals yet — pick “Create a new savings target” "
+                       "or leave the item without a target.")
+
     if st.form_submit_button("Add to wishlist", type="primary", width="stretch", icon=":material/add:"):
         if not bp_name.strip():
             st.error("Please give the item a name.")
         elif float(bp_price) <= 0:
             st.error("Price must be greater than 0.")
+        elif bp_fund_mode == "Create a new savings target" and not bp_new_goal.strip():
+            st.error("Please name the new savings target.")
+        elif bp_fund_mode == "Link an existing goal" and not bp_link_goal:
+            st.error("Pick a goal to link, or switch the savings target off.")
         else:
             _fresh_bp = q.big_purchases(user_id)
             if not _fresh_bp.empty and (
@@ -99,13 +181,31 @@ with st.form("bp_form", clear_on_submit=True):
                 st.toast("Already saved — duplicate prevented.", icon=":material/check:")
                 st.rerun()
             pe = to_eur(bp_price, bp_cur, rates)
+            # FIN-06: resolve the funding reference BEFORE the insert so the
+            # item is created with its stable link in place.
+            fund_src, fund_ref = None, None
             try:
+                if bp_fund_mode == "No target — pay from unallocated funds":
+                    fund_src = FUNDING_UNALLOCATED
+                elif bp_fund_mode == "Create a new savings target":
+                    tres = create_wishlist_target(user_id, bp_new_goal.strip(),
+                                                  target_eur=float(bp_new_target))
+                    fund_src, fund_ref = FUNDING_SAVINGS_GOAL, tres.affected_ids[0]
+                    _bump_to_revision(tres)
+                else:
+                    fund_src = FUNDING_SAVINGS_GOAL
+                    fund_ref = _goal_choices().get(bp_link_goal)
+                    if not fund_ref:
+                        raise CommandError("The selected goal could not be linked.")
                 add_big_purchase(user_id, {
                     "name": bp_name.strip(), "category": bp_cat,
                     "price": bp_price, "currency": bp_cur, "price_eur": pe,
                     "usage_hours": float(bp_use), "importance": int(bp_imp),
                     "status": "wishlist", "notes": bp_notes,
+                    "funding_source": fund_src, "funding_goal_ref": fund_ref,
                 })
+            except CommandError as e:
+                st.error(str(e))
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
             else:
@@ -118,6 +218,11 @@ dfb = q.big_purchases(user_id)
 if dfb.empty:
     st.info("No big purchases yet — add one above")
     st.stop()
+
+try:
+    _sav_rows = q.savings(user_id).to_dict("records")
+except Exception:
+    _sav_rows = []
 
 pending = dfb[dfb["status"] != "bought"] if not dfb.empty else pd.DataFrame()
 
@@ -162,13 +267,16 @@ if hourly_rate > 0 and not pending.empty:
 
 @st.dialog("Confirm purchase")
 def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
-                            amount_eur, notes):
-    """Confirm a wishlist item was bought: marks it bought and logs the expense."""
+                            amount_eur, notes, fund_line=""):
+    """Confirm a wishlist purchase: ONE atomic command writes the expense,
+    the funding debit and the bought stamp together."""
     st.write(f"Mark **{name}** as bought and log it as an expense?")
     st.caption(
         f"This will mark the item as **bought** and log a new expense of "
         f"**{amount:,.2f} {currency}** (≈ {fmt(amount_eur, DC, rates)}) on today's date."
     )
+    if fund_line:
+        st.caption(fund_line)
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Cancel", key=f"bp_cancel_{purchase_id}", width="stretch"):
@@ -176,36 +284,30 @@ def confirm_purchase_dialog(uid, purchase_id, name, category, amount, currency,
     with c2:
         if st.button("Confirm & log expense", key=f"bp_confirm_{purchase_id}",
                      type="primary", width="stretch"):
-            _fresh_bp2 = q.big_purchases(uid)
-            if not _fresh_bp2.empty:
-                _row = _fresh_bp2[_fresh_bp2["id"] == purchase_id]
-                if not _row.empty and str(_row.iloc[0]["status"]) == "bought":
-                    st.toast("Already bought — duplicate prevented.", icon=":material/check:")
-                    st.rerun()
             # Recompute the EUR value at confirm time with the CURRENT rates —
             # the snapshotted price_eur may be stale if rates changed since
             # the item was added/edited.
             try:
                 ae = to_eur(float(amount), str(currency), rates)
-                add_expense(uid, {
-                    "date": today, "category": category, "subcategory": "",
-                    "description": f"{name} (big purchase)",
-                    "amount": float(amount), "currency": str(currency),
-                    "amount_eur": ae,
-                    "recurring": False, "notes": str(notes) or "Big purchase",
-                })
-                update_big_purchase(uid, purchase_id, {"status": "bought"})
+                res = buy_wishlist_item(uid, str(purchase_id), amount_eur=ae)
+            except CommandError as e:
+                st.error(str(e))
+                return
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
                 return
-            q.bump_db_version()
-            st.session_state["bp_flash"] = ("toast", f"Logged **{name}** as an expense.")
+            if not res.changed:
+                st.toast("Already bought — duplicate prevented.", icon=":material/check:")
+            else:
+                _bump_to_revision(res)
+                st.session_state["bp_flash"] = ("toast", f"Logged **{name}** as an expense.")
             st.rerun()
 
 
 @st.dialog("Edit wishlist item")
 def edit_purchase_dialog(uid: int, row):
-    """Edit wishlist item details; the status flow is unchanged."""
+    """Edit wishlist item details and its funding target; the expense already
+    logged for a bought item is never touched here."""
     st.caption("Editing the wishlist item does not change the expense already logged "
                "when it was bought (if any).")
     c1, c2 = st.columns(2)
@@ -234,6 +336,26 @@ def edit_purchase_dialog(uid: int, row):
                             value=str(row["notes"]) if pd.notna(row["notes"]) else "",
                             key=f"bp_edit_notes_{row['id']}")
 
+    # FIN-06: the funding target can be changed or cleared; the stable
+    # reference survives every other edit untouched.
+    _choices = _goal_choices()
+    _opts = ["(no target)", "(unallocated funds)"] + sorted(_choices)
+    cur_src = str(row.get("funding_source") or "")
+    cur_resolved = resolve_linked_goal_name(uid, row.get("funding_goal_ref")) \
+        if cur_src == FUNDING_SAVINGS_GOAL else None
+    if cur_src == FUNDING_SAVINGS_GOAL:
+        e_fund_default = (cur_resolved if cur_resolved in _choices
+                          else "(no target)")
+    elif cur_src == FUNDING_UNALLOCATED:
+        e_fund_default = "(unallocated funds)"
+    else:
+        e_fund_default = "(no target)"
+    e_fund = st.selectbox(
+        "Savings target", _opts,
+        index=_opts.index(e_fund_default) if e_fund_default in _opts else 0,
+        key=f"bp_edit_fund_{row['id']}",
+        help="Where should the money come from when you buy this?")
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Cancel", key=f"bp_edit_cancel_{row['id']}", width="stretch"):
@@ -242,21 +364,41 @@ def edit_purchase_dialog(uid: int, row):
         if st.button("Save", type="primary", key=f"bp_edit_save_{row['id']}", width="stretch"):
             if not e_name.strip():
                 st.error("Please give the item a name.")
-            else:
-                pe = to_eur(float(e_price), e_cur, rates)
-                try:
-                    update_big_purchase(uid, str(row["id"]), {
-                        "name": e_name.strip(), "category": e_cat,
-                        "price": float(e_price), "currency": e_cur, "price_eur": pe,
-                        "usage_hours": float(e_use), "importance": int(e_imp),
-                        "notes": e_notes,
-                    })
-                except Exception as e:
-                    st.error(f"Couldn't save: {e}")
-                    return
-                q.bump_db_version()
-                st.toast(f"**{e_name.strip()}** updated.", icon="✏️")
-                st.rerun()
+                return
+            pe = to_eur(float(e_price), e_cur, rates)
+            try:
+                update_big_purchase(uid, str(row["id"]), {
+                    "name": e_name.strip(), "category": e_cat,
+                    "price": float(e_price), "currency": e_cur, "price_eur": pe,
+                    "usage_hours": float(e_use), "importance": int(e_imp),
+                    "notes": e_notes,
+                })
+                # Funding is metadata, but still routed through the command
+                # layer so validation + audit stay consistent.
+                if e_fund == "(no target)":
+                    if cur_src:
+                        set_purchase_funding(uid, str(row["id"]), source=None)
+                elif e_fund == "(unallocated funds)":
+                    if cur_src != FUNDING_UNALLOCATED:
+                        set_purchase_funding(uid, str(row["id"]),
+                                             source=FUNDING_UNALLOCATED)
+                else:
+                    ref = _choices.get(e_fund)
+                    if not ref:
+                        raise CommandError("The selected goal could not be linked.")
+                    if cur_src != FUNDING_SAVINGS_GOAL or \
+                            str(row.get("funding_goal_ref")) != str(ref):
+                        set_purchase_funding(uid, str(row["id"]),
+                                             source=FUNDING_SAVINGS_GOAL, goal_ref=ref)
+            except CommandError as e:
+                st.error(str(e))
+                return
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
+                return
+            q.bump_db_version()
+            st.toast(f"**{e_name.strip()}** updated.", icon="✏️")
+            st.rerun()
 
 
 # ── Item list ─────────────────────────────────────────────────────────────────
@@ -280,15 +422,18 @@ def _persist_grouped_order(groups, rows):
             return
         res = reorder_big_purchases(user_id, moves)
         if res.changed and res.revision is not None:
-            try:
-                st.session_state.db_version = int(res.revision)
-                st.session_state["_snap_version"] = int(res.revision)
-            except Exception:
-                pass
+            _bump_to_revision(res)
             st.rerun()
     except Exception as e:
         st.error(f"Couldn't save: {e}")
         return
+
+
+def _fund_caption(row) -> str:
+    try:
+        return funding_summary(row, _sav_rows)
+    except Exception:
+        return ""
 
 
 def _render_purchase_card(row, archived=False):
@@ -306,27 +451,35 @@ def _render_purchase_card(row, archived=False):
             st.markdown(f"{status_icon} **{row['name']}**")
             st.caption(f"{row['category']} · importance {int(row['importance'])}/5 · "
                        f"use {float(row['usage_hours']):,.1f} h/mo{work_str}")
+            fund_line = _fund_caption(row)
+            if fund_line:
+                st.caption(f"🎯 {fund_line}")
         with l2:
             st.write(fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates))
 
         with l3:
             if archived:
                 st.caption("Bought · archived")
-                if st.button("Restore", icon=":material/undo:", key=f"bp_restore_{row['id']}",
-                             width="stretch"):
+                if st.button("Refund & restore", icon=":material/undo:",
+                             key=f"bp_restore_{row['id']}", width="stretch",
+                             help="Reverses the purchase: soft-deletes the linked "
+                                  "expense and the funding debit, restores the "
+                                  "previous status."):
+
                     try:
-                        update_big_purchase(user_id, str(row["id"]),
-                                            {"status": "wishlist"})
+                        res = refund_wishlist_item(user_id, str(row["id"]))
+                    except CommandError as e:
+                        st.error(str(e))
                     except Exception as e:
                         st.error(f"Couldn't save: {e}")
                     else:
-                        q.bump_db_version()
+                        _bump_to_revision(res)
                         st.rerun()
             else:
                 st.selectbox(
-                    "Status", BIG_STATUSES,
-                    index=BIG_STATUSES.index(row["status"])
-                    if row["status"] in BIG_STATUSES else 0,
+                    "Status", _SELECTABLE,
+                    index=_SELECTABLE.index(row["status"])
+                    if row["status"] in _SELECTABLE else 0,
                     key=f"bp_status_{row['id']}", label_visibility="collapsed",
                     on_change=lambda i=row["id"]: _bp_update_status(i),
                 )
@@ -337,7 +490,7 @@ def _render_purchase_card(row, archived=False):
                     confirm_purchase_dialog(
                         user_id, str(row["id"]), str(row["name"]), str(row["category"]),
                         float(row["price"]), str(row["currency"]), float(row["price_eur"]),
-                        str(row.get("notes", "")),
+                        str(row.get("notes", "")), _fund_caption(row),
                     )
 
         with st.popover("More", icon=":material/more_vert:"):
@@ -370,12 +523,17 @@ if not active.empty:
         for _, row in rows.iterrows():
             work = (f" · ≈ {float(row['price_eur']) / hourly_rate:,.0f} h of work"
                     if hourly_rate > 0 and row["price_eur"] > 0 else "")
+            fund_line = _fund_caption(row)
+            details = (f"importance {int(row['importance'])}/5 · "
+                       f"use {float(row['usage_hours']):,.1f} h/mo{work}")
+            if fund_line:
+                details += f"\n🎯 {fund_line}"
             cards.append({"id": str(row["id"]), "title": str(row["name"]),
-                "details": f"importance {int(row['importance'])}/5 · use {float(row['usage_hours']):,.1f} h/mo{work}",
+                "details": details,
                 "amount": fmt_row(row["price_eur"], row["price"], row["currency"], DC, rates),
                 "actions": [
                     {"type": "select", "label": "Status", "action": "status",
-                     "value": str(row["status"]), "options": BIG_STATUSES},
+                     "value": str(row["status"]), "options": _SELECTABLE},
                     {"label": "Bought → log expense", "action": "buy"},
                     {"label": "Edit", "action": "edit"}, {"label": "Delete", "action": "delete"}]})
         groups[category] = cards
@@ -393,7 +551,7 @@ if not active.empty:
     _persist_grouped_order(ordered, active)
     if action:
         row = rows_by_id[action["id"]]
-        if action["action"] == "status" and action["value"] in BIG_STATUSES:
+        if action["action"] == "status" and is_selectable_status(action.get("value", "")):
             try:
                 update_big_purchase(user_id, str(row["id"]), {"status": action["value"]})
             except Exception as e:
@@ -404,7 +562,8 @@ if not active.empty:
         elif action["action"] == "buy":
             confirm_purchase_dialog(user_id, str(row["id"]), str(row["name"]),
                 str(row["category"]), float(row["price"]), str(row["currency"]),
-                float(row["price_eur"]), str(row.get("notes", "")))
+                float(row["price_eur"]), str(row.get("notes", "")),
+                _fund_caption(row))
         elif action["action"] == "edit":
             edit_purchase_dialog(user_id, row)
         elif action["action"] == "delete":
@@ -416,7 +575,7 @@ if not active.empty:
                 q.bump_db_version()
                 st.rerun()
 else:
-    st.info("All wishlist items are archived. Add a new item above or restore one below.")
+    st.info("All wishlist items are archived. Add a new item above or refund one below.")
 
 bought = dfb[dfb["status"] == "bought"]
 if not bought.empty:

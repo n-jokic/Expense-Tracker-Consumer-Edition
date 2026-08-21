@@ -509,6 +509,18 @@ class BigPurchase(Base):
     status      = Column(String, default="wishlist")  # wishlist | saving | bought
     sort_order  = Column(Integer, default=0)
     notes       = Column(String, default="")
+    # FIN-06: optional stable funding reference. funding_source is explicit
+    # ("unallocated" | "savings_goal"); funding_goal_ref anchors the linked
+    # goal via the id of one Savings row, so the link survives goal renames
+    # (rename rewrites goal_name, never row ids) and renders gracefully when
+    # the goal later vanishes.
+    funding_source   = Column(String, nullable=True)
+    funding_goal_ref = Column(String, nullable=True)
+    # FIN-07: stable expense reference written by the atomic buy command —
+    # makes retries idempotent and refunds exact; pre_buy_status remembers the
+    # status to restore on refund.
+    expense_id    = Column(String, nullable=True)
+    pre_buy_status = Column(String, nullable=True)
     created_at  = Column(DateTime, default=_utcnow)
 
 
@@ -770,6 +782,11 @@ def _migrate(engine):
     })
     _add_missing_columns(engine, "big_purchases", {
         "sort_order": "INTEGER DEFAULT 0",
+        # FIN-06/FIN-07: funding link + stable expense reference
+        "funding_source": "VARCHAR",
+        "funding_goal_ref": "VARCHAR",
+        "expense_id": "VARCHAR",
+        "pre_buy_status": "VARCHAR",
     })
     _add_missing_columns(engine, "expenses", {
         "rec_template_id": "VARCHAR",
@@ -1814,7 +1831,9 @@ def update_recurring(user_id, rec_id, updates):
 # ── Big purchases ─────────────────────────────────────────────────────────────
 
 _BIG_COLS = ["id","user_id","name","category","price","currency","price_eur",
-             "usage_hours","importance","status","sort_order","notes","created_at"]
+             "usage_hours","importance","status","sort_order","notes",
+             "funding_source","funding_goal_ref","expense_id","pre_buy_status",
+             "created_at"]
 
 BIG_STATUSES = ["wishlist", "saving", "bought"]
 
@@ -1842,6 +1861,10 @@ def add_big_purchase(user_id, row):
             status=row.get("status","wishlist"),
             sort_order=int(row.get("sort_order", 0) or 0),
             notes=row.get("notes",""),
+            funding_source=row.get("funding_source"),
+            funding_goal_ref=row.get("funding_goal_ref"),
+            expense_id=row.get("expense_id"),
+            pre_buy_status=row.get("pre_buy_status"),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "big_purchases", bp_id, row)

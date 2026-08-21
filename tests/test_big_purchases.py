@@ -84,3 +84,34 @@ def test_bought_purchase_is_retained_and_order_is_persisted(purchase_user):
     assert set(rows["id"]) == {bought_id, active_id}
     assert rows.loc[rows["id"] == bought_id, "status"].iloc[0] == "bought"
     assert rows.loc[rows["id"] == active_id, "sort_order"].iloc[0] == 0
+
+
+# ── FIN-06: funding-reference columns exist, migrate additively, round-trip ──
+
+def test_funding_reference_round_trips_through_db_helpers(purchase_user):
+    # add_big_purchase carries the optional funding link; get_big_purchases
+    # exposes it (additive migration created the columns on the legacy table).
+    ref = "anchor-row-uuid"
+    item_id = add_big_purchase(purchase_user, {
+        "name": "Linked item", "category": "Other", "price": 99.0,
+        "currency": "EUR", "price_eur": 99.0, "usage_hours": 5.0,
+        "importance": 2, "status": "wishlist", "notes": "",
+        "funding_source": "savings_goal", "funding_goal_ref": ref,
+    })
+    row = get_big_purchases(purchase_user)
+    row = row[row["id"] == item_id].iloc[0]
+    assert row["funding_source"] == "savings_goal"
+    assert row["funding_goal_ref"] == ref
+    assert row["expense_id"] is None and row["pre_buy_status"] is None
+
+    # edits of unrelated fields leave the reference untouched, and the
+    # FIN-07 stamps can be written through update_big_purchase
+    update_big_purchase(purchase_user, item_id, {"name": "Linked item v2"})
+    update_big_purchase(purchase_user, item_id, {
+        "expense_id": "exp-1", "pre_buy_status": "saving"})
+    row = get_big_purchases(purchase_user)
+    row = row[row["id"] == item_id].iloc[0]
+    assert row["name"] == "Linked item v2"
+    assert row["funding_goal_ref"] == ref
+    assert row["expense_id"] == "exp-1"
+    assert row["pre_buy_status"] == "saving"
