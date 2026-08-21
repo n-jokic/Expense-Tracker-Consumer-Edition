@@ -79,8 +79,15 @@
       canonical rows; no code/HTML); ask.py re-validates before plotting;
       OpenAI json_object planner path; native Claude adapter w/ own auth +
       retries; API-family setting + egress disclosure. (`77cd6d4`)
-- [ ] OCR-01 Add real fixtures, line-item extraction, and total reconciliation.
-- [ ] OCR-02 Add row-level receipt review and atomic multi-item save.
+- [x] OCR-01 Add real fixtures, line-item extraction, and total reconciliation.
+      → line_item_extractor (signed amounts, qty×unit rows, both decimal
+      formats); reconcile() reports delta/ok within €0.01; 5 real rendered
+      receipt images + manifest expectations incl. mismatch case. (`f6f27b3`)
+- [x] OCR-02 Add row-level receipt review and atomic multi-item save.
+      → per-row keep/edit UI + low-confidence/mismatch gates with explicit
+      confirm; save_receipt_items one-txn all-or-nothing w/ retained
+      receipt total; nested receipt form removed (recorded bug fixed in
+      isolation); cloud fallback default-OFF opt-in. (`f7e9012`)
 - [ ] ML-01 Finish empty/candidate/active ML settings states and verify existing work.
 - [ ] QA-01 Fix isolated derived-EUR sync creates, comma-thousands CSV parsing, and stale QA docs.
 
