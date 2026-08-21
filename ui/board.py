@@ -101,9 +101,6 @@ def apply_persisted_group_order(category_order: list[str],
     return head + [g for g in category_order if g not in seen]
 
 
-_CARD_BOARD = None
-
-
 def grouped_board(
     key: str,
     groups: dict[str, list[dict]],
@@ -123,16 +120,17 @@ def grouped_board(
       state (FIN-03); the component emits `order`, `group_order`, and
       `collapsed_groups`, all re-validated here before they reach the caller.
     """
-    global _CARD_BOARD
     original: dict[str, list[str]] = {
         str(g): [str(c["id"]) for c in cards] for g, cards in groups.items()
     }
     known_groups = set(original)
     seed_order = apply_persisted_group_order(list(original), initial_group_order)
     seed_collapsed = _validate_collapsed(initial_collapsed, known_groups)
-    # Lazy component load so tests that don't render UI can still import this module
-    if _CARD_BOARD is None:
-        _CARD_BOARD = st.components.v2.component(
+    # A3 fix: register on EVERY render. The bidi component registry lives on
+    # the ACTIVE Runtime instance, so a module-level cache of the mounted
+    # callable goes stale across AppTest runs / runtime restarts and mounts
+    # fail with "Component 'expense_tracker_draggable_cards' is not registered".
+    _card_board = st.components.v2.component(
             "expense_tracker_draggable_cards",
             html="<div id='board'></div>",
             css="""
@@ -200,7 +198,7 @@ export default function({data,parentElement,setStateValue,setTriggerValue}) {
 
     # Component invocation — data slot carries groups plus the persisted
     # group state so the board opens exactly as saved.
-    result = _CARD_BOARD(
+    result = _card_board(
         data={"groups": groups,
               "collapsed_groups": sorted(seed_collapsed),
               "group_order": seed_order},
@@ -208,7 +206,15 @@ export default function({data,parentElement,setStateValue,setTriggerValue}) {
         default={"order": original,
                  "collapsed_groups": sorted(seed_collapsed),
                  "group_order": seed_order},
+        # A3 fix: every state key listed in `default` (and emitted via
+        # setStateValue by the component JS) must have a matching
+        # on_<state>_change callback, or Streamlit rejects the invocation
+        # with "Key '<name>' in `default` is not a valid state name" —
+        # which made the canonical board crash on EVERY run and silently
+        # fall back to a non-draggable list.
         on_order_change=lambda: None,
+        on_group_order_change=lambda: None,
+        on_collapsed_groups_change=lambda: None,
     )
     order_raw = getattr(result, "order", None)
     order = _validate_grouped_order(order_raw, original) or dict(original)

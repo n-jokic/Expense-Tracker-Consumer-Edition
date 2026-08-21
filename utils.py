@@ -164,58 +164,20 @@ def validate_grouped_order(order: dict, expected: dict):
     return {str(category): [str(item_id) for item_id in order[category]]
             for category in expected}
 
-_CARD_BOARD = None
-
 def draggable_card_board(groups: dict, key: str):
-    global _CARD_BOARD
-    original = {str(category): [str(card["id"]) for card in cards]
-                for category, cards in groups.items()}
-    if _CARD_BOARD is None:
-        _CARD_BOARD = st.components.v2.component(
-            "expense_tracker_draggable_cards",
-            html="<div id='board'></div>",
-            css="""
-                .board{display:grid;gap:1rem}
-                .group{border:1px solid var(--st-border-color);border-radius:.5rem;padding:.75rem;background:var(--st-secondary-background-color)}
-                .group h3{margin:0 0 .5rem;font-size:1rem}
-                .drop{min-height:3rem;display:grid;gap:.5rem}
-                .card{display:grid;grid-template-columns:auto 1fr auto;gap:.75rem;align-items:start;padding:.75rem;border:1px solid var(--st-border-color);border-radius:.4rem;background:var(--st-background-color);color:var(--st-text-color)}
-                .card:focus{outline:2px solid var(--st-primary-color)}
-                .handle{cursor:grab;border:0;background:transparent;color:var(--st-text-color);font-size:1.1rem}
-                .meta{color:var(--st-secondary-text-color);font-size:.85rem}
-                .amount{font-weight:600;white-space:nowrap}
-                .actions{grid-column:2 / -1;display:flex;gap:.4rem;flex-wrap:wrap}
-                .actions button,.actions select{font:inherit;color:inherit;background:var(--st-secondary-background-color);border:1px solid var(--st-border-color);border-radius:.25rem;padding:.25rem .5rem}
-                @media(max-width:600px){.card{grid-template-columns:auto 1fr}.amount{grid-column:2}.actions{grid-column:1 / -1}}
-            """,
-            js="""
-export default function({data,parentElement,setStateValue,setTriggerValue}) {
- const root=parentElement.querySelector('#board'); root.replaceChildren(); root.className='board';
- let drag=null; const groups=data.groups || {};
- const emit=()=>setStateValue('order',Object.fromEntries([...root.querySelectorAll('.group')].map(g=>[g.dataset.category,[...g.querySelectorAll('.card')].map(c=>c.dataset.id)])));
- const move=(card,delta)=>{const cards=[...card.parentElement.children],i=cards.indexOf(card),to=i+delta;if(to<0||to>=cards.length)return; card.parentElement.insertBefore(card,delta<0?cards[to]:cards[to].nextSibling);emit();card.focus();};
- for(const [category,cards] of Object.entries(groups)){
-  const group=document.createElement('section');group.className='group';group.dataset.category=category;const title=document.createElement('h3');title.textContent=category;const drop=document.createElement('div');drop.className='drop';group.append(title,drop);
-  drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();if(drag){drop.append(drag);emit();}};
-  for(const dataCard of cards){const card=document.createElement('article');card.className='card';card.dataset.id=dataCard.id;card.tabIndex=0;card.draggable=true;card.ondragstart=()=>drag=card;card.ondragend=()=>drag=null;
-   card.onkeydown=e=>{if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();move(card,e.key==='ArrowUp'?-1:1);}};
-   const handle=document.createElement('button');handle.className='handle';handle.type='button';handle.textContent='\u2195';handle.title='Drag, or Alt+Up / Alt+Down to move';handle.setAttribute('aria-label','Move '+dataCard.title);
-   const body=document.createElement('div');const name=document.createElement('strong');name.textContent=dataCard.title;const meta=document.createElement('div');meta.className='meta';meta.textContent=dataCard.details;body.append(name,meta);
-   const amount=document.createElement('div');amount.className='amount';amount.textContent=dataCard.amount;const actions=document.createElement('div');actions.className='actions';
-   for(const action of dataCard.actions||[]){if(action.type==='select'){const select=document.createElement('select');select.setAttribute('aria-label',action.label);for(const value of action.options){const option=document.createElement('option');option.value=value;option.textContent=value;option.selected=value===action.value;select.append(option);}select.onchange=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:select.value});actions.append(select);}else{const button=document.createElement('button');button.type='button';button.textContent=action.label;button.onclick=()=>setTriggerValue('action',{id:dataCard.id,action:action.action,value:action.value||null});actions.append(button);}}
-   card.append(handle,body,amount,actions);drop.append(card);
-  } root.append(group);
- } return ()=>{};
-}""",
-        )
-    result = _CARD_BOARD(data={"groups": groups}, key=key,
-                         default={"order": original}, on_order_change=lambda: None)
-    order = validate_grouped_order(getattr(result, "order", None), original) or original
-    action = getattr(result, "action", None)
-    if not isinstance(action, dict) or set(action) != {"id", "action", "value"}:
-        action = None
-    elif str(action["id"]) not in {item_id for ids in original.values() for item_id in ids}:
-        action = None
+    """Compat wrapper — delegates to ui.board.grouped_board (canonical).
+
+    A3: the old copy kept its own CCv2 registration in a module global;
+    when the active runtime's registry lacked it at mount time every call
+    crashed with "Component not registered". The canonical board registers
+    per render, so delegating is correct everywhere.
+    """
+    from ui.board import grouped_board
+    res = grouped_board(key, groups)
+    order = dict(getattr(res, "item_order", None) or {})
+    act = getattr(res, "action", None)
+    action = ({"id": str(act.id), "action": str(act.action),
+               "value": act.value} if act is not None else None)
     return order, action
 
 _XL_UNSAFE_PREFIXES = ("=", "+", "@")

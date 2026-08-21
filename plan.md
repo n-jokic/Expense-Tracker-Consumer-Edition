@@ -33,7 +33,7 @@
 - Clamped-from-negative shows hint text (e.g. "overdrawn"); write-side negative producers stay as-is (intentional no-clamp ledger policy, `db.py:1499-1500`).
 - Acceptance: negative-balance goal renders 0% + hint, no exception.
 
-### [ ] A3. Recurring tab runtime verification + consistency (item 7)
+### [x] A3. Recurring tab runtime verification + consistency (item 7)
 - Run app (global Python 3.12 + Streamlit 1.61), exercise board: drag card/group, collapse, Alt+arrows, reload → verify `group_order`/`collapsed_groups` persist in `ui_layout`.
 - Replace silent `except Exception:` fallback (`recurring.py:324-325`) with logging + visible warning.
 - Visual pass: chrome aligned with other tabs.
@@ -117,3 +117,4 @@ Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence rewor
 - [x] Plan stored (this file).
 - [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
 - [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.
+- [x] A3 done — **root cause found & fixed**: (a) grouped_board declared `collapsed_groups`/`group_order` state keys without matching on_*_change callbacks → Streamlit rejected EVERY invocation, silent fallback meant drag/collapse never worked (also broke Big-Purchases board); added the missing callbacks. (b) both module-level component caches went stale vs the per-runtime bidi registry ("Component not registered") → register per render in ui/board.py; utils.draggable_card_board now delegates to the canonical board. Fallback is now loud (logged + visible warning). tests/test_recurring_board.py: canonical path renders, no fallback fired, layout persists. Full tests/: **742 passed**; all 6 failed + 11 errors are sandbox PermissionError-at-setup family (verified environmental). No streamlit-sortables needed — decision gate resolved by fixing the existing board.

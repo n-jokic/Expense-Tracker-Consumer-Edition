@@ -321,7 +321,18 @@ else:
                 collapsed_init = sorted(_br.collapsed_groups)
             except LayoutSaveError as exc:
                 warn_layout_unsaved(exc)
-    except Exception:
+    except Exception as _board_exc:
+        # A3: never swallow board failures silently — log with traceback and
+        # tell the user; the compat fallback below keeps the page usable.
+        import logging, traceback
+        logging.getLogger(__name__).error(
+            "grouped_board failed on recurring page:\n%s",
+            traceback.format_exc())
+        st.warning(
+            f"The drag-and-drop board hit an error and fell back to a plain "
+            f"list ({_board_exc}). Dragging/collapsing may not work — please "
+            f"report this.",
+            icon=":material/warning:")
         ordered, action = draggable_card_board(groups, f"recurring_order_{user_id}")
     if not action:
         _persist_grouped_order(ordered, active)
