@@ -1,0 +1,5 @@
+# Optional server-only document parsing stack.
+# Keep this out of the normal desktop/runtime installation.
+paddlepaddle==3.3.1
+paddlex==3.7.2
+paddleocr[doc-parser]==3.7.0

@@ -11,6 +11,10 @@ pillow>=10.0
 scikit-learn>=1.4
 statsmodels>=0.14
 pytesseract>=0.3
+rapidocr==3.9.2
+onnxruntime>=1.18
+opencv-python-headless>=4.9
+PyMuPDF>=1.24
 pdfplumber>=0.11
 fastapi>=0.110
 uvicorn>=0.29

@@ -1,0 +1,54 @@
+[
+  {
+    "id": "clean-rsd-latin",
+    "image": "clean-rsd-latin.jpg",
+    "merchant": "Lidl",
+    "total": 2340.5,
+    "currency": "RSD",
+    "date": "2026-08-17",
+    "quality": "clean",
+    "geometry": "straight",
+    "script": "serbian-latin",
+    "language": "sr",
+    "features": ["subtotal", "vat"]
+  },
+  {
+    "id": "angled-eur-english",
+    "image": "angled-eur-english.jpg",
+    "merchant": "Tesco",
+    "total": 12.99,
+    "currency": "EUR",
+    "date": "2026-08-18",
+    "quality": "angled",
+    "geometry": "warped",
+    "script": "latin",
+    "language": "en",
+    "features": ["discount"]
+  },
+  {
+    "id": "dark-rsd-cyrillic",
+    "image": "dark-rsd-cyrillic.jpg",
+    "merchant": "Макси",
+    "total": 5000.0,
+    "currency": "RSD",
+    "date": "2026-08-19",
+    "quality": "dark",
+    "geometry": "rotated",
+    "script": "serbian-cyrillic",
+    "language": "sr",
+    "features": ["cash", "change"]
+  },
+  {
+    "id": "screen-shot-vat",
+    "image": "screen-shot-vat.png",
+    "merchant": "Market ABC",
+    "total": 2660.0,
+    "currency": "RSD",
+    "date": "2026-08-20",
+    "quality": "overexposed",
+    "geometry": "screen",
+    "script": "latin",
+    "language": "en",
+    "features": ["subtotal", "vat", "cash", "change"]
+  }
+]
