@@ -9,6 +9,7 @@ from forecasting import (
     forecast_next_month, detect_anomalies, suggest_category,
     suggest_category_and_subcategory,
     detect_subscriptions, cluster_month_patterns, suggest_budgets,
+    backtest_forecasts,
 )
 from forecasting import _CategorizerModel, _SubcategorizerModel
 
@@ -36,6 +37,19 @@ def test_forecast_with_enough_history():
     assert out["total"] > 0
     assert out["lower"] <= out["total"] <= out["upper"]
     assert out["history_months"] == 12
+
+
+def test_forecast_selection_reports_backtest_metrics():
+    out = forecast_next_month(_expenses(12, base=1000.0))
+    assert out["selected_model"] in {"last_month", "mean_3", "mean_6", "ewma", "ets"}
+    assert isinstance(out["model_metrics"], dict)
+    assert out["backtest_origins"] >= 3
+
+
+def test_backtest_requires_three_origins():
+    result = backtest_forecasts([100.0, 110.0, 120.0])
+    assert result["origins"] == 0
+    assert result["selected_model"] == "last_month"
 
 
 def test_forecast_history_months_are_elapsed_not_row_count():
@@ -152,7 +166,7 @@ def test_suggest_category_and_subcategory_classifier_wins():
               "subcategory": "Restaurants & Takeaway"} for i in range(12)]
     df = pd.DataFrame(rows)
     cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
-        df, "starbucks latte", user_id=100)
+        df, "starbucks latte")
     assert cat == "Dining Out"
     assert sub == "Coffee & Snacks"
     assert cat_conf >= 0.5
@@ -162,7 +176,7 @@ def test_suggest_category_and_subcategory_classifier_wins():
 def test_suggest_category_and_subcategory_keyword_fallback_when_untrained():
     df = pd.DataFrame({"description": ["a"], "category": ["X"], "subcategory": [""]})
     cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
-        df, "lidl shop", user_id=101)
+        df, "lidl shop")
     assert cat == "Groceries"
     assert sub == "Groceries"
     assert cat_conf == 0.0
@@ -176,7 +190,7 @@ def test_suggest_refinement_borrows_keyword_subcategory():
               "subcategory": "Streaming Services"} for i in range(12)]
     df = pd.DataFrame(rows)
     cat, sub, cat_conf, sub_conf = suggest_category_and_subcategory(
-        df, "restaurant", user_id=103)
+        df, "restaurant")
     assert cat == "Dining Out"
     assert sub == "Restaurants & Takeaway"  # borrowed from the keyword map
     assert cat_conf >= 0.5
@@ -201,6 +215,19 @@ def test_detect_subscriptions_finds_monthly_charges():
     assert subs.iloc[0]["description"] == "NETFLIX"
     assert subs.iloc[0]["months_seen"] == 5
     assert 25 <= subs.iloc[0]["avg_gap_days"] <= 35
+    assert subs.iloc[0]["old_median"] == subs.iloc[0]["new_median"] == 12.99
+    assert subs.iloc[0]["price_change_narrative"] is None
+
+
+def test_detect_subscriptions_reports_material_price_increase():
+    rows = [{"date": pd.Timestamp(2025, m, 3), "category": "Entertainment",
+             "description": "Spotify", "amount_eur": 7.99 if m < 5 else 8.99}
+            for m in range(1, 8)]
+    out = detect_subscriptions(pd.DataFrame(rows))
+    assert len(out) == 1
+    assert out.iloc[0]["old_median"] == 7.99
+    assert out.iloc[0]["new_median"] == 8.99
+    assert "increased" in out.iloc[0]["price_change_narrative"]
 
 
 def test_detect_subscriptions_ignores_irregular():

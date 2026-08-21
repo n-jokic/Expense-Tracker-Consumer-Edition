@@ -18,6 +18,7 @@ from db import (
     create_pairing_device, get_devices, revoke_device,
     get_sync_conflicts, resolve_sync_conflict, apply_record_fields,
     get_household_by_member, get_earned_milestone_ids,
+    list_ml_models, activate_ml_model, get_active_ml_model,
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
@@ -36,12 +37,13 @@ display_name = st.session_state.display_name
 
 st.title(":material/settings: Settings")
 
-tab_cur, tab_notif, tab_acct, tab_data, tab_sync = st.tabs(
+tab_cur, tab_notif, tab_acct, tab_data, tab_sync, tab_ml = st.tabs(
     [":material/currency_exchange: Currency",
      ":material/notifications: Notifications",
      ":material/manage_accounts: Account",
      ":material/database: Data",
-     ":material/sync: Sync"]
+     ":material/sync: Sync",
+     ":material/psychology: ML"]
 )
 
 with st.container(horizontal=True):
@@ -131,6 +133,21 @@ with tab_cur:
 with tab_notif:
     render_notification_settings(user_id, settings)
     render_ai_settings(user_id, settings)
+
+with tab_ml:
+    st.subheader(":material/psychology: Evaluated ML models")
+    st.caption("Training never changes your active model. Choose an evaluated version explicitly.")
+    models = list_ml_models(user_id)
+    for name in sorted({m.name for m in models}):
+        versions = [m for m in models if m.name == name]
+        active = get_active_ml_model(user_id, name)
+        labels = [f"v{m.version} — {m.trained_rows} rows — {m.metrics}" for m in versions]
+        current = next((i for i, m in enumerate(versions) if active and m.version == active.version), 0)
+        selected = st.selectbox(name, labels, index=current, key=f"ml_version_{name}")
+        if st.button(f"Activate {name}", key=f"ml_activate_{name}"):
+            activate_ml_model(user_id, name, versions[labels.index(selected)].version)
+            st.success(f"{name} activated.")
+            st.rerun()
 
 # ── Account tab ───────────────────────────────────────────────────────────────
 with tab_acct:

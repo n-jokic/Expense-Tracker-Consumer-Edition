@@ -358,6 +358,7 @@ class Expense(Base):
     # the category, its confidence/model version, the normalized merchant,
     # and whether the user accepted or corrected it.
     suggest_source        = Column(String, nullable=True)   # classifier | keywords
+    suggest_category      = Column(String, nullable=True)
     suggest_confidence    = Column(Float, nullable=True)
     suggest_model_version = Column(Integer, nullable=True)
     suggest_merchant      = Column(String, nullable=True)
@@ -643,6 +644,36 @@ class UserSettings(Base):
     ai_api_key_enc       = Column(String, nullable=True)      # Fernet-encrypted
 
 
+class MlModel(Base):
+    """Evaluated model metadata; training never marks a row active."""
+    __tablename__ = "ml_models"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    version = Column(Integer, nullable=False)
+    trained_rows = Column(Integer, nullable=False, default=0)
+    trained_at = Column(DateTime, nullable=False, default=_utcnow)
+    dataset_fingerprint = Column(String, nullable=False, default="")
+    metrics = Column(JSON, nullable=False, default=dict)
+    active = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    __table_args__ = (UniqueConstraint("user_id", "name", "version", name="uq_ml_model_version"),)
+
+
+class MlFeedbackEvent(Base):
+    """Append-only record of a categorization suggestion and user choice."""
+    __tablename__ = "ml_feedback_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expense_id = Column(String, nullable=True)
+    raw_description = Column(Text, nullable=False, default="")
+    merchant_canonical = Column(String, nullable=False, default="")
+    predicted_category = Column(String, nullable=True)
+    predicted_confidence = Column(Float, nullable=True)
+    selected_category = Column(String, nullable=True)
+    model_version = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+
+
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 _MIGRATED = False
@@ -731,6 +762,7 @@ def _migrate(engine):
         "loan_surcharge_eur": "FLOAT DEFAULT 0",
         "updated_at": "TIMESTAMP",
         "suggest_source": "VARCHAR",
+        "suggest_category": "VARCHAR",
         "suggest_confidence": "FLOAT",
         "suggest_model_version": "INTEGER",
         "suggest_merchant": "VARCHAR",
@@ -1025,7 +1057,7 @@ def _parse_dates(df, cols):
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",
              "amount","currency","amount_eur","recurring","rec_template_id","loan_id",
              "loan_payment_type","loan_surcharge_eur","notes",
-             "suggest_source","suggest_confidence","suggest_model_version",
+             "suggest_source","suggest_category","suggest_confidence","suggest_model_version",
              "suggest_merchant","suggest_accepted",
              "suggest_subcategory","suggest_subcategory_confidence",
              "suggest_subcategory_source","suggest_subcategory_accepted",
@@ -1044,6 +1076,13 @@ def get_expenses(user_id, include_deleted=False):
 def add_expense(user_id, row):
     exp_id = str(uuid.uuid4())
     with get_session() as s:
+        merchant = row.get("suggest_merchant")
+        if not merchant:
+            try:
+                from domain.merchant import normalize_merchant
+                merchant = normalize_merchant(str(row.get("description", "")))
+            except Exception:
+                merchant = str(row.get("description", "")).strip().lower()
         obj = Expense(
             id=exp_id, user_id=user_id,
             date=row.get("date"), category=row.get("category",""),
@@ -1056,9 +1095,10 @@ def add_expense(user_id, row):
             loan_surcharge_eur=float(row.get("loan_surcharge_eur", 0.0) or 0.0),
             notes=row.get("notes",""),
             suggest_source=row.get("suggest_source"),
+            suggest_category=row.get("suggest_category"),
             suggest_confidence=row.get("suggest_confidence"),
             suggest_model_version=row.get("suggest_model_version"),
-            suggest_merchant=row.get("suggest_merchant"),
+            suggest_merchant=merchant,
             suggest_accepted=row.get("suggest_accepted"),
             suggest_subcategory=row.get("suggest_subcategory"),
             suggest_subcategory_confidence=row.get("suggest_subcategory_confidence"),
@@ -1067,14 +1107,30 @@ def add_expense(user_id, row):
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "expenses", exp_id, row)
+    if row.get("suggest_source") and row.get("suggest_category", row.get("_suggest_cat")):
+        record_ml_feedback(user_id, {
+            "expense_id": exp_id, "raw_description": row.get("description", ""),
+            "merchant_canonical": merchant, "predicted_category": row.get("suggest_category", row.get("_suggest_cat")),
+            "predicted_confidence": row.get("suggest_confidence"),
+            "selected_category": row.get("category"), "model_version": row.get("suggest_model_version"),
+        })
     return exp_id
 
 
 def update_expense(user_id, expense_id, updates):
+    feedback = None
     with get_session() as s:
         obj = s.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user_id).first()
         if not obj:
             return False
+        if "category" in updates and str(updates.get("category")) != str(obj.category):
+            if obj.suggest_source and obj.suggest_confidence is not None:
+                feedback = {
+                    "expense_id": expense_id, "raw_description": obj.description or "",
+                    "merchant_canonical": obj.suggest_merchant or "",
+                    "predicted_category": obj.suggest_category or obj.category, "predicted_confidence": obj.suggest_confidence,
+                    "selected_category": updates.get("category"), "model_version": obj.suggest_model_version,
+                }
         # T4-004: coerce NaN/"nan" strings to '' before setattr (mirrors bank_import:351)
         import pandas as _pd
         sanitized = {}
@@ -1127,7 +1183,76 @@ def update_expense(user_id, expense_id, updates):
             if hasattr(obj, k):
                 setattr(obj, k, v)
         log_audit(s, user_id, "UPDATE", "expenses", expense_id, sanitized)
+    if feedback:
+        record_ml_feedback(user_id, feedback)
     return True
+
+
+def save_ml_model(user_id, info):
+    """Persist evaluated metadata only; assign the next per-user version."""
+    from ml.registry import ModelInfo
+    if not isinstance(info, ModelInfo) or not info.metrics:
+        raise ValueError("an evaluated ModelInfo with metrics is required")
+    with get_session() as s:
+        latest = s.query(MlModel).filter_by(user_id=user_id, name=info.name).order_by(MlModel.version.desc()).first()
+        version = (latest.version + 1) if latest else (info.version or 1)
+        row = MlModel(user_id=user_id, name=info.name, version=version,
+                      trained_rows=info.trained_rows, trained_at=info.trained_at,
+                      dataset_fingerprint=info.dataset_fingerprint, metrics=dict(info.metrics), active=False)
+        s.add(row)
+    return ModelInfo(info.name, version, info.trained_rows, info.trained_at, info.dataset_fingerprint, dict(info.metrics))
+
+
+def list_ml_models(user_id, name=None):
+    from ml.registry import ModelInfo
+    with get_session() as s:
+        q = s.query(MlModel).filter_by(user_id=user_id)
+        if name:
+            q = q.filter_by(name=name)
+        rows = q.order_by(MlModel.name, MlModel.version).all()
+    return [ModelInfo(r.name, r.version, r.trained_rows, r.trained_at, r.dataset_fingerprint, dict(r.metrics or {})) for r in rows]
+
+
+def activate_ml_model(user_id, name, version):
+    from ml.registry import ModelInfo
+    with get_session() as s:
+        row = s.query(MlModel).filter_by(user_id=user_id, name=name, version=version).first()
+        if not row or not row.metrics:
+            raise KeyError(f"evaluated model {name} v{version} not found")
+        s.query(MlModel).filter_by(user_id=user_id, name=name).update({"active": False})
+        row.active = True
+        return ModelInfo(row.name, row.version, row.trained_rows, row.trained_at, row.dataset_fingerprint, dict(row.metrics or {}))
+
+
+def get_active_ml_model(user_id, name):
+    from ml.registry import ModelInfo
+    with get_session() as s:
+        row = s.query(MlModel).filter_by(user_id=user_id, name=name, active=True).first()
+    if not row:
+        return None
+    return ModelInfo(row.name, row.version, row.trained_rows, row.trained_at, row.dataset_fingerprint, dict(row.metrics or {}))
+
+
+def record_ml_feedback(user_id, event_data):
+    """Append one immutable ML feedback event."""
+    from domain.merchant import normalize_merchant
+    desc = str(event_data.get("raw_description") or "")
+    row = MlFeedbackEvent(user_id=user_id, expense_id=event_data.get("expense_id"),
+        raw_description=desc, merchant_canonical=event_data.get("merchant_canonical") or normalize_merchant(desc),
+        predicted_category=event_data.get("predicted_category"), predicted_confidence=event_data.get("predicted_confidence"),
+        selected_category=event_data.get("selected_category"), model_version=event_data.get("model_version"))
+    with get_session() as s:
+        s.add(row)
+    return row.id
+
+
+def get_ml_feedback(user_id):
+    with get_session() as s:
+        rows = s.query(MlFeedbackEvent).filter_by(user_id=user_id).order_by(MlFeedbackEvent.id).all()
+    return [{"id": r.id, "expense_id": r.expense_id, "raw_description": r.raw_description,
+             "merchant_canonical": r.merchant_canonical, "predicted_category": r.predicted_category,
+             "predicted_confidence": r.predicted_confidence, "selected_category": r.selected_category,
+             "model_version": r.model_version, "created_at": r.created_at} for r in rows]
 
 
 def soft_delete_expense(user_id, expense_id):

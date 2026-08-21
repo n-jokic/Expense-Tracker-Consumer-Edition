@@ -465,8 +465,13 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
         show["date"]   = show["date"].dt.strftime("%d %b %Y").fillna("")
         show["Amount"] = show["amount_eur"].apply(lambda x: to_display(x, DC, rates))
         show["Vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
+        show["Severity"] = (show["severity"] if "severity" in show else pd.Series("medium", index=show.index)).astype(str).str.title()
+        reasons = show["reasons"] if "reasons" in show else pd.Series([[] for _ in range(len(show))], index=show.index)
+        show["Why"] = reasons.apply(
+            lambda reasons: " • ".join(reasons) if isinstance(reasons, list) else str(reasons)
+        )
         st.dataframe(
-            show[["date","description","category","Amount","Vs median"]],
+            show[["date","description","category","Amount","Vs median","Severity","Why"]],
             hide_index=True,
             column_config={
                 "Amount": st.column_config.NumberColumn("Amount", format=AMT_FMT),
@@ -485,6 +490,8 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 st.markdown(f"**{row.description}** · {row.months_seen} months "
                             f"· every ~{row.avg_gap_days:.0f} days")
                 st.write(fmt(float(row.amount_eur), DC, rates))
+                if getattr(row, "price_change_narrative", None):
+                    st.caption(row.price_change_narrative)
                 if user_id is None:
                     continue
                 if st.button("Add", icon=":material/add:",

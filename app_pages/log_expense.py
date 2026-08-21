@@ -3,6 +3,7 @@ Log expense page: entry form, searchable history with inline editing, trash & re
 """
 
 from datetime import date
+import hashlib
 import re
 
 import pandas as pd
@@ -11,6 +12,7 @@ import streamlit as st
 import queries as q
 from db import add_expense, update_expense, soft_delete_expense, restore_expense, add_recurring
 from ocr import analyze_receipt
+from ingestion.receipt.confidence import LOW_CONF
 from utils import (
     CATEGORIES, CAT_LIST, ALL_SUBCATS, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt_row, fmt_dual, to_eur, get_currency_symbol,
@@ -31,6 +33,37 @@ help_expander("How to log an expense",
               "and you accept, edit, or reject the result.")
 
 # ── Receipt scan (OCR on the server; phone just sends the photo) ─────────────
+
+def _receipt_candidate_value(receipt_result, field):
+    candidate = getattr(receipt_result, field, None) if receipt_result else None
+    return candidate.value if candidate else None
+
+
+def _receipt_candidate_label(candidate) -> str:
+    value = getattr(candidate, "value", "")
+    confidence = float(getattr(candidate, "confidence", 0.0) or 0.0)
+    return f"{value} ({confidence:.0%})"
+
+
+def _render_receipt_uncertainty(receipt_result) -> None:
+    if not receipt_result:
+        return
+    for field in ("merchant", "total", "date", "currency"):
+        candidate = getattr(receipt_result, field, None)
+        alternatives = list((receipt_result.alternatives or {}).get(field, []))
+        if candidate and candidate.confidence >= LOW_CONF and not alternatives:
+            continue
+        label = field.replace("_", " ")
+        if alternatives:
+            options = [candidate, *alternatives] if candidate else alternatives
+            rendered = " · ".join(_receipt_candidate_label(option) for option in options)
+            st.warning(f"We found multiple possible {label}s: {rendered}")
+        elif candidate:
+            st.warning(f"The {label} is low confidence ({candidate.confidence:.0%}); please verify it.")
+        else:
+            st.warning(f"We could not confidently read the {label}; please enter it manually.")
+
+
 with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
     cam_img = st.camera_input("Take a photo of the receipt", key="receipt_cam")
     up_img  = st.file_uploader("Or upload a photo", type=["png","jpg","jpeg"],
@@ -42,7 +75,28 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
         image_bytes = up_img.getvalue()
 
     if image_bytes is not None:
-        result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
+        image_key = hashlib.sha256(image_bytes).hexdigest()
+        if st.session_state.get("receipt_review_image_key") != image_key:
+            result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
+            st.session_state["receipt_review_image_key"] = image_key
+            st.session_state["receipt_review_result"] = result
+            receipt_result = result.get("receipt_result")
+            extracted_date = _receipt_candidate_value(receipt_result, "date")
+            extracted_currency = _receipt_candidate_value(receipt_result, "currency")
+            extracted_amount = _receipt_candidate_value(receipt_result, "total")
+            st.session_state["rcpt_date"] = extracted_date if isinstance(extracted_date, date) else date.today()
+            st.session_state["rcpt_amt"] = float(
+                extracted_amount if extracted_amount is not None else result.get("amount") or 0.0
+            )
+            st.session_state["rcpt_desc"] = result.get("merchant") or ""
+            st.session_state["rcpt_cat"] = result.get("category") if result.get("category") in CAT_LIST else CAT_LIST[0]
+            st.session_state["rcpt_sub"] = result.get("subcategory") or "—"
+            st.session_state["rcpt_cur"] = (
+                extracted_currency if extracted_currency in SUPPORTED_CURRENCIES else DC
+            )
+            st.session_state["rcpt_notes"] = ""
+        else:
+            result = st.session_state.get("receipt_review_result") or {}
         if not result["ok"]:
             if result.get("reason") == "ocr_not_installed":
                 st.warning("Tesseract isn't installed on the server PC yet. "
@@ -54,6 +108,8 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                            "straighter photo, or enter the expense manually below.")
         else:
             st.success("Text recognised — check the details, then save (or fix anything wrong).")
+            receipt_result = result.get("receipt_result")
+            _render_receipt_uncertainty(receipt_result)
             with st.expander("Raw OCR text", expanded=False):
                 st.code((result["text"] or "")[:500], language=None)
 
@@ -63,6 +119,11 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                 index=CAT_LIST.index(result["category"])
                 if result["category"] in CAT_LIST else 0,
                 key="rcpt_cat")
+            r_cur = st.selectbox(
+                "Currency", list(SUPPORTED_CURRENCIES.keys()),
+                index=(list(SUPPORTED_CURRENCIES.keys()).index(st.session_state.get("rcpt_cur", DC))
+                       if st.session_state.get("rcpt_cur", DC) in SUPPORTED_CURRENCIES else 0),
+                key="rcpt_cur")
             with st.form("receipt_form"):
                 r1, r2 = st.columns(2)
                 with r1:
@@ -74,7 +135,7 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                         key="rcpt_sub")
                 with r2:
                     _ocr_amt = float(result["amount"]) if pd.notna(result["amount"]) else 0.0
-                    r_amt  = st.number_input(f"Amount ({SYM})", value=_ocr_amt,
+                    r_amt  = st.number_input(f"Amount ({get_currency_symbol(r_cur)})", value=_ocr_amt,
                                              min_value=0.0, max_value=MAX_AMOUNT,
                                              step=0.50, format="%.2f", key="rcpt_amt")
                     r_desc = st.text_input("Description", value=result["merchant"] or "",
@@ -105,7 +166,7 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                     if dup_rcpt:
                         st.toast("Already saved — duplicate prevented.", icon=":material/check:")
                         st.rerun()
-                    ae = to_eur(float(r_amt), DC, rates)
+                    ae = to_eur(float(r_amt), r_cur, rates)
                     suggested_cat = result.get("category")
                     conf = float(result.get("confidence") or 0.0)
                     final_sub = r_sub if r_sub != "—" else ""
@@ -116,10 +177,11 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                         "category": r_cat,
                         "subcategory": final_sub,
                         "description": r_desc.strip(),
-                        "amount": float(r_amt), "currency": DC, "amount_eur": ae,
+                        "amount": float(r_amt), "currency": r_cur, "amount_eur": ae,
                         "recurring": False, "notes": (r_notes or "") + " (scanned receipt)",
                         # ML telemetry: what was suggested and whether it stuck
                         "suggest_source": result.get("source"),
+                        "suggest_category": suggested_cat,
                         "suggest_confidence": conf or None,
                         "suggest_model_version": result.get("model_version"),
                         "suggest_merchant": (result.get("merchant") or "").strip().lower(),

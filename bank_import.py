@@ -367,8 +367,9 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
     if conf is None or pd.isna(conf) or conf == "":
         conf = None
     from forecasting import CATEGORIZER_MODEL_VERSION
+    from domain.merchant import normalize_merchant
     desc = str(row["description"])
-    merchant = desc.strip().lower().split()[0] if desc.strip() else ""
+    merchant = normalize_merchant(desc)
     accepted = None
     if suggested is not None and not pd.isna(suggested):
         accepted = bool(str(suggested) == str(row["category"]))
@@ -407,6 +408,7 @@ def _save_edited_row(user_id: int, row, rates: dict, existing_keys: set) -> str:
         "recurring": False,
         "notes": "Imported from bank statement",
         "suggest_source": source,
+        "suggest_category": suggested,
         "suggest_confidence": float(conf) if conf is not None else None,
         "suggest_model_version": (CATEGORIZER_MODEL_VERSION
                                   if source == "classifier" else None),

@@ -48,14 +48,14 @@ def test_fingerprint_changes_on_row_delete():
 def test_edited_labels_retrain_immediately():
     clear_categorizers()
     df1 = _labels()
-    cat1, _ = suggest_category(df1, "lidl supermarket", user_id=42)
+    cat1, _ = suggest_category(df1, "lidl supermarket")
     assert cat1 == "Groceries"
 
     # The user corrects every "lidl" row to "Other" — the next suggestion
     # must reflect the correction, not the stale cached model.
     df2 = df1.copy()
     df2.loc[df2["description"].str.startswith("lidl"), "category"] = "Other"
-    cat2, _ = suggest_category(df2, "lidl supermarket", user_id=42)
+    cat2, _ = suggest_category(df2, "lidl supermarket")
     assert cat2 == "Other"
 
 

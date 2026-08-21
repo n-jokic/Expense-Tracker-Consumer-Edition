@@ -86,7 +86,8 @@ total_spent = float(period_exp["amount_eur"].sum()) if not period_exp.empty else
 
 ml_result = None
 if method == "ML model":
-    ml_result = forecast_next_month(dfe if not dfe.empty else pd.DataFrame())
+    ml_result = forecast_next_month(
+        dfe if not dfe.empty else pd.DataFrame(), q.recurring(user_id))
     if ml_result["fallback"] or ml_result["total"] is None:
         st.caption("Not enough history for the model yet (needs 6+ months) — "
                    "showing the period-average projection instead.")
@@ -96,7 +97,8 @@ if method == "ML model":
         projected = float(ml_result["total"])
         daily_avg = projected / days_in_period if days_in_period > 0 else 0.0
         st.caption(
-            f":material/psychology: ETS model over {ml_result['history_months']} months of history · "
+            f":material/psychology: {ml_result['selected_model'].replace('_', ' ')} model over "
+            f"{ml_result['history_months']} months of history · "
             f"80% range: **{fmt(ml_result['lower'], DC, rates)} – {fmt(ml_result['upper'], DC, rates)}**"
         )
 elif method == "7-day average":

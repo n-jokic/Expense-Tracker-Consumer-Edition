@@ -14,11 +14,20 @@ too few rows -> no anomalies, untrained classifier -> keyword-map fallback.
 """
 
 import math
+from dataclasses import dataclass
 import pandas as pd
 import streamlit as st
 
 MIN_HISTORY_MONTHS = 6
 MIN_ROWS_FOR_ANOMALIES = 20
+
+
+@dataclass(frozen=True)
+class ExpenseAnomaly:
+    transaction_id: int | str
+    score: float
+    severity: str
+    reasons: list[str]
 
 
 # ── 1. Spend forecast (ETS) ──────────────────────────────────────────────────
@@ -54,35 +63,136 @@ def _ets_forecast(expenses_df: pd.DataFrame):
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
         idx = pd.period_range(t["ym"].min(), t["ym"].max(), freq="M")
         series = t.set_index("ym")["amount_eur"].reindex(idx).astype(float)
-        if series.isna().any():
-            return None, None, None  # a month is missing: no fabricated data
-        if float(series.sum()) <= 0:
-            return None, None, None  # all-zero history: no real signal
+        if series.isna().any() or float(series.sum()) <= 0:
+            return None, None, None
         ts = pd.Series(series.values, index=idx.to_timestamp())
-        model = ExponentialSmoothing(
-            ts, trend="add", initialization_method="estimated").fit()
+        model = ExponentialSmoothing(ts, trend="add", initialization_method="estimated").fit()
         raw_fc = float(model.forecast(1).iloc[0])
         if not math.isfinite(raw_fc) or raw_fc < 0:
-            return None, None, None  # degenerate fit — no real signal
-        fc = raw_fc
+            return None, None, None
         sd = float(model.resid.std()) if len(model.resid) else 0.0
-        return fc, max(fc - 2 * sd, 0.0), fc + 2 * sd
+        return raw_fc, max(raw_fc - 2 * sd, 0.0), raw_fc + 2 * sd
     except Exception:
         return None, None, None
 
 
-def forecast_next_month(expenses_df: pd.DataFrame) -> dict:
+def _candidate_prediction(values, name: str, recurring_templates=None):
+    """One-step forecast for a compact monthly series."""
+    import numpy as np
+    values = np.asarray(values, dtype=float)
+    if not len(values):
+        return None
+    if name == "last_month":
+        return float(values[-1])
+    if name == "mean_3":
+        return float(values[-3:].mean())
+    if name == "mean_6":
+        return float(values[-6:].mean())
+    if name == "ewma":
+        return float(pd.Series(values).ewm(span=min(6, len(values)), adjust=False).mean().iloc[-1])
+    if name == "ets":
+        try:
+            from statsmodels.tsa.holtwinters import ExponentialSmoothing
+            fit = ExponentialSmoothing(values, trend="add", initialization_method="estimated").fit()
+            return max(0.0, float(fit.forecast(1)[0]))
+        except Exception:
+            return None
+    if name == "hybrid" and recurring_templates is not None:
+        try:
+            recurring = recurring_templates
+            if isinstance(recurring_templates, pd.DataFrame):
+                recurring = recurring_templates
+                if "active" in recurring:
+                    recurring = recurring[recurring["active"].fillna(False).astype(bool)]
+                recurring = recurring["amount_eur"]
+            obligations = float(sum(float(x) for x in recurring))
+            discretionary = pd.Series(values - obligations).clip(lower=0)
+            return obligations + float(discretionary.ewm(
+                span=min(6, len(discretionary)), adjust=False).mean().iloc[-1])
+        except Exception:
+            return None
+    return None
+
+
+def _forecast_metrics(actual, predicted):
+    import numpy as np
+    a, p = np.asarray(actual, dtype=float), np.asarray(predicted, dtype=float)
+    if not len(a):
+        return {"mae": None, "smape": None, "bias": None}
+    denom = np.maximum((np.abs(a) + np.abs(p)) / 2, 1e-9)
+    return {"mae": float(np.mean(np.abs(a - p))),
+            "smape": float(np.mean(np.abs(a - p) / denom) * 100),
+            "bias": float(np.mean(p - a))}
+
+
+def backtest_forecasts(monthly_values, recurring_templates=None) -> dict:
+    """Rolling-origin evaluation and conservative model selection.
+
+    A candidate must beat last-month MAE by at least 5%; fewer than three
+    origins always retain the baseline.
+    """
+    import numpy as np
+    values = np.asarray(list(monthly_values), dtype=float)
+    names = ["last_month", "mean_3", "mean_6", "ewma", "ets"]
+    if recurring_templates is not None:
+        names.append("hybrid")
+    predictions = {name: [] for name in names}
+    actual = {name: [] for name in names}
+    # Three months of training is enough for rolling comparisons; mean_6 is
+    # skipped until six observations are available at a given origin.
+    for i in range(3, len(values)):
+        train = values[:i]
+        for name in names:
+            if name == "mean_6" and len(train) < 6:
+                continue
+            pred = _candidate_prediction(train, name, recurring_templates)
+            if pred is not None and np.isfinite(pred):
+                predictions[name].append(pred)
+                actual[name].append(values[i])
+    metrics = {name: _forecast_metrics(actual[name], predictions[name])
+               for name in names if len(actual[name]) >= 3}
+    selected = "last_month"
+    reason = "baseline (fewer than 3 backtest origins)"
+    baseline = metrics.get("last_month", {}).get("mae")
+    if baseline is not None and baseline > 0:
+        eligible = [(m["mae"], name) for name, m in metrics.items()
+                    if name != "last_month" and m.get("mae") is not None
+                    and m["mae"] <= baseline * 0.95]
+        if eligible:
+            _, selected = min(eligible)
+            reason = f"{selected} beats last_month by at least 5% MAE"
+        else:
+            reason = "baseline retained (no candidate beats it by 5% MAE)"
+    return {"selected_model": selected, "metrics": metrics,
+            "origins": len(actual.get("last_month", [])), "reason": reason}
+def forecast_next_month(expenses_df: pd.DataFrame, recurring_templates=None) -> dict:
     """ML forecast of next month's spending (total + per category).
 
     Returns {"total", "lower", "upper", "by_category", "fallback",
     "history_months"}. When history is too short, fallback=True and the
     caller uses the existing period-average projection.
     """
-    total, lower, upper = _ets_forecast(expenses_df)
+    ets_total, ets_lower, ets_upper = _ets_forecast(expenses_df)
+    totals = _monthly_totals(expenses_df)
+    selection = backtest_forecasts(totals["amount_eur"].tolist(), recurring_templates) if not totals.empty else {
+        "selected_model": "last_month", "metrics": {}, "origins": 0,
+        "reason": "baseline (no history)"}
+    selected = selection["selected_model"]
+    total = _candidate_prediction(totals["amount_eur"].tolist(), selected, recurring_templates) if ets_total is not None else None
+    if total is None:
+        total, lower, upper = ets_total, ets_lower, ets_upper
+    elif selected == "ets":
+        lower, upper = ets_lower, ets_upper
+    else:
+        lower, upper = max(0.0, total * 0.8), total * 1.2
     out = {
         "total": total, "lower": lower, "upper": upper,
         "by_category": {}, "fallback": total is None,
         "history_months": _elapsed_months(_monthly_totals(expenses_df)),
+        "selected_model": selected,
+        "model_metrics": selection["metrics"],
+        "backtest_origins": selection["origins"],
+        "selection_reason": selection["reason"],
     }
     if expenses_df is None or expenses_df.empty:
         return out
@@ -139,8 +249,6 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
         df["dow"] = 0
         df["month"] = 1
         df["dom"] = 1
-
-    df["cat_code"] = df["category"].fillna("").astype("category").cat.codes
 
     # Amount features
     df["log_amount"] = np.log1p(df["amount_eur"].fillna(0).clip(lower=0))
@@ -223,7 +331,7 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
         "amount_eur", "log_amount", "amount_vs_user_median", "amount_vs_cat_median",
         "amount_vs_merch_median", "merchant_count", "merchant_age_days",
         "is_new_merchant", "dow", "month", "dom", "days_since_same_merchant",
-        "recurring_prob", "cat_code",
+        "recurring_prob",
     ]
     # Keep only existing
     feature_cols = [c for c in feature_cols if c in df.columns]
@@ -302,18 +410,45 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
         for cat, grp in df.groupby("category"):
             med = float(grp["amount_eur"].median())
             mad = float((grp["amount_eur"] - med).abs().median())
+            q1 = float(grp["amount_eur"].quantile(0.25))
+            q3 = float(grp["amount_eur"].quantile(0.75))
+            iqr = q3 - q1
             if mad > 0:
                 for idx in flagged[flagged["category"] == cat].index:
                     amt = float(flagged.at[idx, "amount_eur"])
                     mz = 0.6745 * (amt - med) / mad
                     if abs(mz) > 3.5 and len(flagged.at[idx, "reasons"]) < 3:
                         flagged.at[idx, "reasons"] = list(flagged.at[idx, "reasons"]) + [f"robust outlier (modified z={mz:.1f})"]
+            if iqr > 0:
+                upper = q3 + 1.5 * iqr
+                for idx in flagged[flagged["category"] == cat].index:
+                    amt = float(flagged.at[idx, "amount_eur"])
+                    if amt > upper and len(flagged.at[idx, "reasons"]) < 3:
+                        flagged.at[idx, "reasons"] = list(flagged.at[idx, "reasons"]) + [
+                            f"above the normal {cat} range (IQR)"
+                        ]
     except Exception:
         pass
 
     # Clean helper columns for output: keep useful ones, drop internal
     # Preserve _merchant_key for debugging but not required
     return flagged
+
+
+def structured_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> list[ExpenseAnomaly]:
+    """Return the anomaly scan as stable domain records for UI/API callers."""
+    flagged = detect_anomalies(expenses_df, contamination)
+    if flagged.empty:
+        return []
+    return [
+        ExpenseAnomaly(
+            transaction_id=row.get("transaction_id", row.get("id", idx)),
+            score=float(row["anomaly_score"]),
+            severity=str(row.get("severity", "medium")),
+            reasons=list(row.get("reasons", [])),
+        )
+        for idx, row in flagged.iterrows()
+    ]
 
 
 # ── 3. Learned categorizer (TF-IDF + LogisticRegression) ─────────────────────
@@ -532,6 +667,50 @@ def suggest_threshold_for_precision(y_true, y_prob, target_precision: float = 0.
     return 0.5
 
 
+def _categorizer_metrics(expenses_df: pd.DataFrame) -> dict[str, float]:
+    """Evaluate a small held-out tail; fall back to a non-empty safe report."""
+    if len(expenses_df) < 12:
+        return {"accuracy": 0.0, "auto_threshold": CATEGORY_CONFIDENCE}
+    split = max(2, len(expenses_df) // 5)
+    train, holdout = expenses_df.iloc[:-split], expenses_df.iloc[-split:]
+    probe = _CategorizerModel()
+    if not probe.train(train):
+        return {"accuracy": 0.0, "auto_threshold": CATEGORY_CONFIDENCE}
+    predictions, confidences = zip(*(probe.predict(text) for text in holdout["description"]))
+    try:
+        from ml.evaluation import evaluate_classification, suggest_threshold_for_precision
+        metrics = evaluate_classification(holdout["category"], predictions)
+        correct = [actual == predicted for actual, predicted in zip(holdout["category"], predictions)]
+        metrics["auto_threshold"] = suggest_threshold_for_precision(correct, confidences)
+        return metrics or {"accuracy": 0.0, "auto_threshold": CATEGORY_CONFIDENCE}
+    except Exception:
+        return {"accuracy": 0.0, "auto_threshold": CATEGORY_CONFIDENCE}
+
+
+def _active_categorizer(expenses_df: pd.DataFrame, user_id):
+    """Train and register a candidate, but predict only from an active match."""
+    fp = _dataset_fingerprint(expenses_df)
+    model = get_categorizer(user_id, CATEGORIZER_MODEL_VERSION, fp)
+    if model.clf is None or model.trained_fingerprint != fp:
+        if model.train(expenses_df):
+            model.trained_fingerprint = fp
+    if model.clf is None or user_id is None:
+        return model if user_id is None else None, CATEGORY_CONFIDENCE
+    try:
+        from ml.registry import get_active, get_registered, make_model_info, register_model
+        existing = get_registered("expense_categorizer", user_id=user_id)
+        if not any(info.dataset_fingerprint == fp for info in existing):
+            register_model(make_model_info(
+                "expense_categorizer", 0, model.trained_rows, fp,
+                _categorizer_metrics(expenses_df)), user_id=user_id)
+        active = get_active("expense_categorizer", user_id=user_id)
+        if active is None or active.dataset_fingerprint != fp:
+            return None, CATEGORY_CONFIDENCE
+        return model, float(active.metrics.get("auto_threshold", CATEGORY_CONFIDENCE))
+    except Exception:
+        return None, CATEGORY_CONFIDENCE
+
+
 def _dataset_fingerprint(expenses_df: pd.DataFrame) -> str:
     """Fingerprint of the labelled dataset: row count + a hash of every
     (description, category, subcategory) triple. ANY correction (category or
@@ -576,15 +755,11 @@ def suggest_category(expenses_df: pd.DataFrame, text: str,
                      min_confidence: float = 0.5, user_id=None):
     """Train-on-demand categorizer. Returns (category, confidence) or
     (None, conf) when untrained or below confidence."""
-    fp = _dataset_fingerprint(expenses_df)
-    model = get_categorizer(user_id, CATEGORIZER_MODEL_VERSION, fp)
-    if model.clf is None or model.trained_fingerprint != fp:
-        if model.train(expenses_df):
-            model.trained_fingerprint = fp
-    if model.clf is None:
+    model, evaluated_threshold = _active_categorizer(expenses_df, user_id)
+    if model is None or model.clf is None:
         return None, 0.0
     cat, conf = model.predict(text)
-    if conf >= min_confidence:
+    if conf >= max(min_confidence, evaluated_threshold):
         return cat, conf
     return None, conf
 
@@ -610,19 +785,15 @@ def suggest_category_and_subcategory(expenses_df: pd.DataFrame, text: str,
     """
     from bank_import import categorize_expense
 
-    fp = _dataset_fingerprint(expenses_df)
-    model = get_categorizer(user_id, CATEGORIZER_MODEL_VERSION, fp)
-    if model.clf is None or model.trained_fingerprint != fp:
-        if model.train(expenses_df):
-            model.trained_fingerprint = fp
-
     kw_cat, kw_sub = categorize_expense(text)
 
-    if model.clf is None:
+    model, evaluated_threshold = _active_categorizer(expenses_df, user_id)
+
+    if model is None or model.clf is None:
         return kw_cat, kw_sub, 0.0, 0.0
 
     cat, cat_conf = model.predict(text)
-    if cat_conf < min_confidence:
+    if cat_conf < max(min_confidence, evaluated_threshold):
         # Classifier is not confident — keyword map decides both.
         return kw_cat, kw_sub, 0.0, 0.0
 
@@ -741,6 +912,9 @@ def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.D
         median_amt = float(amounts.median())
         # split half for drift
         half = len(amounts) // 2
+        old_median = median_amt
+        new_median = median_amt
+        amount_change_pct = 0.0
         if half >= 2:
             sorted_by_date = grp.sort_values("date")
             old_median = float(sorted_by_date["amount_eur"].iloc[:half].median())
@@ -749,8 +923,6 @@ def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.D
                 amount_change_pct = round((new_median - old_median) / old_median * 100, 1)
             else:
                 amount_change_pct = 0.0
-        else:
-            amount_change_pct = 0.0
         # Pick representative description: most frequent original description for this merchant
         try:
             rep_desc = grp["description"].mode().iloc[0] if not grp["description"].mode().empty else grp.iloc[0]["description"]
@@ -761,15 +933,22 @@ def detect_subscriptions(expenses_df: pd.DataFrame, min_months: int = 3) -> pd.D
             rep_cat = grp["category"].mode().iloc[0] if not grp["category"].mode().empty else grp.iloc[0]["category"]
         except Exception:
             rep_cat = grp.iloc[0].get("category", "")
+        narrative = None
+        if old_median > 0 and amount_change_pct >= 10:
+            narrative = (f"{rep_desc} appears to have increased from "
+                         f"€{old_median:.2f} to €{new_median:.2f}.")
         groups.append({
             "description": rep_desc,
             "merchant_key": merchant_key,
             "category": rep_cat,
             "amount_eur": median_amt,
+            "old_median": old_median,
+            "new_median": new_median,
             "months_seen": len(grp),
             "avg_gap_days": round(avg_gap, 1),
             "cadence": cadence,
             "amount_change_pct": amount_change_pct,
+            "price_change_narrative": narrative,
             "last_date": dates.iloc[-1],
         })
     out = pd.DataFrame(groups)
