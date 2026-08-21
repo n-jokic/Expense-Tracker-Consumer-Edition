@@ -66,9 +66,19 @@
       → ai.safety boundary applied at llm.py egress; credentials/paths/
       emails redacted, counts-only logging; local providers keep context.
       33 new tests. (`828c2d4`)
-- [ ] AI-02 Repair missing planner arguments deterministically.
-- [ ] AI-03 Retry transient provider failures and preserve deterministic answers/diagnostics.
-- [ ] AI-04 Add validated Plotly chart answers, then native OpenAI/Claude adapters.
+- [x] AI-02 Repair missing planner arguments deterministically.
+      → repair_missing_dates fills year/month from question before any model
+      round; coercion; ambiguity → clarification; schema-aware repair prompt;
+      capabilities no longer claim native tools. (`b79a1d0`)
+- [x] AI-03 Retry transient provider failures and preserve deterministic answers/diagnostics.
+      → 429/5xx retried ≤2× with capped Retry-After; permanent 4xx never;
+      persistent 503 → temporary-unavailability diagnostic; sanitized
+      payload resent identically. (`b79a1d0`)
+- [x] AI-04 Add validated Plotly chart answers, then native OpenAI/Claude adapters.
+      → spending_series tool + validate_chart_spec whitelist (data always
+      canonical rows; no code/HTML); ask.py re-validates before plotting;
+      OpenAI json_object planner path; native Claude adapter w/ own auth +
+      retries; API-family setting + egress disclosure. (`77cd6d4`)
 - [ ] OCR-01 Add real fixtures, line-item extraction, and total reconciliation.
 - [ ] OCR-02 Add row-level receipt review and atomic multi-item save.
 - [ ] ML-01 Finish empty/candidate/active ML settings states and verify existing work.
@@ -78,5 +88,6 @@
 
 - [x] After FIN-00–FIN-05: full suite passes and the income → unallocated → goal → term lifecycle balances exactly. (Gate B, `410d943`)
 - [x] After FIN-06–FIN-08: linked purchase and loan archive flows pass end to end. (648/7/10 combined-tree run)
+- [x] After AI-01–AI-04: external prompt privacy, outage handling, and chart safety tests pass. (Gate C — sanitizer 33T, retries 9T incl. persistent-503 + sanitized-resend, charts 16T incl. injection/canonical-value pins; full run 696/7/10)
 - [ ] After AI-01–AI-04: external prompt privacy, outage handling, and chart safety tests pass.
 - [ ] After OCR-01–ML-01: real-receipt benchmark and all ML UI states pass.
