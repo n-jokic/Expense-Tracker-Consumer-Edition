@@ -56,6 +56,20 @@ def _get_provider(settings: dict):
     return None
 
 
+def _external_provider(settings: dict) -> bool:
+    """True when the resolved provider transmits prompts off-device (AI-01).
+
+    Fail closed: if resolution errors or the provider kind is unknown, the
+    payload is treated as external and gets full redaction. Only a resolved
+    LOCAL (on-device) model may keep local context."""
+    try:
+        from llm import resolve_provider
+
+        return resolve_provider(settings or {}) == "api"
+    except Exception:
+        return True
+
+
 def _truncate_result(result: dict) -> dict:
     """Enforce MAX_RESULT_ROWS on any list fields in tool result."""
     if not isinstance(result, dict):
@@ -164,10 +178,14 @@ def _compose_answer(
     """Try LLM answer composer; fall back to deterministic."""
     if not tool_calls:
         return None, "no tool results to compose answer from"
+    # AI-01: pick the sanitizer mode from where the prompt is going BEFORE
+    # serializing tool results — external providers get identifiers, account
+    # metadata, local paths and emails removed; local models keep context.
+    external = _external_provider(settings)
     # Build tool results block for prompt — aggregate, no raw row dump beyond caps
     blocks = []
     for tc in tool_calls:
-        blocks.append(f"[{tc.tool}] arguments={json.dumps(tc.arguments, default=str)} result={json.dumps(sanitize_tool_result(tc.result), default=str)[:2000]}")
+        blocks.append(f"[{tc.tool}] arguments={json.dumps(tc.arguments, default=str)} result={json.dumps(sanitize_tool_result(tc.result, external=external), default=str)[:2000]}")
     tool_block = "\n".join(blocks)
 
     provider = _get_provider(settings)
@@ -285,12 +303,13 @@ def orchestrate(
             }
 
     # Planner iterations bounded by MAX_TOOL_CALLS
+    external = _external_provider(settings)  # AI-01 sanitizer mode
     for iteration in range(MAX_TOOL_CALLS):
         # Build planner prompt with context so far
         prior_results = ""
         if tool_calls:
             prior_results = "\nPRIOR TOOL RESULTS:\n" + "\n".join(
-                f"- {tc.tool}({json.dumps(tc.arguments, default=str)}) -> {json.dumps(sanitize_tool_result(tc.result), default=str)[:800]}"
+                f"- {tc.tool}({json.dumps(tc.arguments, default=str)}) -> {json.dumps(sanitize_tool_result(tc.result, external=external), default=str)[:800]}"
                 for tc in tool_calls
             )
         hist_block = ""

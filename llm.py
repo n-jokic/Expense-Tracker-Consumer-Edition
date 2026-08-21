@@ -15,6 +15,13 @@ Every public call returns None on ANY failure, so callers always fall back
 to their existing rule-based text and email sending can never be blocked or
 broken by the LLM. Model output is treated as untrusted: callers must
 HTML-escape it before embedding.
+
+AI-01 privacy boundary: ``_api_chat`` is the single point where a request
+leaves the machine, and it passes every outbound prompt through
+``ai.safety.sanitize_outbound_text`` (credentials, home/workspace paths, and
+emails redacted; counts logged at DEBUG, never values). The local path
+(``_local_chat``) keeps the user's own context on-device but still strips
+credential-shaped strings via ``ai.safety.strip_credentials``.
 """
 
 import logging
@@ -25,6 +32,7 @@ from pathlib import Path
 
 import requests
 
+from ai.safety import sanitize_outbound_text, strip_credentials
 from crypto import decrypt_str
 from app_paths import model_dir
 
@@ -172,6 +180,11 @@ def local_diagnostic() -> str:
 
 def _local_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalResult:
     global _last_result
+    # Local model = nothing leaves the device, so local context (paths,
+    # emails, raw rows) is preserved — but credential-shaped strings are
+    # still stripped before they reach any prompt.
+    system = strip_credentials(system)
+    user = strip_credentials(user)
     with _local_lock:
         model = _get_local_model(settings)
         if model is None:
@@ -205,6 +218,11 @@ def _api_chat(settings: dict, system: str, user: str, max_tokens: int) -> LocalR
         return result
     base = str(settings.get("ai_api_base") or DEFAULT_API_BASE).rstrip("/")
     model_name = str(settings.get("ai_api_model") or DEFAULT_API_MODEL)
+    # AI-01 single egress choke point: everything serialized into an external
+    # request body passes the sanitizer boundary. Deterministic + idempotent;
+    # redaction is logged at debug level as counts only.
+    system = sanitize_outbound_text(system)
+    user = sanitize_outbound_text(user)
     try:
         resp = requests.post(
             f"{base}/chat/completions",
