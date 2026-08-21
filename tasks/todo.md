@@ -88,13 +88,37 @@
       confirm; save_receipt_items one-txn all-or-nothing w/ retained
       receipt total; nested receipt form removed (recorded bug fixed in
       isolation); cloud fallback default-OFF opt-in. (`f7e9012`)
-- [ ] ML-01 Finish empty/candidate/active ML settings states and verify existing work.
-- [ ] QA-01 Fix isolated derived-EUR sync creates, comma-thousands CSV parsing, and stale QA docs.
+- [x] ML-01 Finish empty/candidate/active ML settings states and verify existing work.
+      → db deactivate/discard (audited, non-destructive); Settings ML tab
+      EMPTY/CANDIDATE/ACTIVE/history states; retrain-while-active creates a
+      new candidate, never mutating the active row; 9 state-machine tests.
+      (`9cdc783`)
+- [x] QA-01 Fix isolated derived-EUR sync creates, comma-thousands CSV parsing, and stale QA docs.
+      → sync CREATE rejects *_eur without its base amount (per-change
+      failure, never applied); legit creates stay server-computed and a
+      client lie is overwritten — both pinned; CSV parser pinned equal to
+      the PDF parser on comma/dot-thousands + US/EU mixed forms; README
+      stale claims refreshed. Root cause of the last AppTest flake found:
+      bare-mode page import leaked an open form context into later runs →
+      amount guard moved to domain/validation.is_valid_amount. Full suite
+      GREEN: 748 passed / 0 failed / 0 errors. (`316fb01`, `0ef2b23`)
+- [x] PKG-01 Package as Windows executable and per-user state dirs.
+      → spec ships services/ai/ingestion/ml/domain/ui/infra as loose files
+      (pages run from disk; their imports are invisible to analysis);
+      smoke gate strict on streamlit+sqlcipher3+app.py, tolerant on the
+      optional llama_cpp runtime; bundle audit + logic tests (3);
+      pyinstaller 6.16.0 clean build exit 0 with all new modules in
+      _internal. Inno Setup stage skipped (not installed); exe execution
+      blocked by host Application Control → verified at logic level.
+      Per-user state dirs pre-existing and documented
+      (app_paths.state_dir: EXPENSE_TRACKER_DATA_DIR → frozen
+      %LOCALAPPDATA%\ExpenseTracker). Full suite 751/0/0. (`884e7a0`)
 
 ### Checkpoints
 
 - [x] After FIN-00–FIN-05: full suite passes and the income → unallocated → goal → term lifecycle balances exactly. (Gate B, `410d943`)
 - [x] After FIN-06–FIN-08: linked purchase and loan archive flows pass end to end. (648/7/10 combined-tree run)
 - [x] After AI-01–AI-04: external prompt privacy, outage handling, and chart safety tests pass. (Gate C — sanitizer 33T, retries 9T incl. persistent-503 + sanitized-resend, charts 16T incl. injection/canonical-value pins; full run 696/7/10)
-- [ ] After AI-01–AI-04: external prompt privacy, outage handling, and chart safety tests pass.
-- [ ] After OCR-01–ML-01: real-receipt benchmark and all ML UI states pass.
+- [x] After OCR-01–ML-01: real-receipt benchmark and all ML UI states pass.
+      (5-image benchmark green since `f6f27b3`; ML states via `9cdc783`;
+      superseding duplicate line above closed)
