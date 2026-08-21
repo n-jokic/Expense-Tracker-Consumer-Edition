@@ -54,9 +54,9 @@ refresh, OCR review. Not "every 5 lines".
 | U4 semantics matrix | (docs + component props) | — | ☑ enforced via grouped_board allow_* flags |
 | Migration 1 | `app_pages/recurring.py` | — | ☑ done (grouped_board w/ allow_cross_group_move) |
 | Migration 2 | `app_pages/big_purchases.py` | — | ☑ done (grouped_board w/ allow_cross_group_move) |
-| Migration 3 | `app_pages/dashboard.py` | — | ☐ deferred |
-| Migration 4 | `app_pages/savings.py` | — | ☐ deferred |
-| Migration 5 | `app_pages/loans.py` | — | ☐ deferred |
-| Migration 6 | `app_pages/budgets.py` | — | ☐ deferred |
-| Migration 7 | `app_pages/portfolio.py` | — | ☐ deferred |
-| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☐ deferred (R1 already fragments AI settings) |
+| Migration 3 | `app_pages/dashboard.py` | — | ☑ done (4 Panels: quick_actions, upcoming_bills, one_tap, recent) |
+| Migration 4 | `app_pages/savings.py` | — | ☑ done (per-goal Panels in b761353) |
+| Migration 5 | `app_pages/loans.py` | — | ☑ done (per-loan Panels in b761353) |
+| Migration 6 | `app_pages/budgets.py` | — | ☑ done (4 Panels: overall, category, progress, all_rows) |
+| Migration 7 | `app_pages/portfolio.py` | — | ☑ done (4 Panels: metrics, allocation, value_over_time, holdings) |
+| Migration 8 | `app_pages/settings.py` + `settings_ai.py` | — | ☐ deferred (R1 already fragments AI settings; Panel chrome optional) |

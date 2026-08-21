@@ -18,6 +18,7 @@ from utils import (
     fmt, fmt_row, to_display, get_currency_symbol, effective_category_budgets,
     filter_started_templates,
 )
+from ui.panel import PanelSpec, panel
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -40,19 +41,22 @@ if hh_id:
 
 # ── Personal task hub (Personal mode only) ──────────────────────────────────
 if personal_view:
-    with st.container(border=True):
-        st.markdown("**Quick actions**")
-        qa1, qa2, qa3 = st.columns(3)
-        with qa1:
-            st.page_link("app_pages/log_expense.py", label="Log expense",
-                         icon=":material/receipt_long:", width="stretch")
-        with qa2:
-            st.page_link("app_pages/log_income.py", label="Log income",
-                         icon=":material/payments:", width="stretch")
-        with qa3:
-            st.page_link("app_pages/settings.py", label="Open settings",
-                         icon=":material/tune:", width="stretch")
-        st.caption("Budgets live in Settings — add or edit them there.")
+    spec = PanelSpec(id="dash_quick_actions", title="Quick actions",
+                     icon=":material/bolt:", collapsible=True, default_expanded=True)
+    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    if expanded:
+        with container:
+            qa1, qa2, qa3 = st.columns(3)
+            with qa1:
+                st.page_link("app_pages/log_expense.py", label="Log expense",
+                             icon=":material/receipt_long:", width="stretch")
+            with qa2:
+                st.page_link("app_pages/log_income.py", label="Log income",
+                             icon=":material/payments:", width="stretch")
+            with qa3:
+                st.page_link("app_pages/settings.py", label="Open settings",
+                             icon=":material/tune:", width="stretch")
+            st.caption("Budgets live in Settings — add or edit them there.")
 
     # Upcoming bills: active recurring templates with a due day within the
     # next 7 calendar days.
@@ -92,82 +96,91 @@ if personal_view:
             if 0 <= (d - today).days <= 7:
                 upcoming.append((d, r))
     if upcoming:
-        with st.container(border=True):
-            st.markdown("**Upcoming bills**")
-            for d, r in sorted(upcoming, key=lambda t: t[0]):
-                desc = (r["description"] if pd.notna(r["description"])
-                        else (r["category"] if pd.notna(r["category"]) else "Bill"))
-                amt  = fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates)
-                st.markdown(f"- {d.strftime('%d %b')} — **{desc}** · {amt}")
+        spec = PanelSpec(id="dash_upcoming_bills", title="Upcoming bills",
+                         icon=":material/event:", collapsible=True, default_expanded=True)
+        expanded, container = panel(spec, user_id=user_id, area="dashboard")
+        if expanded:
+            with container:
+                for d, r in sorted(upcoming, key=lambda t: t[0]):
+                    desc = (r["description"] if pd.notna(r["description"])
+                            else (r["category"] if pd.notna(r["category"]) else "Bill"))
+                    amt  = fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates)
+                    st.markdown(f"- {d.strftime('%d %b')} — **{desc}** · {amt}")
 
     # One-tap quick logging for small everyday expenses.
-    with st.container(border=True):
-        st.markdown("**One-tap logging**")
-        _presets = [
-            ("☕ Coffee", 2.50, "Dining Out", "Coffee & Snacks", "Coffee"),
-            ("🍔 Lunch", 10.00, "Dining Out", "Work Lunch", "Lunch"),
-            ("🚌 Transit", 2.00, "Transport", "Public Transit", "Transit"),
-        ]
-        qb1, qb2, qb3 = st.columns(3)
-        for col, (label, amt, cat, sub, desc) in zip((qb1, qb2, qb3), _presets):
-            with col:
-                if st.button(f"{label} · {fmt(amt, DC, rates)}",
-                             key=f"qa_{desc.lower()}", width="stretch"):
-                    _qa_key = f"qa_{desc}_{today.isoformat()}"
-                    if st.session_state.get(_qa_key):
-                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
-                        st.rerun()
-                    _fresh_qa = q.expenses(user_id)
-                    if not _fresh_qa.empty and (
-                        (_fresh_qa["date"].dt.date == today)
-                        & (_fresh_qa["description"] == desc)
-                        & (_fresh_qa["amount_eur"].round(2) == round(amt, 2))
-                    ).any():
+    spec = PanelSpec(id="dash_one_tap", title="One-tap logging",
+                     icon=":material/touch_app:", collapsible=True, default_expanded=True)
+    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    if expanded:
+        with container:
+            _presets = [
+                ("☕ Coffee", 2.50, "Dining Out", "Coffee & Snacks", "Coffee"),
+                ("🍔 Lunch", 10.00, "Dining Out", "Work Lunch", "Lunch"),
+                ("🚌 Transit", 2.00, "Transport", "Public Transit", "Transit"),
+            ]
+            qb1, qb2, qb3 = st.columns(3)
+            for col, (label, amt, cat, sub, desc) in zip((qb1, qb2, qb3), _presets):
+                with col:
+                    if st.button(f"{label} · {fmt(amt, DC, rates)}",
+                                 key=f"qa_{desc.lower()}", width="stretch"):
+                        _qa_key = f"qa_{desc}_{today.isoformat()}"
+                        if st.session_state.get(_qa_key):
+                            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                            st.rerun()
+                        _fresh_qa = q.expenses(user_id)
+                        if not _fresh_qa.empty and (
+                            (_fresh_qa["date"].dt.date == today)
+                            & (_fresh_qa["description"] == desc)
+                            & (_fresh_qa["amount_eur"].round(2) == round(amt, 2))
+                        ).any():
+                            st.session_state[_qa_key] = True
+                            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                            st.rerun()
                         st.session_state[_qa_key] = True
-                        st.toast("Already saved — duplicate prevented.", icon=":material/check:")
-                        st.rerun()
-                    st.session_state[_qa_key] = True
-                    try:
-                        add_expense(user_id, {
-                            "date": today, "category": cat, "subcategory": sub,
-                            "description": desc, "amount": amt, "currency": "EUR",
-                            "amount_eur": amt, "recurring": False,
-                            "notes": "Quick-add",
-                        })
-                    except Exception as e:
-                        st.session_state.pop(_qa_key, None)
-                        st.error(f"Couldn't save: {e}")
-                    else:
-                        q.bump_db_version()
-                        st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
-                                 icon=":material/check:")
-                        st.rerun()
+                        try:
+                            add_expense(user_id, {
+                                "date": today, "category": cat, "subcategory": sub,
+                                "description": desc, "amount": amt, "currency": "EUR",
+                                "amount_eur": amt, "recurring": False,
+                                "notes": "Quick-add",
+                            })
+                        except Exception as e:
+                            st.session_state.pop(_qa_key, None)
+                            st.error(f"Couldn't save: {e}")
+                        else:
+                            q.bump_db_version()
+                            st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
+                                     icon=":material/check:")
+                            st.rerun()
 
     # Recent activity: the 5 most recent expenses.
-    with st.container(border=True):
-        st.markdown("**Recent activity**")
-        recent = dfe.head(5)
-        if recent.empty:
-            st.caption("No expenses logged yet.")
-            st.page_link("app_pages/log_expense.py", label="Log your first expense",
-                         icon=":material/receipt_long:")
-        else:
-            rec = recent[["date", "description", "category", "amount", "currency", "amount_eur"]].copy()
-            rec["date"] = rec["date"].dt.strftime("%d %b %Y").fillna("")
-            rec["Amount"] = rec.apply(lambda r: fmt_row(r["amount_eur"], r["amount"],
-                                                        r["currency"], DC, rates), axis=1)
-            st.dataframe(
-                rec[["date", "description", "category", "Amount"]].rename(
-                    columns={"date": "Date", "description": "Description",
-                             "category": "Category"}),
-                hide_index=True, width="stretch",
-                column_config={
-                    "Date": st.column_config.TextColumn("Date"),
-                    "Description": st.column_config.TextColumn("Description"),
-                    "Category": st.column_config.TextColumn("Category"),
-                    "Amount": st.column_config.TextColumn("Amount"),
-                },
-            )
+    spec = PanelSpec(id="dash_recent", title="Recent activity",
+                     icon=":material/history:", collapsible=True, default_expanded=True)
+    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    if expanded:
+        with container:
+            recent = dfe.head(5)
+            if recent.empty:
+                st.caption("No expenses logged yet.")
+                st.page_link("app_pages/log_expense.py", label="Log your first expense",
+                             icon=":material/receipt_long:")
+            else:
+                rec = recent[["date", "description", "category", "amount", "currency", "amount_eur"]].copy()
+                rec["date"] = rec["date"].dt.strftime("%d %b %Y").fillna("")
+                rec["Amount"] = rec.apply(lambda r: fmt_row(r["amount_eur"], r["amount"],
+                                                            r["currency"], DC, rates), axis=1)
+                st.dataframe(
+                    rec[["date", "description", "category", "Amount"]].rename(
+                        columns={"date": "Date", "description": "Description",
+                                 "category": "Category"}),
+                    hide_index=True, width="stretch",
+                    column_config={
+                        "Date": st.column_config.TextColumn("Date"),
+                        "Description": st.column_config.TextColumn("Description"),
+                        "Category": st.column_config.TextColumn("Category"),
+                        "Amount": st.column_config.TextColumn("Amount"),
+                    },
+                )
 
 if personal_view and dfe.empty and dfi.empty:
     st.info("No data yet — start logging expenses or income.")

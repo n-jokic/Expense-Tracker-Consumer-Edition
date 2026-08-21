@@ -19,6 +19,7 @@ from utils import (
     fmt, to_display, to_eur, get_currency_symbol,
     help_expander,
 )
+from ui.panel import PanelSpec, panel
 
 user_id  = st.session_state.user_id
 DC       = st.session_state.dc
@@ -133,96 +134,117 @@ for _, h in df_hold.iterrows():
 view = pd.DataFrame(rows)
 m = portfolio_metrics(view.rename(columns={"price_eur": "last_price_eur"}).to_dict("records"))
 
-with st.container(horizontal=True):
-    st.metric("Market value", fmt(m["value"], DC, rates), border=True)
-    st.metric("Invested", fmt(m["invested"], DC, rates), border=True)
-    st.metric("Gain / loss", fmt(m["gain"], DC, rates), border=True)
-    gain_pct_txt = (f"{m['gain_pct']:+.1f}%" if m["invested"] > 0 else "—")
-    st.metric("Gain %", gain_pct_txt, border=True)
+spec = PanelSpec(id="portfolio_metrics", title="Metrics",
+                 icon=":material/speed:", collapsible=True,
+                 default_expanded=True)
+expanded, container = panel(spec, user_id=user_id, area="portfolio")
+if expanded:
+    with container:
+        with st.container(horizontal=True):
+            st.metric("Market value", fmt(m["value"], DC, rates), border=True)
+            st.metric("Invested", fmt(m["invested"], DC, rates), border=True)
+            st.metric("Gain / loss", fmt(m["gain"], DC, rates), border=True)
+            gain_pct_txt = (f"{m['gain_pct']:+.1f}%" if m["invested"] > 0 else "—")
+            st.metric("Gain %", gain_pct_txt, border=True)
 
 # Allocation pie
 r1, r2 = st.columns(2)
 with r1:
-    st.subheader("Allocation")
-    alloc = view[view["value_eur"] > 0]
-    if not alloc.empty:
-        fig = px.pie(alloc, values="value_eur", names="symbol", hole=0.45,
-                     color_discrete_sequence=CHART_COLORS)
-        fig.update_traces(textposition="inside", textinfo="percent+label")
-        fig.update_layout(showlegend=False, margin=dict(t=0,b=0,l=0,r=0),
-                          plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, width="stretch")
-    else:
-        st.caption("No live prices yet — refresh above.")
+    spec = PanelSpec(id="portfolio_allocation", title="Allocation",
+                     icon=":material/pie_chart:", collapsible=True,
+                     default_expanded=True)
+    expanded, container = panel(spec, user_id=user_id, area="portfolio")
+    if expanded:
+        with container:
+            alloc = view[view["value_eur"] > 0]
+            if not alloc.empty:
+                fig = px.pie(alloc, values="value_eur", names="symbol", hole=0.45,
+                             color_discrete_sequence=CHART_COLORS)
+                fig.update_traces(textposition="inside", textinfo="percent+label")
+                fig.update_layout(showlegend=False, margin=dict(t=0,b=0,l=0,r=0),
+                                  plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.caption("No live prices yet — refresh above.")
 
 with r2:
-    st.subheader("Value over time")
-    prices = q.holding_prices(user_id)
-    if not prices.empty:
-        vhist = []
-        estimated = False
-        for _, p in prices.iterrows():
-            hrow = view[view["symbol"] == p["symbol"]]
-            if hrow.empty:
-                continue
-            pv = p.get("value_eur")
-            if pv is not None and not pd.isna(pv) and float(pv) > 0:
-                value = float(pv)  # exact snapshot value (qty/rate at the time)
+    spec = PanelSpec(id="portfolio_value_over_time", title="Value over time",
+                     icon=":material/show_chart:", collapsible=True,
+                     default_expanded=True)
+    expanded, container = panel(spec, user_id=user_id, area="portfolio")
+    if expanded:
+        with container:
+            prices = q.holding_prices(user_id)
+            if not prices.empty:
+                vhist = []
+                estimated = False
+                for _, p in prices.iterrows():
+                    hrow = view[view["symbol"] == p["symbol"]]
+                    if hrow.empty:
+                        continue
+                    pv = p.get("value_eur")
+                    if pv is not None and not pd.isna(pv) and float(pv) > 0:
+                        value = float(pv)  # exact snapshot value (qty/rate at the time)
+                    else:
+                        # Legacy snapshot rows: estimate from today's quantity/rates.
+                        cur = str(hrow.iloc[0]["currency"])
+                        qty = float(hrow.iloc[0]["quantity"])
+                        price_eur = float(p["price"])
+                        if cur != "EUR" and price_eur > 0:
+                            price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
+                        value = qty * price_eur
+                        estimated = True
+                    vhist.append({"date": p["date"], "symbol": p["symbol"],
+                                  "value_eur": value})
+                if vhist:
+                    vdf = pd.DataFrame(vhist)
+                    vsum = vdf.groupby("date")["value_eur"].sum().reset_index()
+                    vsum["d"] = vsum["value_eur"].apply(lambda x: to_display(x, DC, rates))
+                    figv = px.area(vsum, x="date", y="d",
+                                   labels={"d": f"Value ({get_currency_symbol(DC)})", "date": "Date"})
+                    figv.update_layout(plot_bgcolor="rgba(0,0,0,0)",
+                                       paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
+                    st.plotly_chart(figv, width="stretch")
+                    if estimated:
+                        st.caption("≈ Includes days estimated from today's quantity; "
+                                   "new snapshots record exact values.")
+                else:
+                    st.info("Snapshots start accumulating after the first refresh.")
             else:
-                # Legacy snapshot rows: estimate from today's quantity/rates.
-                cur = str(hrow.iloc[0]["currency"])
-                qty = float(hrow.iloc[0]["quantity"])
-                price_eur = float(p["price"])
-                if cur != "EUR" and price_eur > 0:
-                    price_eur = price_eur / (rates.get(cur, 1.0) or 1.0)
-                value = qty * price_eur
-                estimated = True
-            vhist.append({"date": p["date"], "symbol": p["symbol"],
-                          "value_eur": value})
-        if vhist:
-            vdf = pd.DataFrame(vhist)
-            vsum = vdf.groupby("date")["value_eur"].sum().reset_index()
-            vsum["d"] = vsum["value_eur"].apply(lambda x: to_display(x, DC, rates))
-            figv = px.area(vsum, x="date", y="d",
-                           labels={"d": f"Value ({get_currency_symbol(DC)})", "date": "Date"})
-            figv.update_layout(plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
-            st.plotly_chart(figv, width="stretch")
-            if estimated:
-                st.caption("≈ Includes days estimated from today's quantity; "
-                           "new snapshots record exact values.")
-        else:
-            st.info("Snapshots start accumulating after the first refresh.")
-    else:
-        st.info("Snapshots start accumulating after the first refresh.")
+                st.info("Snapshots start accumulating after the first refresh.")
 
 # Holdings table
-st.subheader("Holdings")
-csym = get_currency_symbol(DC)
-tbl = []
-for _, r in view.iterrows():
-    gain = r["value_eur"] - r["cost_eur"]
-    gain_pct = (gain / r["cost_eur"]) * 100 if r["cost_eur"] > 0 else None
-    tbl.append({
-        "Symbol": r["symbol"],
-        "Name": r["name"] or r["symbol"],
-        "Qty": f"{r['quantity']:,.4f}",
-        "Price": r["last_price"] or None,
-        "Value": to_display(r["value_eur"], DC, rates),
-        "Invested": fmt(r["cost_eur"], DC, rates),
-        "Gain": to_display(gain, DC, rates),
-        "Gain %": gain_pct,
-    })
-st.dataframe(
-    pd.DataFrame(tbl),
-    column_config={
-        "Price": st.column_config.NumberColumn("Price", format="%.2f"),
-        "Value": st.column_config.NumberColumn("Value", format=f"{csym}%.2f"),
-        "Gain": st.column_config.NumberColumn("Gain", format=f"{csym}%.2f"),
-        "Gain %": st.column_config.NumberColumn("Gain %", format="%+.1f%%"),
-    },
-    hide_index=True,
-)
+spec = PanelSpec(id="portfolio_holdings", title="Holdings",
+                 icon=":material/pie_chart:", collapsible=True,
+                 default_expanded=True)
+expanded, container = panel(spec, user_id=user_id, area="portfolio")
+if expanded:
+    with container:
+        csym = get_currency_symbol(DC)
+        tbl = []
+        for _, r in view.iterrows():
+            gain = r["value_eur"] - r["cost_eur"]
+            gain_pct = (gain / r["cost_eur"]) * 100 if r["cost_eur"] > 0 else None
+            tbl.append({
+                "Symbol": r["symbol"],
+                "Name": r["name"] or r["symbol"],
+                "Qty": f"{r['quantity']:,.4f}",
+                "Price": r["last_price"] or None,
+                "Value": to_display(r["value_eur"], DC, rates),
+                "Invested": fmt(r["cost_eur"], DC, rates),
+                "Gain": to_display(gain, DC, rates),
+                "Gain %": gain_pct,
+            })
+        st.dataframe(
+            pd.DataFrame(tbl),
+            column_config={
+                "Price": st.column_config.NumberColumn("Price", format="%.2f"),
+                "Value": st.column_config.NumberColumn("Value", format=f"{csym}%.2f"),
+                "Gain": st.column_config.NumberColumn("Gain", format=f"{csym}%.2f"),
+                "Gain %": st.column_config.NumberColumn("Gain %", format="%+.1f%%"),
+            },
+            hide_index=True,
+        )
 
 
 @st.dialog("Remove holding?")
