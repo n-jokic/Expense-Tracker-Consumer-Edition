@@ -10,7 +10,15 @@
     "geometry": "straight",
     "script": "serbian-latin",
     "language": "sr",
-    "features": ["subtotal", "vat"]
+    "features": ["subtotal", "vat"],
+    "items": [
+      {"description": "Mleko", "quantity": 2, "unit_price": 289.99, "line_total": 579.98},
+      {"description": "Hleb", "quantity": 1, "unit_price": 79.99, "line_total": 79.99},
+      {"description": "Piletina file", "quantity": 1, "unit_price": 1249.99, "line_total": 1249.99},
+      {"description": "Jaja", "quantity": 1, "unit_price": 149.99, "line_total": 149.99},
+      {"description": "Kafa", "quantity": 1, "unit_price": 280.55, "line_total": 280.55}
+    ],
+    "reconciles": true
   },
   {
     "id": "angled-eur-english",
@@ -23,7 +31,16 @@
     "geometry": "warped",
     "script": "latin",
     "language": "en",
-    "features": ["discount"]
+    "features": ["discount"],
+    "items": [
+      {"description": "Milk", "quantity": 2, "unit_price": 0.89, "line_total": 1.78},
+      {"description": "Bread", "quantity": 1, "unit_price": 1.15, "line_total": 1.15},
+      {"description": "Chicken salad", "quantity": 1, "unit_price": 3.06, "line_total": 3.06},
+      {"description": "Pasta", "quantity": 1, "unit_price": 1.0, "line_total": 1.0},
+      {"description": "Wine", "quantity": 1, "unit_price": 6.99, "line_total": 6.99},
+      {"description": "Discount", "quantity": 1, "unit_price": -0.99, "line_total": -0.99}
+    ],
+    "reconciles": true
   },
   {
     "id": "dark-rsd-cyrillic",
@@ -36,7 +53,21 @@
     "geometry": "rotated",
     "script": "serbian-cyrillic",
     "language": "sr",
-    "features": ["cash", "change"]
+    "features": ["cash", "change"],
+    "items": [
+      {"description": "Кока кола", "quantity": 2, "unit_price": 189.9, "line_total": 379.8},
+      {"description": "Јогурт", "quantity": 1, "unit_price": 89.9, "line_total": 89.9},
+      {"description": "Сир", "quantity": 1, "unit_price": 599.9, "line_total": 599.9},
+      {"description": "Месо", "quantity": 1, "unit_price": 1250.0, "line_total": 1250.0},
+      {"description": "Пиво", "quantity": 1, "unit_price": 249.9, "line_total": 249.9},
+      {"description": "Хлеб", "quantity": 1, "unit_price": 59.9, "line_total": 59.9},
+      {"description": "Овоће", "quantity": 1, "unit_price": 380.6, "line_total": 380.6},
+      {"description": "Поврће", "quantity": 1, "unit_price": 450.4, "line_total": 450.4},
+      {"description": "Сок", "quantity": 1, "unit_price": 299.9, "line_total": 299.9},
+      {"description": "Колачи", "quantity": 1, "unit_price": 740.7, "line_total": 740.7},
+      {"description": "Сунђери", "quantity": 1, "unit_price": 499.0, "line_total": 499.0}
+    ],
+    "reconciles": true
   },
   {
     "id": "screen-shot-vat",
@@ -49,6 +80,40 @@
     "geometry": "screen",
     "script": "latin",
     "language": "en",
-    "features": ["subtotal", "vat", "cash", "change"]
+    "features": ["subtotal", "vat", "cash", "change"],
+    "items": [
+      {"description": "Juice", "quantity": 2, "unit_price": 159.9, "line_total": 319.8},
+      {"description": "Chips", "quantity": 1, "unit_price": 149.5, "line_total": 149.5},
+      {"description": "Chocolate", "quantity": 1, "unit_price": 99.9, "line_total": 99.9},
+      {"description": "Coffee", "quantity": 1, "unit_price": 549.0, "line_total": 549.0},
+      {"description": "Cheese", "quantity": 1, "unit_price": 389.8, "line_total": 389.8},
+      {"description": "Water", "quantity": 6, "unit_price": 48.5, "line_total": 291.0},
+      {"description": "Gum", "quantity": 1, "unit_price": 86.0, "line_total": 86.0},
+      {"description": "Salami", "quantity": 1, "unit_price": 775.0, "line_total": 775.0}
+    ],
+    "reconciles": true
+  },
+  {
+    "id": "mismatch-eur-latin",
+    "image": "mismatch-eur-latin.jpg",
+    "merchant": "Pekara",
+    "total": 15.0,
+    "currency": "EUR",
+    "date": "2026-08-21",
+    "quality": "clean",
+    "geometry": "straight",
+    "script": "latin",
+    "language": "en",
+    "features": ["reconciliation-fail"],
+    "items": [
+      {"description": "Croissant", "quantity": 1, "unit_price": 1.2, "line_total": 1.2},
+      {"description": "Baguette", "quantity": 1, "unit_price": 1.85, "line_total": 1.85},
+      {"description": "Cake slice", "quantity": 1, "unit_price": 2.5, "line_total": 2.5},
+      {"description": "Burek", "quantity": 1, "unit_price": 3.5, "line_total": 3.5},
+      {"description": "Pizza slice", "quantity": 1, "unit_price": 2.95, "line_total": 2.95},
+      {"description": "Donut", "quantity": 1, "unit_price": 0.95, "line_total": 0.95},
+      {"description": "Coffee", "quantity": 1, "unit_price": 1.1, "line_total": 1.1}
+    ],
+    "reconciles": false
   }
 ]

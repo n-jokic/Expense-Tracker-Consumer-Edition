@@ -1,0 +1,220 @@
+﻿........................................................................ [  9%]
+.....................................................................E.. [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 49%]
+......FF........F..F....................E.............E......EEEEEEE.... [ 59%]
+.................s...................................................... [ 69%]
+...............................F........................................ [ 79%]
+.............................................FF......................... [ 89%]
+........................................................................ [ 99%]
+.....                                                                    [100%]
+=================================== ERRORS ====================================
+_______ ERROR at setup of test_ask_page_error_does_not_pollute_history ________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+_______ ERROR at setup of test_first_launch_migrates_legacy_state_once ________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+__________ ERROR at setup of test_local_provider_discovers_app_model __________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+_ ERROR at setup of test_local_model_preserves_zero_gpu_layers_and_reports_missing_file _
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+__ ERROR at setup of test_local_model_retries_cpu_after_vulkan_load_failure ___
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+____________ ERROR at setup of test_local_import_oserror_is_caught ____________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+__ ERROR at setup of test_local_import_importerror_message_source_vs_frozen ___
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+____ ERROR at setup of test_stale_diagnostic_cleared_on_successful_reload _____
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+_________ ERROR at setup of test_local_cache_key_includes_gpu_layers __________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+_________________ ERROR at setup of test_local_runtime_status _________________
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\pytest-of-Nikita'
+================================== FAILURES ===================================
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_0_cu337w\\one.db'
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_github_backup.py:38: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_0_cu337w\\one.db'
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_1euyq9ng\\t.db'
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_github_backup.py:38: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_1euyq9ng\\t.db'
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_moui0c_g\\x.db'
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_github_backup.py:38: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_moui0c_g\\x.db'
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_hnn0c6o5\\restored.db'
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_github_backup.py:38: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\gh_backup_tests_hnn0c6o5\\restored.db'
+E   AssertionError: ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form
+          raise StreamlitAPIException("Forms cannot be nested in other forms.")'])])
+    assert not ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form\n    raise StreamlitAPIException("Forms cannot be nested in other forms.")'])])
+     +  where ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form\n    raise StreamlitAPIException("Forms cannot be nested in other forms.")'])]) = AppTest(\n    _script_path='C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\app.py',\n    def...CZK'], form_id='exp_form')\n            }\n        ),\n        2: SpecialBlock(\n            type='event'\n        )\n    }\n).exception
+---------------------------- Captured stderr call -----------------------------
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.364 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 21:11:32.476 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 136, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 816, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\app.py", line 120, in <module>
+    with st.form("rate_form"):
+         ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\metrics_util.py", line 596, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\elements\form.py", line 217, in form
+    raise StreamlitAPIException("Forms cannot be nested in other forms.")
+streamlit.errors.StreamlitAPIException: Forms cannot be nested in other forms.
+------------------------------ Captured log call ------------------------------
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+ERROR    streamlit.error_util:error_util.py:112 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 136, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 816, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\app.py", line 120, in <module>
+    with st.form("rate_form"):
+         ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\metrics_util.py", line 596, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\elements\form.py", line 217, in form
+    raise StreamlitAPIException("Forms cannot be nested in other forms.")
+streamlit.errors.StreamlitAPIException: Forms cannot be nested in other forms.
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_ocr_review.py:69: AssertionError: ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_\\23e5042eaf8da77667a2cb7bfbb9d357'
+C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1013: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_\\23e5042eaf8da77667a2cb7bfbb9d357'
+E   PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_\\23e5042eaf8da77667a2cb7bfbb9d357'
+C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1013: PermissionError: [Errno 13] Permission denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_\\23e5042eaf8da77667a2cb7bfbb9d357'
+============================== warnings summary ===============================
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1380: RuntimeWarning: divide by zero encountered in log
+    aic = self.nobs * np.log(sse / self.nobs) + k * 2
+
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1386: RuntimeWarning: invalid value encountered in scalar add
+    aicc = aic + aicc_penalty
+
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1387: RuntimeWarning: divide by zero encountered in log
+    bic = self.nobs * np.log(sse / self.nobs) + k * np.log(self.nobs)
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\scipy\optimize\_numdiff.py:710: RuntimeWarning: invalid value encountered in subtract
+    df = [f_eval - f0 for f_eval in f_evals]
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:903: ConvergenceWarning: Optimization failed to converge. Check mle_retvals.
+    warnings.warn(
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1362: RuntimeWarning: invalid value encountered in subtract
+    b[i] = (beta * detrend(lvls[i], lvls[i - 1])) + (
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\forecasting.py:132: RuntimeWarning: invalid value encountered in divide
+    "smape": float(np.mean(np.abs(a - p) / denom) * 100),
+
+tests/test_forecasting.py::test_cluster_month_patterns
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\joblib\externals\loky\backend\context.py:131: UserWarning: Could not find the number of physical cores for the following reason:
+  [WinError 2] The system cannot find the file specified
+  Returning the number of logical cores instead. You can silence this warning by setting LOKY_MAX_CPU_COUNT to the number of cores you want to use.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_loan_commands.py:358: pre-existing Streamlit nested-forms pollution from an earlier AppTest test in this process
+ERROR tests/test_app_ui.py::test_ask_page_error_does_not_pollute_history - Pe...
+ERROR tests/test_launcher.py::test_first_launch_migrates_legacy_state_once - ...
+ERROR tests/test_llm.py::test_local_provider_discovers_app_model - Permission...
+ERROR tests/test_llm.py::test_local_model_preserves_zero_gpu_layers_and_reports_missing_file
+ERROR tests/test_llm.py::test_local_model_retries_cpu_after_vulkan_load_failure
+ERROR tests/test_llm.py::test_local_import_oserror_is_caught - PermissionErro...
+ERROR tests/test_llm.py::test_local_import_importerror_message_source_vs_frozen
+ERROR tests/test_llm.py::test_stale_diagnostic_cleared_on_successful_reload
+ERROR tests/test_llm.py::test_local_cache_key_includes_gpu_layers - Permissio...
+ERROR tests/test_llm.py::test_local_runtime_status - PermissionError: [WinErr...
+FAILED tests/test_github_backup.py::test_split_merge_roundtrip_single_and_multi_part
+FAILED tests/test_github_backup.py::test_merge_rejects_tampered_and_missing_parts
+FAILED tests/test_github_backup.py::test_find_manifest_and_download_roundtrip
+FAILED tests/test_github_backup.py::test_replace_db_wraps_file_in_use_error
+FAILED tests/test_ocr_review.py::test_receipt_review_shows_uncertainty_and_reuses_result
+FAILED tests/test_recurring.py::test_persist_not_invoked_when_action_present
+FAILED tests/test_recurring.py::test_persist_invoked_when_no_action - Permiss...
+7 failed, 707 passed, 1 skipped, 30 warnings, 10 errors in 59.67s
+python.exe : Traceback (most recent call last):
+At line:1 char:129
++ ... ew($false); & .\.venv-fin00\Scripts\python.exe -m pytest tests -q --t ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<frozen os>", line 366, in walk
+PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edit
+ion\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\weakref.py", line 666, in _exitfunc
+    f()
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\weakref.py", line 590, in __call__
+    return info.func(*info.args, **(info.kwargs or {}))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\tempfile.py", line 939, in _cleanup
+    cls._rmtree(name, ignore_errors=ignore_errors)
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\tempfile.py", line 934, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 781, in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 623, in _rmtree_unsafe
+    for dirpath, dirnames, filenames in results:
+                                        ^^^^^^^
+  File "<frozen os>", line 369, in walk
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 621, in onerror
+    onexc(os.scandir, err.filename, err)
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\tempfile.py", line 906, in onexc
+    _resetperms(path)
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\tempfile.py", line 286, in _resetperms
+    _dont_follow_symlinks(_os.chmod, path, 0o700)
+  File "C:\Users\Nikita\AppData\Local\Programs\Python\Python312\Lib\tempfile.py", line 277, in _dont_follow_symlinks
+    func(path, *args)
+PermissionError: [WinError 5] Access is denied: 'C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edit
+ion\\data\\_pytest_tmp\\expense_tracker_tests_ea73c90b\\pytest_runtime\\tmpxwpgiwg_'

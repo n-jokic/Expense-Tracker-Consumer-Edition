@@ -85,7 +85,12 @@ def test_fixture_manifest_covers_requested_receipt_conditions():
     assert {case["currency"] for case in manifest} >= {"EUR", "RSD"}
     features = {feature for case in manifest for feature in case["features"]}
     assert {"cash", "change", "subtotal", "discount", "vat"} <= features
-    assert all(not (FIXTURE_DIR / case["image"]).exists() for case in manifest)
+    # OCR-01: the corpus is REAL now — every manifest image is committed and
+    # carries line-item expectations plus a reconciliation verdict.
+    assert all((FIXTURE_DIR / case["image"]).exists() for case in manifest)
+    for case in manifest:
+        assert isinstance(case.get("items"), list) and case["items"], case["id"]
+        assert isinstance(case.get("reconciles"), bool), case["id"]
 
 
 def test_benchmark_reports_field_accuracy_and_uncertainty_metrics():
