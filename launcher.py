@@ -163,11 +163,23 @@ def _run_api() -> None:
 
 
 def _smoke_check() -> None:
+    """Packaged-build sanity gate (--smoke).
+
+    STRICT: streamlit and sqlcipher3 must import, and app.py must exist in
+    the packaged project dir — without these the app cannot run at all.
+    TOLERATED: llama_cpp is the OPTIONAL local-AI runtime
+    (requirements-ai.txt); build_exe.bat never installs it, the app shows an
+    actionable "runtime missing" notice without it, and demanding it here
+    made every standard build fail its own smoke test (PKG-01 fix).
+    """
     import streamlit  # noqa: F401
-    import llama_cpp  # noqa: F401
     import sqlcipher3  # noqa: F401
     if not os.path.isfile(os.path.join(_project_dir(), "app.py")):
         raise RuntimeError("Packaged app.py is missing")
+    try:
+        import llama_cpp  # noqa: F401
+    except ImportError:
+        pass  # optional runtime; the UI degrades gracefully without it
 
 
 def _fail(message: str) -> None:

@@ -14,6 +14,15 @@ for package in ("streamlit", "llama_cpp", "sqlcipher3", "pandas", "plotly",
 
 datas += [(source, ".") for source in glob("*.py")]
 datas += [("app_pages", "app_pages"), (".streamlit", ".streamlit"), ("README.md", ".")]
+# First-party importable packages used by app.py / app_pages at runtime.
+# Streamlit executes pages from loose files on disk, so PyInstaller cannot
+# see their imports; ship every internal package as loose files next to
+# app.py exactly like app_pages (PKG-01): without these the packaged exe
+# crashes with ModuleNotFoundError on e.g. "from domain.validation import
+# is_valid_amount" or "from services.commands import ...".
+for package_dir in ("services", "ai", "ingestion", "ml", "domain",
+                    "ui", "infra"):
+    datas += [(package_dir, package_dir)]
 
 a = Analysis(["launcher.py"], pathex=[], binaries=binaries, datas=datas,
              hiddenimports=hiddenimports, excludes=["pytest"], noarchive=False)
