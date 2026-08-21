@@ -25,6 +25,7 @@ from utils import (
     fmt, to_display, to_eur, get_currency_symbol,
     help_expander, to_excel,
 )
+from ui.panel import PanelSpec, panel
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -580,39 +581,43 @@ if not dfs.empty:
         pct = min((bal + g_locked) / tgtv * 100, 100) if tgtv > 0 else 0
         avg_dep = float(rows["deposited_eur"].tail(3).mean()) if not rows.empty else 0.0
 
-        with st.container(border=True):
-            h1, h2 = st.columns([4, 1])
-            with h1:
-                st.markdown(f"**{g}**")
-                st.progress(pct / 100, text=f"{pct:.0f}% of target" if tgtv > 0 else "No target set")
-                proj = savings_projection(dfs, g)
-                proj_str = ""
-                if proj["months_to_goal"] and proj["months_to_goal"] > 0 and proj["projected_date"]:
-                    proj_str = f" · 🎯 Goal in ~{proj['months_to_goal']}mo ({proj['projected_date'].strftime('%b %Y')})"
-                st.caption(
-                    f"Balance: **{fmt(bal, DC, rates)}**"
-                    + (f" + {fmt(g_locked, DC, rates)} locked" if g_locked > 0 else "")
-                    + f" · Target: {fmt(tgtv, DC, rates) if tgtv > 0 else '—'} · "
-                    f"Interest earned: {fmt(interest, DC, rates)} · "
-                    f"Rate: {grat:.2f}% · ~{fmt(avg_dep, DC, rates)}/mo"
-                    + proj_str
-                )
-            with h2:
-                st.metric("Progress", f"{pct:.1f}%" if tgtv > 0 else "—",
-                          label_visibility="collapsed")
-            with st.container(horizontal=True):
-                if st.button("Deposit", icon=":material/add:",
-                             key=f"goal_dep_{idx}", type="primary"):
-                    deposit_dialog(user_id, g, tgtv, grat, gcur)
-                if st.button("Withdraw", icon=":material/remove:",
-                             key=f"goal_wd_{idx}"):
-                    withdraw_dialog(user_id, g, bal, tgtv, grat, gcur)
-                if st.button("Edit goal", icon=":material/edit:",
-                             key=f"goal_ed_{idx}"):
-                    edit_goal_dialog(user_id, g)
-                if st.button("Delete goal", icon=":material/delete:",
-                             key=f"goal_del_{idx}"):
-                    delete_goal_dialog(user_id, g, len(rows), g_locked)
+        spec = PanelSpec(id=f"sav_goal_{g}", title=g,
+                         collapsible=True, default_expanded=True)
+        expanded, container = panel(spec, user_id=user_id, area="savings")
+        if expanded:
+            with container:
+                h1, h2 = st.columns([4, 1])
+                with h1:
+                    st.markdown(f"**{g}**")
+                    st.progress(pct / 100, text=f"{pct:.0f}% of target" if tgtv > 0 else "No target set")
+                    proj = savings_projection(dfs, g)
+                    proj_str = ""
+                    if proj["months_to_goal"] and proj["months_to_goal"] > 0 and proj["projected_date"]:
+                        proj_str = f" · 🎯 Goal in ~{proj['months_to_goal']}mo ({proj['projected_date'].strftime('%b %Y')})"
+                    st.caption(
+                        f"Balance: **{fmt(bal, DC, rates)}**"
+                        + (f" + {fmt(g_locked, DC, rates)} locked" if g_locked > 0 else "")
+                        + f" · Target: {fmt(tgtv, DC, rates) if tgtv > 0 else '—'} · "
+                        f"Interest earned: {fmt(interest, DC, rates)} · "
+                        f"Rate: {grat:.2f}% · ~{fmt(avg_dep, DC, rates)}/mo"
+                        + proj_str
+                    )
+                with h2:
+                    st.metric("Progress", f"{pct:.1f}%" if tgtv > 0 else "—",
+                              label_visibility="collapsed")
+                with st.container(horizontal=True):
+                    if st.button("Deposit", icon=":material/add:",
+                                 key=f"goal_dep_{idx}", type="primary"):
+                        deposit_dialog(user_id, g, tgtv, grat, gcur)
+                    if st.button("Withdraw", icon=":material/remove:",
+                                 key=f"goal_wd_{idx}"):
+                        withdraw_dialog(user_id, g, bal, tgtv, grat, gcur)
+                    if st.button("Edit goal", icon=":material/edit:",
+                                 key=f"goal_ed_{idx}"):
+                        edit_goal_dialog(user_id, g)
+                    if st.button("Delete goal", icon=":material/delete:",
+                                 key=f"goal_del_{idx}"):
+                        delete_goal_dialog(user_id, g, len(rows), g_locked)
 
     # ── Term-deposit accounts ────────────────────────────────────────────────
     st.divider()

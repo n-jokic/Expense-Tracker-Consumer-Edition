@@ -19,6 +19,7 @@ from utils import (
     fmt, to_eur, get_currency_symbol,
     help_expander,
 )
+from ui.panel import PanelSpec, panel
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -337,13 +338,23 @@ else:
             if row["principal_eur"] > 0 else 0.0
         repaid_pct = min(max(repaid_pct, 0.0), 100.0)
 
-        with st.container(border=True):
+        status_icon = "✅" if row["status"] == "paid_off" else "🏦"
+        spec = PanelSpec(
+            id=f"loan_{loan_id}",
+            title=str(row["name"]),
+            icon=status_icon,
+            collapsible=True,
+            default_expanded=True,
+            reorderable=True,
+            summary=f"{float(row['annual_rate']):.2f}% · {int(row['term_months'])} mo",
+            badge=f"{repaid_pct:.0f}% repaid",
+        )
+        expanded, content = panel(spec, user_id=user_id, area="loans")
+        if not expanded:
+            continue
+        with content:
             h1, h2, h3 = st.columns([3, 1.4, 1])
             with h1:
-                status_icon = "✅" if row["status"] == "paid_off" else "🏦"
-                st.markdown(f"{status_icon} **{row['name']}** — "
-                            f"{float(row['annual_rate']):.2f}% · "
-                            f"{int(row['term_months'])} mo")
                 st.progress(repaid_pct / 100, text=f"{repaid_pct:.0f}% repaid")
                 payoff_str = (sched["payoff_date"].strftime("%b %Y")
                               if sched["payoff_date"] else "—")
