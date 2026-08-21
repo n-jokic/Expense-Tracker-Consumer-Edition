@@ -1,0 +1,125 @@
+﻿........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 28%]
+........................................................................ [ 38%]
+........................................................................ [ 48%]
+........................................................................ [ 57%]
+.................s...................................................... [ 67%]
+........................................F............................... [ 77%]
+........................................................................ [ 86%]
+........................................................................ [ 96%]
+............................                                             [100%]
+================================== FAILURES ===================================
+E   AssertionError: ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form
+          raise StreamlitAPIException("Forms cannot be nested in other forms.")'])])
+    assert not ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form\n    raise StreamlitAPIException("Forms cannot be nested in other forms.")'])])
+     +  where ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form\n    raise StreamlitAPIException("Forms cannot be nested in other forms.")'])]) = AppTest(\n    _script_path='C:\\Users\\Nikita\\Desktop\\gitProjects\\Expense-Tracker-Consumer-Edition\\app.py',\n    def...CZK'], form_id='exp_form')\n            }\n        ),\n        2: SpecialBlock(\n            type='event'\n        )\n    }\n).exception
+---------------------------- Captured stderr call -----------------------------
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.114 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-08-21 22:15:42.232 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 136, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 816, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\app.py", line 120, in <module>
+    with st.form("rate_form"):
+         ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\metrics_util.py", line 596, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\elements\form.py", line 217, in form
+    raise StreamlitAPIException("Forms cannot be nested in other forms.")
+streamlit.errors.StreamlitAPIException: Forms cannot be nested in other forms.
+------------------------------ Captured log call ------------------------------
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+WARNING  streamlit.runtime.scriptrunner_utils.script_run_context:script_run_context.py:448 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+ERROR    streamlit.error_util:error_util.py:112 Uncaught app execution
+Traceback (most recent call last):
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 136, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 816, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\app.py", line 120, in <module>
+    with st.form("rate_form"):
+         ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\runtime\metrics_util.py", line 596, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\streamlit\elements\form.py", line 217, in form
+    raise StreamlitAPIException("Forms cannot be nested in other forms.")
+streamlit.errors.StreamlitAPIException: Forms cannot be nested in other forms.
+C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\tests\test_ocr_review.py:69: AssertionError: ElementList(_list=[Exception(message='Forms cannot be nested in other forms.', is_markdown=True, stack_trace=['File "C...\\elements\\form.py", line 217, in form
+============================== warnings summary ===============================
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1380: RuntimeWarning: divide by zero encountered in log
+    aic = self.nobs * np.log(sse / self.nobs) + k * 2
+
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1386: RuntimeWarning: invalid value encountered in scalar add
+    aicc = aic + aicc_penalty
+
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+tests/test_forecasting.py::test_forecast_history_months_are_elapsed_not_row_count
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1387: RuntimeWarning: divide by zero encountered in log
+    bic = self.nobs * np.log(sse / self.nobs) + k * np.log(self.nobs)
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\scipy\optimize\_numdiff.py:710: RuntimeWarning: invalid value encountered in subtract
+    df = [f_eval - f0 for f_eval in f_evals]
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:903: ConvergenceWarning: Optimization failed to converge. Check mle_retvals.
+    warnings.warn(
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\.venv-fin00\Lib\site-packages\statsmodels\tsa\holtwinters\model.py:1362: RuntimeWarning: invalid value encountered in subtract
+    b[i] = (beta * detrend(lvls[i], lvls[i - 1])) + (
+
+tests/test_forecasting.py::test_forecast_never_leaks_nonfinite_total
+  C:\Users\Nikita\Desktop\gitProjects\Expense-Tracker-Consumer-Edition\forecasting.py:132: RuntimeWarning: invalid value encountered in divide
+    "smape": float(np.mean(np.abs(a - p) / denom) * 100),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_loan_commands.py:358: pre-existing Streamlit nested-forms pollution from an earlier AppTest test in this process
+FAILED tests/test_ocr_review.py::test_receipt_review_shows_uncertainty_and_reuses_result
+1 failed, 746 passed, 1 skipped, 29 warnings in 62.58s (0:01:02)

@@ -144,6 +144,27 @@ def _get_user_rates(user_id: int) -> dict:
         return get_rates({})
 
 
+# QA-01: derived *_eur fields a CREATE may never carry without their base
+# amount/currency — otherwise the client-supplied aggregate would be trusted.
+_DERIVED_PAIRS = {
+    "expenses": (("amount", "amount_eur"),),
+    "income": (("budgeted", "budgeted_eur"), ("actual", "actual_eur")),
+    "savings": (("deposited", "deposited_eur"),),
+    "savings_accounts": (("amount", "amount_eur"),),
+}
+
+
+def _reject_isolated_derived_eur(table: str, clean: dict) -> None:
+    """Reject CREATE payloads carrying derived *_eur values without their
+    base amount/currency (QA-01). The server computes *_eur itself; an
+    isolated derived value would otherwise be stored unvalidated."""
+    for base, eur in _DERIVED_PAIRS.get(table, ()):
+        if eur in clean and base not in clean:
+            raise ValueError(
+                f"{eur} cannot be synced without {base} and currency — "
+                "the server computes it from the base amount.")
+
+
 def _recompute_derived_eur(table: str, clean: dict, rates: dict, existing=None) -> None:
     """Server-side recompute of derived *_eur fields via to_eur.
 
@@ -152,6 +173,8 @@ def _recompute_derived_eur(table: str, clean: dict, rates: dict, existing=None) 
     falls back to existing record's values for isolated *_eur updates.
     """
     try:
+        if existing is None:
+            _reject_isolated_derived_eur(table, clean)
         if table == "expenses":
             # amount -> amount_eur
             amt = clean.get("amount")
