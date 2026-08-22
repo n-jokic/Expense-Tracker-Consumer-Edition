@@ -319,6 +319,11 @@ class Household(Base):
     id          = Column(Integer, primary_key=True, autoincrement=True)
     name        = Column(String, nullable=False)
     invite_code = Column(String, unique=True)
+    # #21b: creator manages the member list and the sharing config.
+    owner_id    = Column(Integer, nullable=True)
+    # #21b: per-area visibility for members: hidden | visible | editable
+    # ('expenses' is always editable — it is the ledger itself).
+    share_prefs = Column(JSON, nullable=True)
     created_at  = Column(DateTime, default=_utcnow)
     members     = relationship("User", back_populates="household")
 
@@ -894,6 +899,18 @@ def _migrate(engine):
         "tax_model": "JSON",
     })
     _derive_ai_api_kind(engine)
+    _add_missing_columns(engine, "households", {
+        "owner_id": "INTEGER",
+        "share_prefs": "JSON",
+    })
+    from sqlalchemy import text as _text21
+    with engine.begin() as _conn21:
+        # Legacy households: the lowest member id becomes the owner (the
+        # creator pattern predates the column). Idempotent — NULLs only.
+        _conn21.execute(_text21(
+            "UPDATE households SET owner_id = ("
+            " SELECT MIN(u.id) FROM users u WHERE u.household_id = households.id)"
+            " WHERE owner_id IS NULL"))
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
         "hours": "FLOAT",
@@ -2939,10 +2956,120 @@ def create_household(user_id, name):
             s.add(hh)
             s.flush()
         user = s.query(User).filter(User.id == user_id).first()
+        hh.owner_id = int(user_id)
+        hh.share_prefs = dict(DEFAULT_SHARE_PREFS)
         if user:
             user.household_id = hh.id
         log_audit(s, user_id, "CREATE", "households", hh.id, {"name": name})
         return hh.id, code
+
+
+# ── #21b: household admin (kick) + configurable sharing ─────────────────────
+
+SHARE_AREAS = ("expenses", "budgets", "income", "loans")
+SHARE_LEVELS = ("hidden", "visible", "editable")
+DEFAULT_SHARE_PREFS = {"expenses": "editable", "budgets": "hidden",
+                       "income": "hidden", "loans": "hidden"}
+
+
+def get_share_prefs(household_id):
+    """Merged prefs (defaults for missing areas) or None when unknown."""
+    with get_session() as s:
+        hh = s.query(Household).filter(Household.id == int(household_id)).first()
+        if not hh:
+            return None
+        stored = dict(hh.share_prefs or {})
+    merged = dict(DEFAULT_SHARE_PREFS)
+    for area in SHARE_AREAS:
+        v = str(stored.get(area, "")).strip().lower()
+        if v in SHARE_LEVELS:
+            merged[area] = v
+    # expenses are the ledger itself: members always see and add to them.
+    merged["expenses"] = "editable"
+    return merged
+
+
+def save_share_prefs(household_id, actor_id, prefs: dict):
+    """Owner-only partial update of the sharing config. Bumps every member."""
+    from sqlalchemy import text as _text
+    with get_session() as s:
+        hh = s.query(Household).filter(Household.id == int(household_id)).first()
+        if not hh:
+            raise ValueError("Household not found.")
+        if int(hh.owner_id or -1) != int(actor_id):
+            raise PermissionError("Only the household owner can change "
+                                  "sharing settings.")
+        stored = dict(hh.share_prefs or {})
+        changed = {}
+        for area, level in (prefs or {}).items():
+            if area not in SHARE_AREAS or area == "expenses":
+                continue                      # expenses stay editable
+            if level not in SHARE_LEVELS:
+                raise ValueError(f"Invalid share level {level!r} for {area}.")
+            if stored.get(area) != level:
+                stored[area] = level
+                changed[area] = level
+        if not changed:
+            return False
+        hh.share_prefs = stored
+        log_audit(s, int(actor_id), "UPDATE", "households", int(household_id),
+                  {"share_prefs": changed})
+        s.commit()
+    member_ids = [m["id"] for m in get_household_members(int(household_id))]
+    for mid in member_ids:
+        bump_data_revision(mid, include_household=False)
+    return True
+
+
+def is_household_owner(user_id: int, household_id: int | None = None) -> bool:
+    with get_session() as s:
+        u = s.query(User).filter(User.id == int(user_id)).first()
+        if not u or not u.household_id:
+            return False
+        hid = int(household_id) if household_id else int(u.household_id)
+        hh = s.query(Household).filter(Household.id == hid).first()
+        return bool(hh and int(hh.owner_id or -1) == int(user_id))
+
+
+def kick_household_member(actor_id: int, member_id: int):
+    """Owner-only removal (#21b): clears membership, bumps EVERY member's
+    revision including the removed one so all caches invalidate. Returns the
+    kicked display name."""
+    with get_session() as s:
+        actor = s.query(User).filter(User.id == int(actor_id)).first()
+        if not actor or not actor.household_id:
+            raise ValueError("You don't belong to a household.")
+        hh = s.query(Household).filter(Household.id == actor.household_id).first()
+        if not hh:
+            raise ValueError("Household not found.")
+        if int(hh.owner_id or -1) != int(actor_id):
+            raise PermissionError("Only the household owner can remove members.")
+        if int(member_id) == int(actor_id):
+            raise ValueError("Owners cannot kick themselves — use Leave.")
+        member = s.query(User).filter(
+            User.id == int(member_id),
+            User.household_id == hh.id).first()
+        if not member:
+            raise ValueError("That person isn't a member of your household.")
+        name = member.display_name or member.username
+        member.household_id = None
+        log_audit(s, int(actor_id), "DELETE", "users", int(member_id),
+                  {"kicked_from_household": int(hh.id)})
+        s.commit()
+        remaining_ids = [m["id"] for m in
+                         get_household_members_after_commit(int(hh.id))]
+    # bump everyone INCLUDING the removed member (their caches must drop the
+    # shared rows); include_household=False — they no longer have one.
+    for mid in list(remaining_ids) + [int(member_id)]:
+        try:
+            bump_data_revision(mid, include_household=False)
+        except Exception:
+            pass
+    return name
+
+
+def get_household_members_after_commit(household_id: int):
+    return get_household_members(int(household_id))
 
 
 def regenerate_invite_code(user_id):
@@ -3018,9 +3145,20 @@ def leave_household(user_id):
         # A household whose last member left is orphaned (its invite code
         # would still be valid) — remove it.
         if hh_id is not None:
-            remaining = s.query(User).filter(User.household_id == hh_id).count()
-            if remaining == 0:
+            remaining = (s.query(User)
+                         .filter(User.household_id == hh_id)
+                         .order_by(User.id.asc()).all())
+            if not remaining:
                 s.query(Household).filter(Household.id == hh_id).delete()
+            else:
+                # #21b: a departing OWNER hands ownership to the next-lowest
+                # member so the household keeps an admin; prefs survive.
+                hh = s.query(Household).filter(Household.id == hh_id).first()
+                if hh and int(hh.owner_id or -1) == int(user_id):
+                    hh.owner_id = int(remaining[0].id)
+                    log_audit(s, int(remaining[0].id), "UPDATE",
+                              "households", int(hh.id),
+                              {"owner_transferred": True})
     return True
 
 

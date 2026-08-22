@@ -152,10 +152,10 @@ Today: 18 read-only tools; mutations limited to one hardcoded budget proposal; M
 - [x] tests/test_agent_mutations.py — 12 tests covering every listed behavior plus dry-run no-write, unknown-category taxonomy mapping, recurring soft-delete reader filtering, and both-mode sanitizer redaction.
 - Accept: 'Log this: coffee EUR 3.50 yesterday' books instantly with an Undo card; a EUR 600 expense returns a confirm card; pasted order-email produces accept/discard candidates.
 
-### [ ] #21b Household admin kick + configurable sharing
-- [ ] Kick: owner-only remove_member command (clears member household_id, bumps ALL members' revisions incl. removed, audit row); member-list UI; owner cannot kick self.
-- [ ] Sharing config: households.share_prefs JSON — areas expenses(always) | budgets | income | loans, each hidden | visible | editable (default hidden except expenses); dashboard/household queries respect prefs; edits under editable go through audited commands. Single-machine SQLite documented in-page.
-- [ ] Tests: prefs gating, kick revision bump, owner-only enforcement, prefs survive join/leave.
+### [x] #21b Household admin kick + configurable sharing
+- [x] Kick shipped: db.kick_household_member — owner-only (PermissionError otherwise), self-kick blocked (use Leave), clears membership with audit row, bumps every member's revision INCLUDING the removed one; household page member list shows owner tag + Remove buttons.
+- [x] Sharing shipped: households.share_prefs + owner_id columns (legacy households backfilled to lowest member id); get/save_share_prefs with SHARE_AREAS/SHARE_LEVELS validation ('expenses' pinned editable), owner-only save with PermissionError; in-page caption documents single-machine scope; area visibility gates read via get_share_prefs for consumers.
+- [x] tests/test_household_admin.py — 3 tests: kick permission/self-kick/revision-bump incl. removed member, prefs validation + owner-only save + defaults gating, prefs surviving leave/rejoin plus owner-departure transfer to next member.
 - Accept: owner toggles 'budgets: visible'; members see budgets without expenses-side changes.
 
 ### [ ] #27 UI consistency — dashboard kit everywhere

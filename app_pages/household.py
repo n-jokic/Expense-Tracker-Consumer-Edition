@@ -103,9 +103,68 @@ if not hh_id:
                         safe_error("Invalid invite code. Please check and try again.")
 else:
     members = q.household_members(hh_id)
+    from db import get_household_members, is_household_owner
+    _owner = is_household_owner(user_id, hh_id)
     st.subheader(f"{len(members)} {'member' if len(members) == 1 else 'members'}")
     for m in members:
-        st.markdown(f"- {m['display_name']}")
+        _tag = " · owner" if is_household_owner(m["id"], hh_id) else ""
+        row_a, row_b = st.columns([3, 1.2])
+        with row_a:
+            st.markdown(f"- {m['display_name']}{_tag}")
+        if _owner and int(m["id"]) != int(user_id):
+            with row_b:
+                if st.button("Remove", key=f"hh_kick_{m['id']}",
+                             icon=":material/person_remove:",
+                             width="stretch"):
+                    from db import kick_household_member
+                    try:
+                        name = kick_household_member(user_id, m["id"])
+                    except Exception as e:
+                        st.error(f"Couldn't remove: {e}",
+                                 icon=":material/block:")
+                    else:
+                        q.bump_db_version()
+                        st.toast(f"{name} removed from the household.",
+                                 icon=":material/person_remove:")
+                        st.rerun()
+
+    # ── #21b sharing configuration (owner-only editor) ─────────────────────
+    from db import SHARE_AREAS, SHARE_LEVELS, get_share_prefs
+    prefs = get_share_prefs(hh_id) or {}
+    with st.expander("What members can see", icon=":material/visibility:"):
+        st.caption("Expenses are always shared — they are the ledger. "
+                   "Other areas start hidden. 'Editable' lets members make "
+                   "changes through the same audited commands as you. "
+                   "(Single-machine app: sharing applies to profiles on "
+                   "this installation.)")
+        _changed_prefs = {}
+        for area in SHARE_AREAS:
+            if area == "expenses":
+                st.markdown(f"- **Expenses**: shared (always editable)")
+                continue
+            cur_level = str(prefs.get(area) or "hidden")
+            new_level = st.selectbox(
+                area.capitalize(), list(SHARE_LEVELS),
+                index=list(SHARE_LEVELS).index(cur_level),
+                key=f"hh_share_{area}",
+                format_func={"hidden": "Hidden", "visible": "Visible",
+                             "editable": "Visible + editable"}.get)
+            if new_level != cur_level:
+                _changed_prefs[area] = new_level
+        if _changed_prefs and st.button("Save sharing settings",
+                                        key="hh_share_save",
+                                        icon=":material/save:",
+                                        type="primary"):
+            from db import save_share_prefs
+            try:
+                save_share_prefs(hh_id, user_id, _changed_prefs)
+            except Exception as e:
+                st.error(f"Couldn't save: {e}", icon=":material/block:")
+            else:
+                q.bump_db_version()
+                st.toast("Sharing updated for everyone.",
+                         icon=":material/visibility:")
+                st.rerun()
 
     # The invite code persists in the households table — always show it so
     # members can share it again after joining.
