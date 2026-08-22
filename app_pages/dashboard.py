@@ -549,14 +549,107 @@ sr = (sd / ie * 100) if ie > 0 else 0.0
 pie = float(prev_inc["actual_eur"].sum()) if not prev_inc.empty else 0.0
 pee = float(prev_exp["amount_eur"].sum()) if not prev_exp.empty else 0.0
 
+# ── research.md U4: hoisted KPI inputs so the whole band renders as ONE
+# horizontal strip (no orphan cards below it). Weekly series feed the metric
+# sparklines that replace the standalone sparkline panel.
+_week_days = [date.today() - timedelta(days=i) for i in range(6, -1, -1)]
+_week_start = pd.Timestamp(_week_days[0])
+
+def _week_series(df, col):
+    """Daily EUR totals for the last 7 days, reindexed to the week grid."""
+    if df.empty:
+        return None
+    daily = (df[df["date"] >= _week_start]
+             .groupby(df["date"].dt.date)[col].sum())
+    if daily.empty:
+        return None
+    daily = daily.reindex(_week_days, fill_value=0.0)
+    return pd.Series([to_display(float(v), DC, rates) for v in daily],
+                     index=[d.strftime("%a") for d in _week_days])
+
+_spend_week = _week_series(dfe, "amount_eur")
+_income_week = _week_series(dfi, "actual_eur")
+
+rec_df = q.recurring(user_id)
+rec_active = (rec_df[rec_df["active"] == True]
+              if not rec_df.empty else rec_df)
+yearly_fixed = 0.0
+if personal_view and not rec_active.empty:
+    for _, r in rec_active.iterrows():
+        # NB: sm below is the month-filter variable; this is the template start month.
+        start_m = str(r.get("start_month") or "").strip()
+        months = 12
+        if start_m:
+            try:
+                y, m = int(start_m.split("-")[0]), int(start_m.split("-")[1])
+                if y == date.today().year:
+                    months = max(0, 13 - m)
+                elif y > date.today().year:
+                    months = 0
+            except (ValueError, TypeError):
+                pass
+        yearly_fixed += float(r["amount_eur"]) * months
+
+from finance import loan_schedule
+df_loans = q.loans(user_id)
+total_debt = 0.0
+free_dates = []
+if personal_view and not df_loans.empty:
+    for _, row in df_loans.iterrows():
+        if row["status"] != "active":
+            continue
+        pay_df = q.loan_payments(user_id, str(row["id"]))
+        payments = [{
+            "date": r["date"].date(),
+            "amount_eur": float(r.get("amount_eur") or 0.0),
+            "surcharge_eur": float(r.get("loan_surcharge_eur") or 0.0),
+        } for _, r in pay_df.iterrows() if pd.notna(r["date"])]
+        start_date = (row["start_date"].date() if pd.notna(row["start_date"])
+                      else date.today())
+        sched = loan_schedule(float(row["principal_eur"]), float(row["annual_rate"]),
+                              int(row["term_months"]), start_date,
+                              int(row["payment_day"]), payments)
+        total_debt += sched["remaining_balance"]
+        if sched["payoff_date"]:
+            free_dates.append(sched["payoff_date"])
+
+sav_total = 0.0
+port_value = 0.0
+net_worth = 0.0
+if personal_view:
+    if not dfs.empty:
+        last_bal = (dfs.sort_values("date")
+                    .groupby("goal_name")["balance_eur"].last().dropna())
+        sav_total = float(last_bal.sum()) if not last_bal.empty else 0.0
+    dfh = q.holdings(user_id)
+    if not dfh.empty:
+        for _, h in dfh.iterrows():
+            price = float(h["last_price"]) if pd.notna(h["last_price"]) else 0.0
+            qty = float(h["quantity"]) if pd.notna(h["quantity"]) else 0.0
+            rt = float(rates.get(str(h["currency"]), 1.0) or 1.0)
+            port_value += price * qty / rt
+    net_worth = sav_total + port_value - total_debt
+
 if personal_view:
     with st.container(horizontal=True):
-        st.metric("Income", fmt(ie, DC, rates), delta=_delta(ie, pie) or None, border=True)
+        st.metric("Income", fmt(ie, DC, rates), delta=_delta(ie, pie) or None,
+                  chart_data=_income_week, border=True)
         st.metric("Expenses", fmt(ee, DC, rates), delta=_delta(ee, pee) or None,
-                  delta_color="inverse", border=True)
+                  delta_color="inverse", chart_data=_spend_week, border=True)
         st.metric("Saved", fmt(sd, DC, rates), border=True)
         st.metric("Net balance", fmt(ne, DC, rates), border=True)
         st.metric("Savings rate", f"{sr:.1f}%", border=True)
+        if yearly_fixed > 0:
+            st.metric("Fixed costs/yr",
+                      f"{fmt(yearly_fixed, DC, rates)} · {len(rec_active)} bills",
+                      border=True)
+        if total_debt > 0 or free_dates:
+            st.metric("Total debt", fmt(total_debt, DC, rates), border=True)
+            st.metric("Debt-free by",
+                      max(free_dates).strftime("%b %Y") if free_dates else "—",
+                      border=True)
+        if sav_total or port_value:
+            st.metric("Net worth", fmt(net_worth, DC, rates), border=True)
 
     # research.md U7: one-tap handoff from the dashboard into the advisor.
     _ask_pick = st.pills("Ask AI", [
@@ -578,108 +671,6 @@ else:
         st.metric("Top category", hh_top or "—", border=True)
     st.caption("Personal income, savings, budgets, loans and fun money are hidden "
                "in household view — switch to Personal mode to see them.")
-
-# ── 7-day spending sparkline (both views) ─────────────────────────────────────
-if not dfe.empty:
-    _week_days = [date.today() - timedelta(days=i) for i in range(6, -1, -1)]
-    _week_start = pd.Timestamp(_week_days[0])
-    _daily = (dfe[dfe["date"] >= _week_start]
-              .groupby(dfe["date"].dt.date)["amount_eur"].sum())
-    if not _daily.empty:
-        _daily = _daily.reindex(_week_days, fill_value=0.0)
-        _vals = [to_display(float(v), DC, rates) for v in _daily]
-        _fig = go.Figure(go.Scatter(
-            x=[d.strftime("%a") for d in _week_days], y=_vals,
-            mode="lines+markers", line=dict(color=CHART_COLORS[0], width=2),
-            fill="tozeroy", fillcolor=C_PRIMARY_SOFT))
-        _fig.update_layout(height=150, margin=dict(t=10, b=10, l=10, r=10),
-                           xaxis_title=None, yaxis_title=None,
-                           showlegend=False,
-                           plot_bgcolor="rgba(0,0,0,0)",
-                           paper_bgcolor="rgba(0,0,0,0)")
-        with st.container(border=True):
-            st.markdown("**Last 7 days**")
-            st.plotly_chart(_fig, width="stretch",
-                            config={"displayModeBar": False})
-
-# Fixed costs metric (personal) — templates count only from their start month.
-rec_df = q.recurring(user_id)
-if personal_view and not rec_df.empty:
-    rec_active = rec_df[rec_df["active"] == True]
-    if not rec_active.empty:
-        yearly = 0.0
-        for _, r in rec_active.iterrows():
-            start_m = str(r.get("start_month") or "").strip()  # NB: not `sm` — that's the month filter below
-            months = 12
-            if start_m:
-                try:
-                    y, m = int(start_m.split("-")[0]), int(start_m.split("-")[1])
-                    if y == date.today().year:
-                        months = max(0, 13 - m)
-                    elif y > date.today().year:
-                        months = 0
-                except (ValueError, TypeError):
-                    pass
-            yearly += float(r["amount_eur"]) * months
-        st.metric("Fixed costs / year (recurring bills)",
-                  f"{fmt(yearly, DC, rates)} · {len(rec_active)} bills", border=True)
-
-# Debt KPIs (loans) — personal
-from finance import loan_schedule
-df_loans = q.loans(user_id)
-total_debt = 0.0
-if personal_view and not df_loans.empty:
-    free_dates = []
-    for _, row in df_loans.iterrows():
-        if row["status"] != "active":
-            continue
-        pay_df = q.loan_payments(user_id, str(row["id"]))
-        payments = [{
-            "date": r["date"].date(),
-            "amount_eur": float(r.get("amount_eur") or 0.0),
-            "surcharge_eur": float(r.get("loan_surcharge_eur") or 0.0),
-        } for _, r in pay_df.iterrows() if pd.notna(r["date"])]
-        start_date = (row["start_date"].date() if pd.notna(row["start_date"])
-                      else date.today())
-        sched = loan_schedule(float(row["principal_eur"]), float(row["annual_rate"]),
-                              int(row["term_months"]), start_date,
-                              int(row["payment_day"]), payments)
-        total_debt += sched["remaining_balance"]
-        if sched["payoff_date"]:
-            free_dates.append(sched["payoff_date"])
-    if total_debt > 0 or free_dates:
-        d1, d2 = st.columns(2)
-        with d1:
-            st.metric("Total debt", fmt(total_debt, DC, rates), border=True)
-        with d2:
-            free = max(free_dates).strftime("%b %Y") if free_dates else "—"
-            st.metric("Debt-free by", free, border=True)
-
-# Net worth strip (personal): today's savings + portfolio value − debt.
-if personal_view:
-    sav_total = 0.0
-    if not dfs.empty:
-        last_bal = (dfs.sort_values("date")
-                    .groupby("goal_name")["balance_eur"].last().dropna())
-        sav_total = float(last_bal.sum()) if not last_bal.empty else 0.0
-    port_value = 0.0
-    dfh = q.holdings(user_id)
-    if not dfh.empty:
-        for _, h in dfh.iterrows():
-            price = float(h["last_price"]) if pd.notna(h["last_price"]) else 0.0
-            qty = float(h["quantity"]) if pd.notna(h["quantity"]) else 0.0
-            rt = float(rates.get(str(h["currency"]), 1.0) or 1.0)
-            port_value += price * qty / rt
-    net_worth = sav_total + port_value - total_debt
-    with st.container(border=True):
-        st.markdown("**Net worth**")
-        n1, n2, n3 = st.columns(3)
-        n1.metric("Savings today", fmt(sav_total, DC, rates))
-        n2.metric("Portfolio", fmt(port_value, DC, rates))
-        n3.metric("Net worth (savings + portfolio − debt)",
-                  fmt(net_worth, DC, rates))
-
-st.divider()
 
 # Budget alerts (personal)
 if personal_view and not dfb.empty and not exp.empty:
