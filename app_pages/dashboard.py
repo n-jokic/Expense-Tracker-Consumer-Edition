@@ -181,6 +181,78 @@ if personal_view:
     _loans_df = q.loans(user_id)
     _loan_map = {} if _loans_df.empty else {
         str(r["id"]): str(r["name"] or r["id"]) for _, r in _loans_df.iterrows()}
+    @st.fragment
+    def _aar_rules_editor(user_id, _aar, _goal_opts, _loan_map, DC, rates):
+        # research.md U2: every keystroke here reruns ONLY this fragment -
+        # not the seven plotly figures below. Saves still rerun the full app
+        # (data changed), which is exactly the wanted behaviour.
+        _total_pct = 0.0
+        for i, t in enumerate(_aar["targets"]):
+            k = f"aar_{i}"
+            # research.md U6: stacked 2x2 grid for phone width; keys unchanged.
+            r1c1, r1c2 = st.columns([1.1, 2.2])
+            r2c1, r2c2 = st.columns([0.9, 0.4])
+            ttype = r1c1.selectbox(
+                "Type", ["goal", "loan"],
+                index=0 if t.get("type") == "goal" else 1,
+                key=f"{k}_type", label_visibility="collapsed")
+            if ttype == "goal":
+                opts = _goal_opts or [str(t.get("ref")) or "(no goals yet)"]
+                cur = t.get("ref") if t.get("ref") in opts else opts[0]
+                ref = r1c2.selectbox("Target", opts,
+                                     index=opts.index(cur),
+                                     key=f"{k}_ref",
+                                     label_visibility="collapsed")
+            else:
+                pairs = [(lid, lname) for lid, lname in _loan_map.items()]
+                if not pairs:
+                    pairs = [(t.get("ref") or "", "(no active loans)")]
+                ids = [pid for pid, _ in pairs]
+                labels2 = [pname for _, pname in pairs]
+                cur_i = ids.index(t.get("ref")) if t.get("ref") in ids else 0
+                ref = ids[cur_i]
+                r1c2.selectbox("Loan", labels2, index=cur_i,
+                               key=f"{k}_ref", label_visibility="collapsed")
+            pct = r2c1.number_input("%", min_value=0.0, max_value=100.0,
+                                    step=1.0,
+                                    value=float(t.get("pct") or 0.0),
+                                    key=f"{k}_pct",
+                                    label_visibility="collapsed")
+            _total_pct += float(pct)
+            drop = r2c2.checkbox("✖", value=False, key=f"{k}_del",
+                                 help="Remove this rule")
+            t["type"], t["ref"], t["pct"] = ttype, ref, float(pct)
+            t["_drop"] = drop
+        kept = [dict(t) for t in _aar["targets"] if not t.get("_drop")]
+        for t in kept:
+            t.pop("_drop", None)
+        b_add2, _fill = st.columns([1, 3])
+        if b_add2.button("+ Add target", width="stretch"):
+            kept.append({"type": "goal",
+                         "ref": (_goal_opts[0] if _goal_opts else ""),
+                         "pct": 10.0})
+            q.save_settings(user_id, {"auto_alloc_rules":
+                                      {"enabled": True, "targets": kept}})
+            q.bump_db_version()
+            st.rerun()
+        _norm = [{kk: t[kk] for kk in ("type", "ref", "pct")} for t in kept]
+        if _norm != _aar["targets"]:
+            if st.button("Save rules", type="primary", width="stretch",
+                         icon=":material/save:"):
+                q.save_settings(user_id, {"auto_alloc_rules":
+                                          {"enabled": True,
+                                           "targets": _norm}})
+                q.bump_db_version()
+                st.toast("Rules saved.", icon=":material/check:")
+                st.rerun()
+        if _total_pct > 100.0:
+            st.warning(f"Rules add up to {_total_pct:g}% of the income — "
+                       "they will be scaled down pro-rata whenever the "
+                       "unallocated pool is tight.")
+        _remainder = max(0.0, 100.0 - _total_pct)
+        st.caption(f"{_total_pct:g}% auto-allocated · {_remainder:g}% "
+                   "stays in unallocated funds (display only).")
+
     spec = PanelSpec(id="dash_auto_alloc", title="Auto-allocation of income",
                      icon=":material/call_split:", collapsible=True,
                      default_expanded=False,
@@ -203,72 +275,8 @@ if personal_view:
                 st.caption("Turn on to split each new income entry across your "
                            "goals and loans.")
             else:
-                _total_pct = 0.0
-                for i, t in enumerate(_aar["targets"]):
-                    k = f"aar_{i}"
-                    # research.md U6: stacked 2x2 grid for phone width; keys unchanged.
-                    r1c1, r1c2 = st.columns([1.1, 2.2])
-                    r2c1, r2c2 = st.columns([0.9, 0.4])
-                    ttype = r1c1.selectbox(
-                        "Type", ["goal", "loan"],
-                        index=0 if t.get("type") == "goal" else 1,
-                        key=f"{k}_type", label_visibility="collapsed")
-                    if ttype == "goal":
-                        opts = _goal_opts or [str(t.get("ref")) or "(no goals yet)"]
-                        cur = t.get("ref") if t.get("ref") in opts else opts[0]
-                        ref = r1c2.selectbox("Target", opts,
-                                             index=opts.index(cur),
-                                             key=f"{k}_ref",
-                                             label_visibility="collapsed")
-                    else:
-                        pairs = [(lid, lname) for lid, lname in _loan_map.items()]
-                        if not pairs:
-                            pairs = [(t.get("ref") or "", "(no active loans)")]
-                        ids = [pid for pid, _ in pairs]
-                        labels2 = [pname for _, pname in pairs]
-                        cur_i = ids.index(t.get("ref")) if t.get("ref") in ids else 0
-                        ref = ids[cur_i]
-                        r1c2.selectbox("Loan", labels2, index=cur_i,
-                                       key=f"{k}_ref", label_visibility="collapsed")
-                    pct = r2c1.number_input("%", min_value=0.0, max_value=100.0,
-                                            step=1.0,
-                                            value=float(t.get("pct") or 0.0),
-                                            key=f"{k}_pct",
-                                            label_visibility="collapsed")
-                    _total_pct += float(pct)
-                    drop = r2c2.checkbox("✖", value=False, key=f"{k}_del",
-                                         help="Remove this rule")
-                    t["type"], t["ref"], t["pct"] = ttype, ref, float(pct)
-                    t["_drop"] = drop
-                kept = [dict(t) for t in _aar["targets"] if not t.get("_drop")]
-                for t in kept:
-                    t.pop("_drop", None)
-                b_add2, _fill = st.columns([1, 3])
-                if b_add2.button("+ Add target", width="stretch"):
-                    kept.append({"type": "goal",
-                                 "ref": (_goal_opts[0] if _goal_opts else ""),
-                                 "pct": 10.0})
-                    q.save_settings(user_id, {"auto_alloc_rules":
-                                              {"enabled": True, "targets": kept}})
-                    q.bump_db_version()
-                    st.rerun()
-                _norm = [{kk: t[kk] for kk in ("type", "ref", "pct")} for t in kept]
-                if _norm != _aar["targets"]:
-                    if st.button("Save rules", type="primary", width="stretch",
-                                 icon=":material/save:"):
-                        q.save_settings(user_id, {"auto_alloc_rules":
-                                                  {"enabled": True,
-                                                   "targets": _norm}})
-                        q.bump_db_version()
-                        st.toast("Rules saved.", icon=":material/check:")
-                        st.rerun()
-                if _total_pct > 100.0:
-                    st.warning(f"Rules add up to {_total_pct:g}% of the income — "
-                               "they will be scaled down pro-rata whenever the "
-                               "unallocated pool is tight.")
-                _remainder = max(0.0, 100.0 - _total_pct)
-                st.caption(f"{_total_pct:g}% auto-allocated · {_remainder:g}% "
-                           "stays in unallocated funds (display only).")
+                # research.md U2: editor runs as a fragment (see def above).
+                _aar_rules_editor(user_id, _aar, _goal_opts, _loan_map, DC, rates)
             _last = st.session_state.get("last_auto_alloc")
             if isinstance(_last, dict) and _last.get("enabled"):
                 with st.expander("Last run", icon=":material/history:"):
@@ -282,6 +290,82 @@ if personal_view:
                         st.caption("Requests exceeded the pool — all targets were "
                                    "scaled down pro-rata.")
     # One-tap quick logging (C1) — BISECTION VARIANT B1: no @st.dialog.
+    @st.fragment
+    def _preset_editor(user_id, presets, edit_key, DC, rates):
+        # research.md U2: typing here reruns only this fragment.
+        # research.md U2: typing here reruns only this fragment.
+        gen = int(st.session_state.get("dash_qp_gen", 0))
+        draft = st.session_state.get("dash_qp_draft")
+        if draft is None:
+            draft = [dict(p) for p in presets]
+            st.session_state["dash_qp_draft"] = draft
+        st.caption("Edit your one-tap buttons. Amounts are in each "
+                   "row's own currency; Del removes the row.")
+        kept = []
+        for i, p in list(enumerate(draft)):
+            k = f"qp{gen}_{i}"
+            # research.md U6: two stacked rows of three - six side-by-side
+            # inputs are unusable at phone width. Widget keys unchanged.
+            r1c1, r1c2, r1c3 = st.columns([1.3, 1, 1])
+            r2c1, r2c2, r2c3 = st.columns([1.5, 1.5, 0.45])
+            label = r1c1.text_input("Label", value=p["label"],
+                                    key=f"{k}_label", label_visibility="collapsed")
+            amt = r1c2.number_input("Amount", min_value=0.0, step=0.10,
+                                    format="%.2f", value=float(p["amount"]),
+                                    key=f"{k}_amt", label_visibility="collapsed")
+            curs = list(SUPPORTED_CURRENCIES.keys())
+            cur = r1c3.selectbox("Currency", curs,
+                                 index=curs.index(p["currency"])
+                                 if p["currency"] in curs else 0,
+                                 key=f"{k}_cur", label_visibility="collapsed")
+            cat = r2c1.selectbox("Category", CAT_LIST,
+                                 index=CAT_LIST.index(p["category"])
+                                 if p["category"] in CAT_LIST else 0,
+                                 key=f"{k}_cat", label_visibility="collapsed")
+            subs = ["—"] + CATEGORIES.get(cat, [])
+            sub0 = p["subcategory"] if p["subcategory"] in subs[1:] else "—"
+            sub = r2c2.selectbox("Subcategory", subs,
+                                 index=subs.index(sub0),
+                                 key=f"{k}_sub", label_visibility="collapsed")
+            drop = r2c3.checkbox("Del", value=False, key=f"{k}_del")
+            if not drop:
+                kept.append({
+                    "id": p["id"],
+                    "label": label.strip() or p["label"],
+                    "amount": float(amt), "currency": cur,
+                    "category": cat,
+                    "subcategory": "" if sub == "—" else sub,
+                    "description": p["description"],
+                })
+        # Keep the working copy in sync so "+ Add preset" doesn't
+        # discard edits typed this run (same widget keys survive).
+        st.session_state["dash_qp_draft"] = kept
+        b_add, b_save, b_cancel, b_done, _sp = st.columns([1, 1, 1, 1, 1])
+        if b_add.button("+ Add preset", width="stretch"):
+            kept.append({"id": f"p{len(kept)}-{gen}", "label": "",
+                         "amount": 0.0, "currency": DC,
+                         "category": CAT_LIST[0], "subcategory": "",
+                         "description": f"Quick {len(kept) + 1}"})
+            st.session_state["dash_qp_draft"] = kept
+            st.rerun()
+        if b_cancel.button("Cancel", width="stretch"):
+            st.session_state.pop("dash_qp_draft", None)
+            st.session_state[edit_key] = False
+            st.rerun()
+        if b_done.button("✓ Done", width="stretch"):
+            st.session_state.pop("dash_qp_draft", None)
+            st.session_state[edit_key] = False
+            st.rerun()
+        if b_save.button("Save presets", type="primary", width="stretch"):
+            q.save_settings(user_id, {"quick_presets": kept})
+            st.session_state.pop("dash_qp_draft", None)
+            st.session_state["dash_qp_gen"] = gen + 1
+            st.session_state[edit_key] = False
+            q.bump_db_version()
+            st.toast("Presets saved.", icon=":material/check:")
+            st.rerun()
+
+
     _QP_DEFAULTS = [
         {"id": "coffee", "label": "☕ Coffee", "amount": 2.50, "currency": "EUR",
          "category": "Dining Out", "subcategory": "Coffee & Snacks",
@@ -361,76 +445,8 @@ if personal_view:
     if expanded:
         with container:
             if editing:
-                gen = int(st.session_state.get("dash_qp_gen", 0))
-                draft = st.session_state.get("dash_qp_draft")
-                if draft is None:
-                    draft = [dict(p) for p in presets]
-                    st.session_state["dash_qp_draft"] = draft
-                st.caption("Edit your one-tap buttons. Amounts are in each "
-                           "row's own currency; Del removes the row.")
-                kept = []
-                for i, p in list(enumerate(draft)):
-                    k = f"qp{gen}_{i}"
-                    # research.md U6: two stacked rows of three — six side-by-side
-                    # inputs are unusable at phone width. Widget keys unchanged.
-                    r1c1, r1c2, r1c3 = st.columns([1.3, 1, 1])
-                    r2c1, r2c2, r2c3 = st.columns([1.5, 1.5, 0.45])
-                    label = r1c1.text_input("Label", value=p["label"],
-                                            key=f"{k}_label", label_visibility="collapsed")
-                    amt = r1c2.number_input("Amount", min_value=0.0, step=0.10,
-                                            format="%.2f", value=float(p["amount"]),
-                                            key=f"{k}_amt", label_visibility="collapsed")
-                    curs = list(SUPPORTED_CURRENCIES.keys())
-                    cur = r1c3.selectbox("Currency", curs,
-                                         index=curs.index(p["currency"])
-                                         if p["currency"] in curs else 0,
-                                         key=f"{k}_cur", label_visibility="collapsed")
-                    cat = r2c1.selectbox("Category", CAT_LIST,
-                                         index=CAT_LIST.index(p["category"])
-                                         if p["category"] in CAT_LIST else 0,
-                                         key=f"{k}_cat", label_visibility="collapsed")
-                    subs = ["—"] + CATEGORIES.get(cat, [])
-                    sub0 = p["subcategory"] if p["subcategory"] in subs[1:] else "—"
-                    sub = r2c2.selectbox("Subcategory", subs,
-                                         index=subs.index(sub0),
-                                         key=f"{k}_sub", label_visibility="collapsed")
-                    drop = r2c3.checkbox("Del", value=False, key=f"{k}_del")
-                    if not drop:
-                        kept.append({
-                            "id": p["id"],
-                            "label": label.strip() or p["label"],
-                            "amount": float(amt), "currency": cur,
-                            "category": cat,
-                            "subcategory": "" if sub == "—" else sub,
-                            "description": p["description"],
-                        })
-                # Keep the working copy in sync so "+ Add preset" doesn't
-                # discard edits typed this run (same widget keys survive).
-                st.session_state["dash_qp_draft"] = kept
-                b_add, b_save, b_cancel, b_done, _sp = st.columns([1, 1, 1, 1, 1])
-                if b_add.button("+ Add preset", width="stretch"):
-                    kept.append({"id": f"p{len(kept)}-{gen}", "label": "",
-                                 "amount": 0.0, "currency": DC,
-                                 "category": CAT_LIST[0], "subcategory": "",
-                                 "description": f"Quick {len(kept) + 1}"})
-                    st.session_state["dash_qp_draft"] = kept
-                    st.rerun()
-                if b_cancel.button("Cancel", width="stretch"):
-                    st.session_state.pop("dash_qp_draft", None)
-                    st.session_state[edit_key] = False
-                    st.rerun()
-                if b_done.button("✓ Done", width="stretch"):
-                    st.session_state.pop("dash_qp_draft", None)
-                    st.session_state[edit_key] = False
-                    st.rerun()
-                if b_save.button("Save presets", type="primary", width="stretch"):
-                    q.save_settings(user_id, {"quick_presets": kept})
-                    st.session_state.pop("dash_qp_draft", None)
-                    st.session_state["dash_qp_gen"] = gen + 1
-                    st.session_state[edit_key] = False
-                    q.bump_db_version()
-                    st.toast("Presets saved.", icon=":material/check:")
-                    st.rerun()
+                # research.md U2: editor runs as a fragment (def above).
+                _preset_editor(user_id, presets, edit_key, DC, rates)
             else:
                 adj_id = st.session_state.get("qa_adjust_id")
                 for row_start in range(0, len(presets), 3):
