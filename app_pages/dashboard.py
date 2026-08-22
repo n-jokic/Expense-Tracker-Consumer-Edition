@@ -14,7 +14,7 @@ import streamlit as st
 import queries as q
 from db import add_expense
 from services.finance_queries import (
-    get_savings_summary, unallocated_breakdown,
+    get_savings_summary, unallocated_breakdown, allocation_donut_slices,
 )
 from notifications import _unlogged_templates
 from utils import (
@@ -131,13 +131,28 @@ if personal_view:
             m3.metric("Spent so far", fmt(_alloc["outflows_eur"], DC, rates))
 
             with st.expander("Where it is allocated", icon=":material/account_tree:"):
-                st.markdown(f"- 🎯 **Savings goals** · {fmt(_alloc['savings_allocations_eur'], DC, rates)}")
-                for _g in get_savings_summary(user_id)["goals"]:
-                    tgt = _g["target_eur"]
-                    tgt_txt = f" of {fmt(tgt, DC, rates)}" if tgt > 0 else ""
-                    st.markdown(f"    - {_g['goal_name']} · {fmt(_g['balance_eur'], DC, rates)}{tgt_txt}")
-                st.markdown(f"- 🔒 **Locked term deposits** · {fmt(_alloc['term_allocations_eur'], DC, rates)}")
-                st.markdown(f"- 📈 **Holdings** (cost basis) · {fmt(_alloc['holdings_allocations_eur'], DC, rates)}")
+                # #24: allocation as a donut — same data as the old bullet
+                # list, now visual; zero slices are dropped so empty goals
+                # do not render phantom wedges.
+                _slices = allocation_donut_slices(user_id)
+                if _slices:
+                    _fig = go.Figure(go.Pie(
+                        labels=[lbl for lbl, _ in _slices],
+                        values=[v for _, v in _slices],
+                        hole=0.45, sort=False,
+                        marker=dict(colors=CHART_COLORS),
+                        hovertemplate="%{label}: %{value:,.2f} EUR (%{percent})<extra></extra>",
+                    ))
+                    _fig.update_layout(margin=dict(l=8, r=8, t=8, b=8),
+                                       showlegend=True,
+                                       legend=dict(orientation="h", y=-0.12),
+                                       paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(_fig, key="dash_alloc_donut")
+                else:
+                    st.caption("Nothing allocated yet — fund a goal, open a "
+                               "term deposit or buy a holding to see it here.")
+                for lbl, v in _slices:
+                    st.markdown(f"- {lbl} · {fmt(v, DC, rates)}")
                 _parts = (_alloc["savings_allocations_eur"] + _alloc["term_allocations_eur"]
                           + _alloc["holdings_allocations_eur"])
                 st.caption(

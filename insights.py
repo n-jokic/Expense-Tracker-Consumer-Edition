@@ -196,6 +196,31 @@ def build_narrative_stats(expenses_df: pd.DataFrame, settings: dict,
 
 # ── Main render function ───────────────────────────────────────────────────────
 
+# #18: severity → material icon for the expander label
+_SEVERITY_ICON: dict[str, str] = {
+    "success": ":material/check_circle:",
+    "warning": ":material/warning:",
+    "error": ":material/error:",
+    "info": ":material/info:",
+}
+
+
+def _summary_for(card_type: str, text: str) -> str:
+    """#18 — pure helper: derive a one-line expander label for an insight card.
+
+    Uses the text before the first em-dash ("—") when present and <= 80 chars;
+    otherwise falls back to the first 70 chars + ellipsis.
+    """
+    dash = "—"
+    if dash in text:
+        head = text.split(dash, 1)[0].strip()
+        if len(head) <= 80:
+            return head
+    if len(text) <= 70:
+        return text
+    return text[:70] + "…"
+
+
 def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                     savings_df: pd.DataFrame, settings: dict, DC: str, rates: dict,
                     recurring_df: pd.DataFrame | None = None,
@@ -458,75 +483,75 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                 icon=":material/lightbulb:")
         return
 
+    # #18: render each insight as a collapsible expander. Errors stay expanded
+    # so the user always sees them; everything else starts collapsed.
     for card_type, text in cards:
-        if card_type == "success":
-            st.success(text, icon=":material/check_circle:")
-        elif card_type == "warning":
-            st.warning(text, icon=":material/warning:")
-        elif card_type == "error":
-            st.error(text, icon=":material/error:")
-        else:
-            st.info(text, icon=":material/info:")
+        icon = _SEVERITY_ICON.get(card_type, ":material/info:")
+        label = f"{icon} {_summary_for(card_type, text)}"
+        with st.expander(label, expanded=(card_type == "error")):
+            st.markdown(text)
 
     # ── ML anomaly scan (IsolationForest; runs on the server) ─────────────────
     anomalies = detect_anomalies(expenses_df)
     if not anomalies.empty:
-        st.subheader(":material/search: ML anomaly scan")
-        st.caption("A lightweight isolation-forest model flags transactions that "
-                   "don't fit your usual spending pattern.")
-        show = anomalies.sort_values("date", ascending=False).head(10).copy()
-        show["date"]   = show["date"].dt.strftime("%d %b %Y").fillna("")
-        show["Amount"] = show["amount_eur"].apply(lambda x: to_display(x, DC, rates))
-        show["Vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
-        show["Severity"] = (show["severity"] if "severity" in show else pd.Series("medium", index=show.index)).astype(str).str.title()
-        reasons = show["reasons"] if "reasons" in show else pd.Series([[] for _ in range(len(show))], index=show.index)
-        show["Why"] = reasons.apply(
-            lambda reasons: " • ".join(reasons) if isinstance(reasons, list) else str(reasons)
-        )
-        st.dataframe(
-            show[["date","description","category","Amount","Vs median","Severity","Why"]],
-            hide_index=True,
-            column_config={
-                "Amount": st.column_config.NumberColumn("Amount", format=AMT_FMT),
-            },
-        )
+        # #18: collapsible — details hidden by default
+        with st.expander(":material/sensors_off: ML anomaly scan", expanded=False):
+            st.caption("A lightweight isolation-forest model flags transactions that "
+                       "don't fit your usual spending pattern.")
+            show = anomalies.sort_values("date", ascending=False).head(10).copy()
+            show["date"]   = show["date"].dt.strftime("%d %b %Y").fillna("")
+            show["Amount"] = show["amount_eur"].apply(lambda x: to_display(x, DC, rates))
+            show["Vs median"] = show["multiplier"].apply(lambda x: f"{x}×" if x is not None and x > 1 else "—")
+            show["Severity"] = (show["severity"] if "severity" in show else pd.Series("medium", index=show.index)).astype(str).str.title()
+            reasons = show["reasons"] if "reasons" in show else pd.Series([[] for _ in range(len(show))], index=show.index)
+            show["Why"] = reasons.apply(
+                lambda reasons: " • ".join(reasons) if isinstance(reasons, list) else str(reasons)
+            )
+            st.dataframe(
+                show[["date","description","category","Amount","Vs median","Severity","Why"]],
+                hide_index=True,
+                column_config={
+                    "Amount": st.column_config.NumberColumn("Amount", format=AMT_FMT),
+                },
+            )
 
     # ── Subscription / recurring detection ────────────────────────────────────
     subs = detect_subscriptions(expenses_df)
     if not subs.empty:
-        st.subheader(":material/repeat: These look like subscriptions")
-        st.caption("Regular monthly charges detected — add them as recurring "
-                   "templates to get due-day reminders.")
-        for idx, row in enumerate(subs.head(6).itertuples()):
-            # itertuples gives named access to the subscription rows
-            with st.container(horizontal=True):
-                st.markdown(f"**{row.description}** · {row.months_seen} months "
-                            f"· every ~{row.avg_gap_days:.0f} days")
-                st.write(fmt(float(row.amount_eur), DC, rates))
-                if getattr(row, "price_change_narrative", None):
-                    st.caption(row.price_change_narrative)
-                if user_id is None:
-                    continue
-                if st.button("Add", icon=":material/add:",
-                             key=f"sub_{idx}_{row.last_date}", width="stretch"):
-                    if on_add_subscription is not None:
-                        on_add_subscription(user_id, row)
-                    else:
-                        # Fallback for direct callers (e.g. tests) — keeps insights pure by delegating
-                        # through the view in normal usage; this path preserves backwards compat.
-                        from db import add_recurring
-                        add_recurring(user_id, {
-                            "category": row.category, "subcategory": "",
-                            "description": str(row.description),
-                            "amount": float(row.amount_eur),
-                            "currency": "EUR", "amount_eur": float(row.amount_eur),
-                            "due_day": None, "notes": "Detected from your spending",
-                            "active": True,
-                        })
-                        q.bump_db_version()
-                        st.toast(f"Added '{row.description}' to Recurring",
-                                 icon=":material/repeat:")
-                        st.rerun()
+        # #18: collapsible subscription watch
+        with st.expander(":material/receipt_long: Subscription watch", expanded=False):
+            st.caption("Regular monthly charges detected — add them as recurring "
+                       "templates to get due-day reminders.")
+            for idx, row in enumerate(subs.head(6).itertuples()):
+                # itertuples gives named access to the subscription rows
+                with st.container(horizontal=True):
+                    st.markdown(f"**{row.description}** · {row.months_seen} months "
+                                f"· every ~{row.avg_gap_days:.0f} days")
+                    st.write(fmt(float(row.amount_eur), DC, rates))
+                    if getattr(row, "price_change_narrative", None):
+                        st.caption(row.price_change_narrative)
+                    if user_id is None:
+                        continue
+                    if st.button("Add", icon=":material/add:",
+                                 key=f"sub_{idx}_{row.last_date}", width="stretch"):
+                        if on_add_subscription is not None:
+                            on_add_subscription(user_id, row)
+                        else:
+                            # Fallback for direct callers (e.g. tests) — keeps insights pure by delegating
+                            # through the view in normal usage; this path preserves backwards compat.
+                            from db import add_recurring
+                            add_recurring(user_id, {
+                                "category": row.category, "subcategory": "",
+                                "description": str(row.description),
+                                "amount": float(row.amount_eur),
+                                "currency": "EUR", "amount_eur": float(row.amount_eur),
+                                "due_day": None, "notes": "Detected from your spending",
+                                "active": True,
+                            })
+                            q.bump_db_version()
+                            st.toast(f"Added '{row.description}' to Recurring",
+                                     icon=":material/repeat:")
+                            st.rerun()
 
     # ── Month-over-month table ────────────────────────────────────────────────
     st.subheader(":material/calendar_month: Month-over-month by category")

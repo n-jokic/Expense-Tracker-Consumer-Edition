@@ -139,6 +139,23 @@ def unallocated_funds_eur(user_id: int) -> float:
     return unallocated_breakdown(user_id)["unallocated_eur"]
 
 
+def allocation_donut_slices(user_id: int) -> list[tuple[str, float]]:
+    """#24: labelled slices for the dashboard 'Where it is allocated' donut.
+
+    Savings goals first (per-goal balance), then locked term deposits and
+    holdings at cost basis. Zero/near-zero slices are dropped so empty goals
+    never render phantom wedges; the surviving values sum to
+    unallocated_breakdown's savings+term+holdings allocation components."""
+    b = unallocated_breakdown(user_id)
+    slices = [(f"🎯 {g['goal_name']}", float(g.get("balance_eur") or 0.0))
+              for g in get_savings_summary(user_id)["goals"]]
+    slices.append(("🔒 Locked term deposits",
+                   float(b["term_allocations_eur"] or 0.0)))
+    slices.append(("📈 Holdings (cost basis)",
+                   float(b["holdings_allocations_eur"] or 0.0)))
+    return [(lbl, v) for lbl, v in slices if v > 0.005]
+
+
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

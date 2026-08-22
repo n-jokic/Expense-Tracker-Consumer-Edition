@@ -69,10 +69,51 @@ if not st.session_state.ask_history:
         st.session_state.ask_pending = picked
         st.rerun()
 
+# ── Inline chart rendering (AI-04) ────────────────────────────────────────────
+
+def _render_chart_from_result(result_dict):
+    """AI-04: render a validated chart from a single tool-call result dict.
+
+    Uses the same validate_chart_spec path as the Sources expander so the
+    chart data is always the canonical tool rows — the model never supplies
+    numbers. Invalid/missing specs render nothing extra (graceful degradation)."""
+    if not isinstance(result_dict, dict):
+        return
+    raw_spec = result_dict.get("_chart")
+    if not isinstance(raw_spec, dict):
+        return
+    try:
+        from ai.charts import validate_chart_spec
+        spec = validate_chart_spec(
+            raw_spec, (result_dict.get("series") or []))
+        if spec:
+            import pandas as pd
+            import plotly.express as px
+            cdf = pd.DataFrame(spec["data"])
+            if spec["type"] == "line":
+                fig = px.line(cdf, x=spec["x"], y=spec["y"], markers=True)
+            elif spec["type"] == "bar":
+                fig = px.bar(cdf, x=spec["x"], y=spec["y"])
+            else:
+                fig = px.pie(cdf, names=spec["x"], values=spec["y"])
+            fig.update_layout(
+                title=spec["title"] or None,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, width="stretch")
+    except Exception:
+        pass  # never let a bad spec break the page
+
+
 # ── Chat history ───────────────────────────────────────────────────────────
-for msg in st.session_state.ask_history:
+for i, msg in enumerate(st.session_state.ask_history):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        # AI-04: render the chart inline below the assistant answer when the
+        # most recent tool-call results carry a validated _chart spec.
+        if msg["role"] == "assistant" and i == len(st.session_state.ask_history) - 1:
+            for tc in st.session_state.get("_last_tool_calls", []):
+                _render_chart_from_result(tc.get("result") or {})
 
 # ── Provenance expander for last answer ────────────────────────────────────
 _last_calls = st.session_state.get("_last_tool_calls") or []
@@ -104,35 +145,6 @@ if _last_calls:
                 if isinstance(source_rows, list) and source_rows:
                     with st.expander("Show source transactions", expanded=False):
                         st.dataframe(source_rows, use_container_width=True, hide_index=True)
-                # AI-04: validated chart rendering. The spec is re-validated
-                # against the canonical tool rows HERE; any invalid or
-                # tampered spec falls back to the JSON/table view below.
-                _res = tc.get("result") or {}
-                _raw_spec = _res.get("_chart")
-                if isinstance(_raw_spec, dict):
-                    try:
-                        from ai.charts import validate_chart_spec
-                        _spec = validate_chart_spec(
-                            _raw_spec, _res.get("series") or [])
-                        if _spec:
-                            import pandas as pd
-                            import plotly.express as px
-                            cdf = pd.DataFrame(_spec["data"])
-                            if _spec["type"] == "line":
-                                fig = px.line(cdf, x=_spec["x"], y=_spec["y"],
-                                              markers=True)
-                            elif _spec["type"] == "bar":
-                                fig = px.bar(cdf, x=_spec["x"], y=_spec["y"])
-                            else:
-                                fig = px.pie(cdf, names=_spec["x"],
-                                             values=_spec["y"])
-                            fig.update_layout(
-                                title=_spec["title"] or None,
-                                plot_bgcolor="rgba(0,0,0,0)",
-                                paper_bgcolor="rgba(0,0,0,0)")
-                            st.plotly_chart(fig, width="stretch")
-                    except Exception:
-                        pass  # never let a bad spec break the page
                 # brief result preview (no raw row dump beyond cap)
                 preview = str(tc.get("result", {}))
                 if len(preview) > 900:

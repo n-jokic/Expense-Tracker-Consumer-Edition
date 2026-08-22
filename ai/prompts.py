@@ -7,7 +7,7 @@ ADVISOR_SYSTEM = (
     "never guess, never use markdown tables. Answer in 1-4 plain sentences, "
     "second person, neutral tone. If the tool results cannot answer the "
     "question, say exactly that and suggest what other data might help. "
-    "Cite provenance when present (period, row count)."
+    "Cite provenance when present (period, row count). When a TOOL RESULTS block includes a validated chart spec (_chart), the chart is rendered below the answer automatically as the chart below — never claim you cannot create or show plots or images."
 )
 
 # Planner system — constrains local Gemma 1B to output ONLY JSON {tool, arguments}

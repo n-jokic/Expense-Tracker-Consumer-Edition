@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
+from forecasting import ml_status_line
 from db import (
     BACKUP_DIR,
     update_user_display_name, delete_user_account, backup_db,
@@ -151,6 +152,11 @@ with tab_ml:
         return " · ".join(parts) if parts else "no metrics"
 
     models = list_ml_models(user_id)
+    # #23: how many expenses carry a label right now — feeds the plain-language
+    # status line so users know exactly what stands between them and ML.
+    _exp_df = q.expenses(user_id)
+    _labelled = (0 if _exp_df is None or _exp_df.empty
+                 else int(_exp_df["category"].notna().sum()))
     if not models:
         # ── EMPTY state ──────────────────────────────────────────────────────
         st.info(
@@ -158,8 +164,7 @@ with tab_ml:
             "expenses, the app trains a **candidate** text classifier on "
             "your own categories automatically — it never goes live on its "
             "own. You review and activate it here.")
-        st.caption("Until a model is active, category and subcategory "
-                   "suggestions come from the built-in keyword rules.")
+        st.caption(ml_status_line(None, _labelled))
     else:
         by_name: dict[str, list] = {}
         for m in models:
@@ -179,6 +184,7 @@ with tab_ml:
                     f"**{name}** v{active.version} · {status} · "
                     f"{_fmt_metrics(active.metrics)} · trained on "
                     f"{active.trained_rows} rows")
+                st.caption(ml_status_line(active.version, _labelled))
                 hc1, hc2, _ = st.columns([1, 1, 3])
                 with hc1:
                     if st.button("Deactivate", key=f"ml_deactivate_{name}",

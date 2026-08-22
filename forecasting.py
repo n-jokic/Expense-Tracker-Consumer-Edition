@@ -223,6 +223,59 @@ def forecast_next_month(expenses_df: pd.DataFrame, recurring_templates=None) -> 
     return out
 
 
+# ── 1b. Projection breakdown & savings scenarios (#17) ───────────────────────
+
+#: Width of the naive uncertainty band shown for the non-ML methods. The ML
+#: band comes from backtest residuals; here ±15% is the honest cheap answer.
+NAIVE_BAND_PCT = 0.15
+
+
+def projection_band(projected_total: float) -> tuple[float, float]:
+    """Naive 80%-style band for period-average / 7-day projections."""
+    p = max(float(projected_total or 0.0), 0.0)
+    return (p * (1 - NAIVE_BAND_PCT), p * (1 + NAIVE_BAND_PCT))
+
+
+def projection_breakdown(projected_total: float,
+                         recurring_total: float) -> dict:
+    """Split a cycle projection into fixed bills vs discretionary spend.
+
+    The recurring part is contractual; only the remainder flexes. If the
+    projection is below the recurring total the user is under-consuming
+    even their fixed set — clamp discretionary at zero and flag it."""
+    proj = max(float(projected_total or 0.0), 0.0)
+    fixed = max(float(recurring_total or 0.0), 0.0)
+    discretionary = max(proj - fixed, 0.0)
+    return {"fixed": fixed, "discretionary": discretionary,
+            "under_fixed": proj < fixed}
+
+
+def savings_scenario(monthly_salary: float, fixed_spend: float,
+                     discretionary_spend: float,
+                     recurring_delta_pct: float = 0.0) -> dict:
+    """What-if: apply a % change to fixed bills, recompute the savings rate.
+
+    Discretionary spending is held constant — cancelling a subscription does
+    not make coffee more expensive. A non-positive salary yields rate=None so
+    callers can show a hint instead of dividing by zero."""
+    salary = max(float(monthly_salary or 0.0), 0.0)
+    # Clamp AFTER the multiplier so an extreme cut (-150%) can't flip the
+    # fixed slice negative — bills can shrink to zero, not below.
+    fixed = max(
+        float(fixed_spend or 0.0) * (1 + float(recurring_delta_pct or 0.0) / 100.0),
+        0.0,
+    )
+    disc = max(float(discretionary_spend or 0.0), 0.0)
+    spend = fixed + disc
+    return {
+        "projected_spend": spend,
+        "fixed": fixed,
+        "discretionary": disc,
+        "monthly_savings": salary - spend,
+        "savings_rate": ((salary - spend) / salary) if salary > 0 else None,
+    }
+
+
 # ── 2. Anomaly detection (IsolationForest + robust stats) ────────────────────
 
 def _merchant_key_series(desc_series: pd.Series) -> pd.Series:
@@ -843,6 +896,50 @@ def suggest_category_and_subcategory(expenses_df: pd.DataFrame, text: str,
         sub = kw_sub
         sub_conf = 0.0
     return cat, sub, cat_conf, sub_conf
+
+
+#: Rows with a non-null category needed before a candidate categorizer can
+#: train (mirrors _CategorizerModel.train's len(df) < 10 guard).
+MIN_LABELLED_FOR_TRAINING = 10
+
+
+def pick_manual_suggestion(expenses_df: pd.DataFrame, text: str,
+                           user_id=None) -> dict | None:
+    """#23: one-call suggestion for the manual expense form.
+
+    Returns {"cat","sub","conf","sub_conf","source"} or None when nothing
+    usable comes back (empty description / no category at all). source is
+    "classifier" when the trained model decided, "keywords" otherwise."""
+    if not str(text or "").strip():
+        return None
+    cat, sub, conf, sub_conf = suggest_category_and_subcategory(
+        expenses_df, str(text), user_id=user_id)
+    if not cat:
+        return None
+    return {"cat": cat,
+            "sub": sub if sub and sub != "—" else "",
+            "conf": float(conf),
+            "sub_conf": float(sub_conf),
+            "source": "classifier" if conf > 0 else "keywords"}
+
+
+def ml_status_line(active_version: int | None, labelled_count: int,
+                   min_labelled: int = MIN_LABELLED_FOR_TRAINING) -> str:
+    """#23: one-line state of the expense categorizer for the ML tab.
+
+    Tells the user plainly whether suggestions are ML-backed right now and,
+    when not, exactly what is missing before a candidate can train."""
+    v = active_version if active_version else None
+    n = max(int(labelled_count or 0), 0)
+    if v:
+        return f"ML model v{v} active — suggestions come from your own history."
+    missing = max(min_labelled - n, 0)
+    if missing > 0:
+        return (f"Keyword rules only — {missing} more labelled expense"
+                f"{'s' if missing != 1 else ''} until a candidate can train "
+                "(then activate it above).")
+    return ("Keyword rules only — enough labelled expenses exist for a "
+            "candidate; activate it above to enable ML.")
 
 
 # ── 4. Subscription / recurring detection (M6 cadence-aware) ─────────────────

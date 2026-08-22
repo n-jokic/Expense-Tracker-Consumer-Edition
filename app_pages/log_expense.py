@@ -12,6 +12,7 @@ import streamlit as st
 
 import queries as q
 from db import add_expense, update_expense, soft_delete_expense, restore_expense, add_recurring
+from forecasting import pick_manual_suggestion
 from ocr import analyze_receipt
 from ingestion.receipt.confidence import LOW_CONF
 from utils import (
@@ -338,24 +339,54 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
                 st.toast("Receipt discarded — nothing was saved.", icon=":material/delete:")
                 st.rerun()
 
+# #23: category suggestion for manual entry — runs on the typed description
+# even while the form below is unsubmitted (widget states sync on any rerun).
+sug_col, _sp = st.columns([1, 3])
+with sug_col:
+    if st.button(":material/auto_awesome: Suggest category", key="exp_suggest_btn",
+                 help="Guesses category/subcategory from the description "
+                      "using your own labelled history (ML when active, "
+                      "keyword rules otherwise)."):
+        _d = str(st.session_state.get("exp_desc") or "")
+        if not _d.strip():
+            st.toast("Type a description first — the guess runs on it.",
+                     icon=":material/edit:")
+        else:
+            _pick = pick_manual_suggestion(q.expenses(user_id), _d, user_id=user_id)
+            if not _pick:
+                st.toast("No guess yet — more labelled expenses will help.",
+                         icon=":material/psychology:")
+            else:
+                st.session_state["exp_suggestion"] = _pick
+                st.session_state["exp_cat_outer"] = _pick["cat"]
+                if _pick["sub"]:
+                    st.session_state["exp_sub_inner"] = _pick["sub"]
+
 oc1, oc2 = st.columns([3, 1])
 with oc1:
     cat = st.selectbox("Category", CAT_LIST, key="exp_cat_outer")
 with oc2:
     cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()), key="exp_cur_outer")
 sym = get_currency_symbol(cur)
+if (_sg := st.session_state.get("exp_suggestion")):
+    st.caption(f"✨ {_sg['source']} suggestion: **{_sg['cat']}**"
+               + (f" › {_sg['sub']}" if _sg.get("sub") else "")
+               + (f" · {_sg['conf'] * 100:.0f}% confidence" if _sg.get("conf") else "")
+               + " — override freely; keeping it teaches the model.")
 
 with st.form("exp_form", clear_on_submit=True):
     f1, f2 = st.columns(2)
     with f1:
         exp_date = st.date_input("Date", value=date.today())
-        subcat   = st.selectbox("Subcategory", ["—"] + CATEGORIES[cat])
+        subcat   = st.selectbox("Subcategory", ["—"] + CATEGORIES[cat],
+                                key="exp_sub_inner")
     with f2:
         amount  = st.number_input(f"Amount ({sym})", min_value=0.0,
                                   max_value=MAX_AMOUNT, step=0.50, format="%.2f",
                                   value=0.0)
         is_rec  = st.checkbox("Also save as recurring template")
-    desc  = st.text_input("Description *", placeholder="e.g. Lidl weekly shop")
+    desc  = st.text_input("Description *", placeholder="e.g. Lidl weekly shop",
+                          key="exp_desc")
     notes = st.text_input("Notes (optional)")
     saved = st.form_submit_button("Save expense", width="stretch", type="primary",
                                   icon=":material/save:")
@@ -387,14 +418,25 @@ if saved:
                     "currency": cur, "amount_eur": ae,
                     "notes": notes, "active": True,
                 })
-            add_expense(user_id, {
+            # #23: suggestion telemetry — whether the user kept or overrode
+            # the suggested category feeds the model's feedback loop.
+            _sug = st.session_state.pop("exp_suggestion", None) or {}
+            _exp_row = {
                 "date": exp_date, "category": cat,
                 "subcategory": subcat if subcat != "—" else "",
                 "description": desc, "amount": amount,
                 "currency": cur, "amount_eur": ae,
                 "recurring": is_rec, "rec_template_id": rec_id,
                 "notes": notes,
-            })
+            }
+            if _sug:
+                _exp_row.update({
+                    "suggest_source": _sug.get("source"),
+                    "suggest_category": _sug.get("cat"),
+                    "suggest_confidence": (_sug.get("conf") or None),
+                    "suggest_accepted": (_sug.get("cat") == cat),
+                })
+            add_expense(user_id, _exp_row)
         except Exception as e:
             # If the recurring template was created but the expense save failed,
             # recycle the orphan template (mark it inactive) so it is not left active.

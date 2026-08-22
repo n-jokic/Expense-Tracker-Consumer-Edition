@@ -10,7 +10,8 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from forecasting import forecast_next_month
+from forecasting import (forecast_next_month, projection_band,
+                         projection_breakdown, savings_scenario)
 from utils import (
     compute_salary_cycle, fmt, safe_warning, get_currency_symbol, to_display,
     progress_ratio,
@@ -131,6 +132,20 @@ else:
     daily_avg = total_spent / days_elapsed if days_elapsed > 0 else 0.0
     projected = daily_avg * days_in_period
 
+# #17: uncertainty on the non-ML methods too — same caption shape as ML.
+if method != "ML model":
+    _lo, _hi = projection_band(projected)
+    st.caption(f"80% range: **{fmt(_lo, DC, rates)} – {fmt(_hi, DC, rates)}** "
+               f"(naive ±15% band)")
+
+# #17: recurring bills vs discretionary split — makes the number actionable.
+_rec_df = q.recurring(user_id)
+recurring_total = 0.0
+if not _rec_df.empty and "amount_eur" in _rec_df.columns:
+    _act = _rec_df[_rec_df["active"] == True] if "active" in _rec_df.columns else _rec_df  # noqa: E712
+    recurring_total = float(_act["amount_eur"].fillna(0).sum())
+_breakdown = projection_breakdown(projected, recurring_total)
+
 total_budget = 0.0
 _overall_raw = float(settings.get("monthly_budget") or 0.0)
 overall_bud = _overall_raw if math.isfinite(_overall_raw) else 0.0
@@ -176,6 +191,57 @@ if total_budget > 0:
         ratio_spent,
         text=f"**Spent** {fmt(total_spent, DC, rates)} of {fmt(total_budget, DC, rates)} ({ratio_spent * 100:.1f}%)",
     )
+
+# #17: pacing marker — the projection promoted to an explicit statement.
+st.info(f":material/speed: Pacing **{fmt(daily_avg, DC, rates)}/day** — "
+        f"on track for **{fmt(projected, DC, rates)}** by "
+        f"**{period_end.strftime('%d %b')}** ({days_remaining} days left).",
+        icon=":material/speed:")
+
+# ── Fixed vs discretionary breakdown + savings scenarios (#17) ───────────────
+sc1, sc2 = st.columns(2)
+with sc1:
+    with st.expander("Fixed vs discretionary", icon=":material/pie_chart:"):
+        b1, b2 = st.columns(2)
+        b1.metric("Fixed bills (recurring)", fmt(_breakdown["fixed"], DC, rates))
+        b2.metric("Discretionary (projected)",
+                  fmt(_breakdown["discretionary"], DC, rates))
+        if _breakdown["under_fixed"]:
+            st.caption("Projected spend is below your recurring bill total — "
+                       "you are not even consuming your fixed set this cycle.")
+        else:
+            st.caption("Only the discretionary slice flexes; bills are "
+                       "contractual until you cancel them.")
+with sc2:
+    with st.expander("Savings scenarios", icon=":material/tune:"):
+        _salary_raw = float(settings.get("salary_amount") or 0.0)
+        if _salary_raw <= 0 and not salary_rows.empty:
+            _latest_sal = salary_rows.sort_values("date").iloc[-1]
+            try:
+                _salary_raw = float(_latest_sal.get("actual_eur") or 0.0)
+            except Exception:
+                _salary_raw = 0.0
+        if _salary_raw <= 0:
+            st.caption("Set your salary in the Income tab to model savings.")
+        else:
+            hyp_salary = st.slider("Monthly income", 0.0,
+                                   max(_salary_raw * 2.0, 1000.0),
+                                   _salary_raw, step=50.0,
+                                   format=AMT_FMT, key="scen_salary")
+            rec_delta = st.slider("Change fixed bills", -50, 100, 0, 5,
+                                  format="%d%%", key="scen_rec_delta",
+                                  help="What if you cancelled or added subscriptions?")
+            scen = savings_scenario(hyp_salary, _breakdown["fixed"],
+                                    _breakdown["discretionary"], rec_delta)
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Projected spend", fmt(scen["projected_spend"], DC, rates))
+            s2.metric("Saved / month", fmt(scen["monthly_savings"], DC, rates))
+            rate = scen["savings_rate"]
+            s3.metric("Savings rate",
+                      f"{rate * 100:.0f}%" if rate is not None else "—")
+            if scen["monthly_savings"] < 0:
+                st.warning("This scenario spends more than you earn.",
+                           icon=":material/warning:")
 
 # Per-category ML forecast table
 if ml_result and not ml_result["fallback"] and ml_result["by_category"]:

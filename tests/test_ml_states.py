@@ -141,8 +141,11 @@ def test_settings_page_renders_all_three_states_in_source():
     src = Path(__file__).resolve().parents[1].joinpath(
         "app_pages", "settings.py").read_text(encoding="utf-8")
     # EMPTY state explains what happens next and the keyword fallback…
+    # (#23: the fallback wording moved into the dynamic ml_status_line.)
     assert "No trained model yet" in src
-    assert "keyword rules" in src
+    assert "ml_status_line" in src
+    import forecasting as _fc
+    assert "Keyword rules" in _fc.ml_status_line(None, 0)
     # …ACTIVE state shows status, metrics and a non-destructive deactivate…
     assert ":green-badge[Active]" in src
     assert "Deactivate" in src
