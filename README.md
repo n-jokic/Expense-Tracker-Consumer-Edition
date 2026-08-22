@@ -1,4 +1,4 @@
-# 💰 Expense Tracker — Consumer Edition (v4)
+# 💰 Expense Tracker — Consumer Edition (v1.0)
 
 A personal finance app with expense/income/savings logging, budgets, forecasting,
 auto-insights, gamification, bank-statement import, households, email alerts, a
@@ -8,6 +8,58 @@ self-hosted Python app.
 The app runs as a **server on one computer** (your PC). Any phone, tablet, or
 laptop **on the same Wi-Fi network** opens it in a browser — all devices share
 the same database, so there is nothing to sync and no conflicts.
+
+---
+
+## What's in v1.0 — feature overview
+
+**Everyday money** — expense/income logging with inline editing, trash &
+restore; recurring bills and **recurring income templates** that post on
+their due day; budgets with scope correction; savings goals with posted
+balances, daily accrual, monthly interest and term deposits; loan tracking
+with early-repayment surcharges, archive/reopen and a debt-free countdown.
+
+**Planning & wealth** — a savings-rate dashboard, forecasting with
+candidate/active model states and audited activation, a stock portfolio
+with live quotes, **FIFO lot accounting and partial sells** that keep the
+ledger zero-sum, funding-linked wishlists with atomic buy/refund, and a
+**trip planner** that budgets a trip and reports what you actually spent
+in its date range.
+
+**Intelligence** — ML suggestions and anomaly detection, weekly email
+digests, an Insights narrative, and an ask-your-data chat. The AI
+assistant supports local Gemma plus OpenAI-compatible, Anthropic and
+**Gemini** APIs behind a router/orchestrator with an output-sanitizer
+boundary and validated charts.
+
+**A reversible agent** — the assistant and the OpenClaw/MCP integration
+can log expenses and income, edit or soft-delete entries, manage
+recurring templates, and link purchases to goals through nine audited,
+**undoable** mutation commands. Guard rails: a confirmation card for
+amounts over your threshold (default EUR 500, configurable), a 20-per-day
+rate cap, a kill-switch allowlist, dry-run previews, and undo/redo cards
+in the chat. Nothing books silently.
+
+**Capture** — receipt OCR with line-item review and reconciliation,
+bank-statement import with a learned merchant/category classifier, and
+**email staging**: paste an order/shipping email (or fetch UNSEEN mail
+from a configured IMAP inbox with an encrypted app password) and accept
+or discard per-item booking candidates.
+
+**Households** — invite-code membership, combined views, stale-membership
+re-derivation, an **owner role** who can remove members (every device's
+cache invalidates immediately) and configure what members see per area
+(budgets / income / loans: hidden, visible or editable; expenses always
+shared), with ownership transfer when the owner leaves.
+
+**Your own taxonomy** — rename categories and subcategories, add your
+own, and every picker, chart, import and the AI follow your taxonomy.
+
+**Platform** — SQLCipher AES-256 encryption with automatic first-run
+migration, encrypted GitHub backups with a restore CLI, a fun-money
+rewards economy with custom milestones, a single-machine multi-profile
+household model, and a consistent UI kit (one canonical KPI band, panel
+shells, shared palette enforced by tests).
 
 ---
 
@@ -1048,6 +1100,14 @@ orchestrator, three provider kinds, output sanitizer boundary, validated
 charts, clarifying questions); receipt line-item review with reconciliation
 and an opt-in-only cloud fallback; and explicit ML candidate/active model
 states with audited activation.
+
+Also shipped for v1.0: reversible agent mutations (undo/redo/confirm cards,
+threshold + rate-cap guard rails, audit 'via agent' filter), email order
+staging with an optional on-demand IMAP poller, FIFO portfolio sells, the
+trip planner, recurring income templates, the Gemini provider, household
+owner administration with per-area sharing preferences, the user-editable
+effective taxonomy across every surface, and the unified UI kit.
+
 ## Agent Knowledge System
 
 Future AI agents (and subagents) start at [`agent instructions/README.md`](./agent%20instructions/README.md) — the coordinator router for 19 domain docs (8 subsystems + 4 architecture docs) that map the codebase, dependency graph, execution flows, and invariants (G1–G13). See [`agent instructions/`](./agent%20instructions/) for shell/auth, persistence/crypto/caching, currency/taxonomy, ledger/recurring/audit, planning/wealth, ingestion, intelligence, and connectivity surfaces.
