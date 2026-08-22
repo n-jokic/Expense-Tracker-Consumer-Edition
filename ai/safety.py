@@ -124,6 +124,10 @@ def check_mutation_proposal(question: str) -> dict | None:
             "type": "budget_change",
             "category": cat,
             "amount_eur": float(amount),
+            # Pin the period NOW so confirmation applies what was proposed,
+            # not whatever month happens to be current when clicked (L3).
+            "year": __import__("datetime").date.today().year,
+            "month": __import__("datetime").date.today().month,
             "proposed": True,
             "requires_confirmation": True,
             "message": f"Proposed change: set {cat or 'category'} budget to €{amount} — confirm to apply.",

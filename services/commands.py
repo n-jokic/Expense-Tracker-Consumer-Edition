@@ -1156,3 +1156,42 @@ def apply_auto_allocations(user_id: int, *, income_amount_eur: float,
             summary["errors"].append(entry)
     return summary
 
+
+def set_budget(user_id: int, category: str, amount_eur: float,
+               year: int | None = None, month: int | None = None) -> CommandResult:
+    """Apply one confirmed budget change from an advisor proposal (L3).
+
+    Every field is re-validated server-side; db.add_budget upserts and
+    audit-logs in a single transaction, then the shared data revision is
+    bumped so open browser sessions refresh. Raises CommandError on any
+    invalid input — callers must never trust the stored proposal blindly."""
+    import math
+
+    from datetime import date as _date
+
+    from db import add_budget as _db_add
+    from domain.taxonomy import CAT_LIST
+
+    cat = str(category or "").strip()
+    if cat not in CAT_LIST:
+        raise CommandError(f"unknown budget category: {cat!r}")
+    try:
+        amount = float(amount_eur)
+    except (TypeError, ValueError):
+        raise CommandError("budget amount must be numeric")
+    # ponytail: flat 1M ceiling instead of utils.MAX_AMOUNT coupling — tighten if proposals ever near it
+    if not math.isfinite(amount) or amount <= 0 or amount > 1_000_000:
+        raise CommandError("budget amount must be within (0, 1000000]")
+    today = _date.today()
+    try:
+        yr = int(year) if year else today.year
+        mo = int(month) if month else today.month
+    except (TypeError, ValueError):
+        raise CommandError("budget period must be a valid year/month")
+    if not (2000 <= yr <= 2100 and 1 <= mo <= 12):
+        raise CommandError("budget period out of range")
+    _db_add(user_id, {"year": yr, "month": mo, "category": cat,
+                      "subcategory": "", "budgeted_eur": round(amount, 2)})
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(f"{yr}-{mo:02d}:{cat}",))
+

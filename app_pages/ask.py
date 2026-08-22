@@ -144,16 +144,33 @@ if _last_calls:
 _last_proposal = st.session_state.get("_last_proposal")
 if _last_proposal:
     st.warning(_last_proposal.get("message", "Proposed change requires confirmation."), icon=":material/warning:")
-    st.button(
-        "Confirm change",
-        disabled=True,
-        help="Confirmation would call budget_commands.set_budget — not yet wired. The model never auto-executes mutations.",
-        key="ask_confirm_disabled",
-    )
-    st.caption("The advisor is read-only. Confirming would apply the change via a command service (one transaction, one audit record).")
+    # L3: confirmation goes through ONE audited command service call. The
+    # stored proposal is popped BEFORE applying so a double-click cannot
+    # apply twice; commands.set_budget re-validates every field server-side.
+    if st.button("Confirm change", type="primary", icon=":material/check:",
+                 key="ask_confirm_apply"):
+        _p = st.session_state.pop("_last_proposal", None) or {}
+        try:
+            from services.commands import CommandError, set_budget
+
+            res = set_budget(user_id,
+                             category=str(_p.get("category") or ""),
+                             amount_eur=float(_p.get("amount_eur") or 0),
+                             year=_p.get("year"), month=_p.get("month"))
+        except (CommandError, TypeError, ValueError) as exc:
+            st.error(f"Proposal rejected: {exc}", icon=":material/block:")
+        else:
+            if res.changed:
+                import queries as _q
+
+                _q.bump_db_version()
+                st.toast("Budget updated.", icon=":material/check_circle:")
+                st.rerun()
     if st.button("Dismiss proposal", key="ask_dismiss_proposal"):
         st.session_state.pop("_last_proposal", None)
         st.rerun()
+    st.caption("Proposals are never auto-executed — confirming calls one "
+               "audited command (single transaction, single audit record).")
 
 # ── Input ──────────────────────────────────────────────────────────────────
 prompt = st.chat_input("Ask about your finances…", submit_mode="disable")
