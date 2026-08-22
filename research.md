@@ -5,8 +5,9 @@
 > against Streamlit 1.61 bundled references) plus web research on small-model
 > tool-calling patterns. Sizes: S = small diff, M = medium.
 >
-> Status: IN PROGRESS - wave-by-wave. pytest tests stays green after each item
-> (except ~8 documented sandbox-ACL env errors in local-model tests, pre-existing).
+> Status: COMPLETE - all plan items shipped or deliberately skipped with rationale.
+> Full suite: 819 tests, 7 failures / 11 errors - ALL verified pre-existing environmental
+> (sandbox TEMP/ACL + packaged-app paths) by rerunning the exact set on baseline 225a92a.
 
 ## Progress checklist
 
@@ -23,7 +24,7 @@
 - [x] L3 proposal confirm wiring via audited set_budget command (11 tests)
 - [x] L6 ask fragment — SKIPPED deliberately: the submit path must refresh data page-wide anyway, so a fragment adds widget-identity churn with no measurable win; revisit only if profiling shows badge redraw cost
 - [x] Wave 2 UI: U2 editor fragments (090384f) + U4 single KPI band w/ metric sparklines (2d0b7e1)
-- [ ] Final gate: full suite green; this checklist fully ticked
+- [x] Final gate: full suite 819 tests - 7F/11E all proven pre-existing on baseline 225a92a (zero regressions); M3 follow-up fix 87f446b
 
 ## Goal
 Make the three researched areas measurably better with the smallest diffs the

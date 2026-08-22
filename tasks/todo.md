@@ -135,3 +135,16 @@
       Gate: tests/test_proposal_confirm.py 11/11.
 - [x] L6 ask-page fragment SKIPPED deliberately (rationale in research.md).
 
+## Phase M smoke notes (081088c + 87f446b)
+- Forecast page: 'Model accuracy' expander lists model_metrics, backtest origins, selection reason.
+- Insights card + AI/MCP anomalies now come from the same IsolationForest scan (score/severity/reasons).
+- Budgets page: 'Suggest from my history' prefills the form only; nothing auto-saves.
+- Scaled features keep a DataFrame shell so feature names stay introspectable (test_anomaly_phase4).
+
+## Phase U smoke notes (bcf6c8d, 2d0b7e1, 090384f)
+- Theme menu offers Light/Dark; both palettes share the brand accent; charts use named C_* colors.
+- Year/Month filters live in the sidebar beside the currency control.
+- KPI band is one horizontal strip (income/expenses with 7-day sparklines, saved, net, rate, fixed costs/yr, debt, debt-free, net worth); no orphan cards below.
+- Cumulative chart + Top-10 table behind expanders; preset/AAR editors restacked for phone width and isolated as fragments.
+- 'Ask AI' pills hand off to the advisor via query params.
+
