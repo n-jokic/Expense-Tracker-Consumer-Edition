@@ -138,11 +138,13 @@ def guess_merchant(text: str) -> str | None:
     return None
 
 
-def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
+def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None,
+                    user_locale=None, default_currency="EUR") -> dict:
     """Compatibility façade — delegates to ingestion.receipt.service."""
     try:
         from ingestion.receipt.service import analyze_receipt as _svc
-        return _svc(image_bytes, expenses_df=expenses_df, user_id=user_id)
+        return _svc(image_bytes, expenses_df=expenses_df, user_id=user_id,
+                    user_locale=user_locale, default_currency=default_currency)
     except Exception:
         # Fallback to legacy inline (should not happen; keep for safety)
         text, ocr_reason = ocr_image(image_bytes)

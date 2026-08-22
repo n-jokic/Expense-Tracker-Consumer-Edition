@@ -79,7 +79,15 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
     if image_bytes is not None:
         image_key = hashlib.sha256(image_bytes).hexdigest()
         if st.session_state.get("receipt_review_image_key") != image_key:
-            result = analyze_receipt(image_bytes, q.expenses(user_id), user_id=user_id)
+            # E6: scan-time fallback currency — read the user's setting once.
+            try:
+                _settings = q.get_settings(user_id) or {}
+            except Exception:
+                _settings = {}
+            DC = (str(_settings.get("default_currency") or "").strip().upper()
+                  or "EUR")
+            result = analyze_receipt(image_bytes, q.expenses(user_id),
+                                     user_id=user_id, default_currency=DC)
             st.session_state["receipt_review_image_key"] = image_key
             st.session_state["receipt_review_result"] = result
             receipt_result = result.get("receipt_result")
@@ -125,6 +133,17 @@ with st.expander("Scan a receipt (OCR)", icon=":material/photo_camera:"):
             st.success("Text recognised — check the details, then save (or fix anything wrong).")
             receipt_result = result.get("receipt_result")
             _render_receipt_uncertainty(receipt_result)
+            # E6: quietly flag a currency that was assumed, not read.
+            try:
+                _cur_cand = getattr(receipt_result, "currency", None) if receipt_result else None
+                _cur_reasons = list(getattr(_cur_cand, "reasons", None) or [])
+                if _cur_cand is not None and (
+                    float(getattr(_cur_cand, "confidence", 0.0) or 0.0) < LOW_CONF
+                    or any("fallback" in str(r).lower() for r in _cur_reasons)
+                ):
+                    st.caption(f"Assumed {DC} — not found on receipt")
+            except Exception:
+                pass
             with st.expander("Raw OCR text", expanded=False):
                 st.code((result["text"] or "")[:500], language=None)
 

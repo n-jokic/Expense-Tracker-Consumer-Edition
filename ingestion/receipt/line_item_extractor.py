@@ -35,12 +35,13 @@ _SIGNED_AMT_RE = re.compile(
     r"(?P<lead>-)?\s*(?P<amt>" + _AMT_CORE.pattern + r")\s*(?P<trail>-)?")
 
 
-def _signed_amounts(line: str) -> list[tuple[float, int]]:
-    """[(value, start_index)] — dates stripped first, discounts signed."""
+def _signed_amounts(line: str) -> list[tuple[float, int, int]]:
+    """[(value, start_index, end_index)] — dates stripped first, discounts
+    signed. Offsets are relative to the CLEANED text that was scanned."""
     from ocr import _DATE_RE
 
     cleaned = _DATE_RE.sub(" ", _TIME_RE.sub(" ", line))
-    out: list[tuple[float, int]] = []
+    out: list[tuple[float, int, int]] = []
     for m in _SIGNED_AMT_RE.finditer(cleaned):
         raw = m.group("amt")
         try:
@@ -53,16 +54,18 @@ def _signed_amounts(line: str) -> list[tuple[float, int]]:
         val = float(val)
         if m.group("lead") or m.group("trail"):
             val = -abs(val)
-        out.append((val, m.start("amt")))
+        out.append((val, m.start("amt"), m.end()))
     # de-duplicate overlaps (lookarounds already prevent most)
-    deduped: list[tuple[float, int]] = []
+    deduped: list[tuple[float, int, int]] = []
     seen_spans: list[tuple[int, int]] = []
-    for val, start in out:
-        span = (start, start + len(str(abs(val))))
-        if any(not (span[1] < s or span[0] > e) for s, e in seen_spans):
+    for val, start, end in out:
+        span = (start, end)
+        # True interior overlap only: a later amount that merely STARTS where
+        # the previous one ended (qty rows "2 x 289,99 579,98") must survive.
+        if any(span[0] < e and s < span[1] for s, e in seen_spans):
             continue
         seen_spans.append(span)
-        deduped.append((val, start))
+        deduped.append((val, start, end))
     return deduped
 
 
@@ -96,14 +99,24 @@ def extract_line_items(raw_text: str | None = None,
         low = s.lower()
         if any(k in low for k in _EXCLUDE_KEYS):
             continue
+        # Tel/fax/web/contact headers are never products (ticket phones).
+        if re.search(r"\b(?:tel|fax|mob|www|http)\b", low) or "@" in s:
+            continue
         if _DATE_LINE_RE.match(s) or _TIME_RE.search(s) and not _signed_amounts(s):
             continue
+        # Strict row grammar (E5): dates/times stripped first, then the row
+        # must END in its trailing amount (± a short currency/sign tail).
+        from ocr import _DATE_RE as _STRIP_DATE
+        cleaned = _STRIP_DATE.sub(" ", _TIME_RE.sub(" ", s)).strip()
         amounts = _signed_amounts(s)
         if not amounts:
             continue
         # The LAST amount on a product row is its line total.
-        line_total, last_start = amounts[-1]
-        desc_slice = s[:last_start]
+        line_total, last_start, last_end = amounts[-1]
+        tail = cleaned[last_end:].strip().lower().rstrip(".")
+        if tail not in ("", "-", "€", "$", "eur", "usd", "rsd", "chf", "din"):
+            continue
+        desc_slice = cleaned[:last_start]
         # Quantity multiplier may sit mid-row: "Mleko 2 x 289,99".
         qty_match = _QTY_PREFIX_RE.match(desc_slice)
         if qty_match:

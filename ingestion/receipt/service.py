@@ -49,11 +49,11 @@ def _tokens_to_text(document: OCRDocument) -> str:
     return "\n".join(" ".join(by_line[lid]) for lid in sorted(by_line))
 
 
-def _build_receipt_result(document: OCRDocument, raw_text: str) -> ReceiptResult:
+def _build_receipt_result(document: OCRDocument, raw_text: str, user_locale=None, default_currency="EUR") -> ReceiptResult:
     total_cands = extract_total_candidates(document, raw_text)
     merch_cands = extract_merchant_candidates(document, raw_text)
     date_cands = extract_date_candidates(document, raw_text)
-    curr_cands = extract_currency_candidates(document, raw_text)
+    curr_cands = extract_currency_candidates(document, raw_text, user_locale=user_locale, default_currency=default_currency)
     result = ReceiptResult(
         merchant=merch_cands[0] if merch_cands else None,
         total=total_cands[0] if total_cands else None,
@@ -69,7 +69,7 @@ def _build_receipt_result(document: OCRDocument, raw_text: str) -> ReceiptResult
     )
     return score_receipt_result(result)
 
-def _tesseract_fallback(image_bytes: bytes):
+def _tesseract_fallback(image_bytes: bytes, user_locale=None, default_currency="EUR"):
     """Use existing Tesseract pipeline when RapidOCR unavailable."""
     import ocr as _ocr
     text, reason = _ocr.ocr_image(image_bytes)
@@ -84,10 +84,10 @@ def _tesseract_fallback(image_bytes: bytes):
         if line.strip():
             tokens.append(OCRToken(text=line.strip(), confidence=0.85, polygon=((0,0),(0,0),(0,0),(0,0)), line_id=idx))
     doc = OCRDocument(tokens=tokens, width=0, height=0, mean_confidence=0.6, engine="tesseract", model_version="tesseract", preprocessing="tesseract")
-    result = _build_receipt_result(doc, text)
+    result = _build_receipt_result(doc, text, user_locale=user_locale, default_currency=default_currency)
     return doc, text, result, None
 
-def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
+def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None, user_locale=None, default_currency="EUR") -> dict:
     """Full pipeline compatible with ocr.analyze_receipt return shape."""
     # Cache
     try:
@@ -108,7 +108,8 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
         doc1 = run_rapidocr(img1, stage="pass1")
         # If engine unavailable, fallback
         if doc1.engine == "unavailable" or doc1.mean_confidence == 0 and not doc1.tokens:
-            doc, raw_text, receipt_result, reason = _tesseract_fallback(image_bytes)
+            doc, raw_text, receipt_result, reason = _tesseract_fallback(
+                image_bytes, user_locale=user_locale, default_currency=default_currency)
             total_conf = receipt_result.total.confidence if receipt_result.total else 0
             # Build compat dict
             compat = _to_compat_dict(doc, raw_text, receipt_result, reason, expenses_df, user_id)
@@ -116,7 +117,7 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
                 _CACHE[key] = compat
             return compat
         raw_text1 = _tokens_to_text(doc1)
-        result1 = _build_receipt_result(doc1, raw_text1)
+        result1 = _build_receipt_result(doc1, raw_text1, user_locale=user_locale, default_currency=default_currency)
         total_conf1 = result1.total.confidence if result1.total else 0
         use_pass2 = not (doc1.mean_confidence >= 0.75 and total_conf1 >= 0.80)
         if not use_pass2:
@@ -135,7 +136,8 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
             img2 = gray.convert("RGB")
             doc2 = run_rapidocr(img2, stage="pass2")
             raw_text2 = _tokens_to_text(doc2)
-            result2 = _build_receipt_result(doc2, raw_text2) if raw_text2 else result1
+            result2 = (_build_receipt_result(doc2, raw_text2, user_locale=user_locale, default_currency=default_currency)
+                       if raw_text2 else result1)
             # pick better by OCR conf + field conf
             score1 = doc1.mean_confidence + (total_conf1 or 0)
             total_conf2 = result2.total.confidence if result2.total else 0
@@ -155,7 +157,8 @@ def analyze_receipt(image_bytes: bytes, expenses_df=None, user_id=None) -> dict:
     except Exception as e:
         # Any failure -> tesseract fallback
         try:
-            doc, raw_text, receipt_result, reason = _tesseract_fallback(image_bytes)
+            doc, raw_text, receipt_result, reason = _tesseract_fallback(
+                image_bytes, user_locale=user_locale, default_currency=default_currency)
             compat = _to_compat_dict(doc, raw_text, receipt_result, reason, expenses_df, user_id)
             if key:
                 _CACHE[key] = compat

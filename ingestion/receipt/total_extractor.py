@@ -7,21 +7,39 @@ Never uses "max(amounts)" as fallback alone; largest amount is +1 weak feature a
 from __future__ import annotations
 
 import re
+from ingestion.receipt.confidence import HIGH_CONF, normalize_confidences
 from ingestion.receipt.models import FieldCandidate, OCRDocument
 
-_TOTAL_KEYS = ("ukupno", "total", "suma", "svega", "za uplatu", "grand total", "amount due", "to pay", "platiti", "ukupno za uplatu")
-_SUBTOTAL_KEYS = ("subtotal", "medjuzbir", "međuzbir", "meduzbir")
+_TOTAL_KEYS = ("ukupno", "total", "suma", "svega", "za uplatu", "grand total",
+               "amount due", "balance due", "to pay", "platiti",
+               "ukupno za uplatu")
+# "amount" alone is too generic for substring matching; matched word-exact.
+_AMOUNT_EXACT_RE = re.compile(r"\bamount\b(?!\s+due)", re.I)
+_SUBTOTAL_KEYS = ("subtotal", "sub-total", "sub total", "medjuzbir",
+                  "medjuzbirka", "međuzbir", "meduzbir")
+# Strongest total signals: when present they outrank a plain UKUPNO/TOTAL.
+_GRAND_KEYS = ("grand total", "balance due", "amount due", "to pay")
+# Tel/fax/URL rows are never amounts (ticket phones must not surface).
+_NOISE_LINE_RE = re.compile(
+    r"(?:(?:^|\b)(?:tel|fax|mob|www|http)(?:\b|[.:])|\.[a-z]{2,4}(?:/|\b|$))",
+    re.I)
 _TAX_KEYS = ("pdv", "vat", "tax")
 _CASH_KEYS = ("gotovina", "cash")
 _CHANGE_KEYS = ("kusur", "change", "povrat", "rest", "vraceno")
 
-_AMT_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}")
+# Mandatory decimal cents (O4): bare integers (phone chunks, quantities,
+# years) can never be totals. Thousands groups stay optional.
+_AMT_RE = re.compile(
+    r"(?<![\d.,])(?:\d{1,3}(?:[.,]\d{3})+|\d+)[.,]\d{2}(?![\d])")
+# Cents-less FULLY GROUPED integers ('UKUPNO 1.234'): accepted only on
+# total-keyword lines, never as free-floating candidates.
+_AMT_GROUPED_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:[.,]\d{3})+(?![\d,.])")
 _CURRENCY_RE = re.compile(r"\b(?:rsd|din\.?|eur|€|usd|\$)\b", re.I)
 # Dates must never be parsed as amount phantoms (mirrors ocr.extract_amounts which
 # strips them via _DATE_RE.sub before scanning). Kept in sync with ocr._DATE_RE.
 _DATE_RE = re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b")
 
-def _amounts_with_positions(text: str) -> list[tuple[float, int, str]]:
+def _amounts_with_positions(text: str) -> list[tuple[float, int, str, bool]]:
     """Return (amount, line_idx, line_text).
 
     Date patterns are stripped before _AMT_RE scanning (mirrors ocr.extract_amounts)
@@ -35,6 +53,8 @@ def _amounts_with_positions(text: str) -> list[tuple[float, int, str]]:
         clean = line.strip()
         if not clean:
             continue
+        if _NOISE_LINE_RE.search(clean):
+            continue
         # Strip dates first so they cannot be parsed as amount phantoms.
         scanned = _DATE_RE.sub(" ", clean)
         # extract via regex then parse
@@ -45,7 +65,21 @@ def _amounts_with_positions(text: str) -> list[tuple[float, int, str]]:
                 from pdf_import import _parse_amount_core
                 val = _parse_amount_core(raw)
                 if val is not None and 0.01 <= val <= 1_000_000:
-                    out.append((float(val), idx, clean))
+                    out.append((float(val), idx, clean, False))
+            except Exception:
+                continue
+        # Second pass: cents-less fully-grouped integers. Flagged so the
+        # scorer can restrict them to total-keyword lines.
+        seen_spans = [(m.start(), m.end()) for m in _AMT_RE.finditer(scanned)]
+        for m in _AMT_GROUPED_RE.finditer(scanned):
+            span = (m.start(), m.end())
+            if any(span[0] < e and s < span[1] for s, e in seen_spans):
+                continue
+            try:
+                from pdf_import import _parse_amount_core
+                val = _parse_amount_core(m.group())
+                if val is not None and 0.01 <= val <= 1_000_000:
+                    out.append((float(val), idx, clean, True))
             except Exception:
                 continue
     return out
@@ -92,18 +126,24 @@ def extract_total_candidates(document: OCRDocument, raw_text: str | None = None)
     # real, possibly taxed, total on the total line).
     scored: list[tuple[float, float, list[str], int, str, int]] = []  # (amount, score, reasons, line_idx, line, tie)
     has_total_line = any(
-        any(k in line.lower() for k in _TOTAL_KEYS) for _, _, line in cands
+        any(k in line.lower() for k in _TOTAL_KEYS) for _, _, line, _ in cands
     )
     max_amt = max(a for a, *_ in cands) if cands else 0
-    for amount, line_idx, line in cands:
+    for amount, line_idx, line, no_cents in cands:
         score = 0.0
         reasons: list[str] = []
         low = line.lower()
+        is_total_line = any(k in low for k in _TOTAL_KEYS)
+        if no_cents and not is_total_line:
+            # Grouped-int tier exists only to serve total-keyword lines.
+            continue
         is_total_line = any(k in low for k in _TOTAL_KEYS)
         penalized = False
         # keyword scores
         if is_total_line:
             score += 5; reasons.append("same line as UKUPNO/TOTAL/ZA UPLATU +5")
+            if _AMOUNT_EXACT_RE.search(low):
+                score += 1; reasons.append("exact AMOUNT key +1")
         elif has_total_line:
             # A total-keyword line already exists: don't boost non-total-line
             # neighbours (adjacency) - they would let an unpenalized item on the
@@ -146,21 +186,53 @@ def extract_total_candidates(document: OCRDocument, raw_text: str | None = None)
                 score += 1; reasons.append("largest amount +1 (weak)")
             else:
                 reasons.append("largest +1 suppressed (non-total line, total exists)")
+        # Grand-total tier: a second keyword level above plain UKUPNO.
+        if any(k in low for k in _GRAND_KEYS):
+            score += 2; reasons.append("GRAND TOTAL key +2")
         # deterministic tiebreak priority (higher wins ties): total-line first,
-        # then unpenalized, then earlier line.
-        tie = (int(is_total_line), int(not penalized), -line_idx)
+        # unpenalized, then LARGER amount — but only among CLEAN total-keyword
+        # candidates (on a cash/change line everything shares penalties, so the
+        # scan order must decide, not magnitude).
+        tie = (int(is_total_line), int(not penalized),
+               float(amount) if (is_total_line and not penalized) else 0.0)
         scored.append((amount, score, reasons, line_idx, line, tie))
     # Sort descending score, breaking ties toward the total-keyword, unpenalized
     # candidate (defence-in-depth for equal-net-score situations).
     scored.sort(key=lambda x: (x[1], x[5][0], x[5][1], x[5][2]), reverse=True)
-    # Normalize to confidence 0..1 via sigmoid-like scaling
-    max_sc = scored[0][1] if scored else 0
-    min_sc = scored[-1][1] if scored else 0
-    span = max(max_sc - min_sc, 1.0)
-    cands_out: list[FieldCandidate] = []
+    # De-duplicate equal-value candidates, merging their reason lists (the
+    # ticket's total used to appear once per currency mention, diluting rank).
+    by_val: dict[float, dict] = {}
+    order: list[float] = []
     for amt, sc, rs, li, ln, _tie in scored:
-        conf = (sc - min_sc) / span  # 0..1
-        # clamp to 0.1..0.95
-        conf = max(0.1, min(0.95, 0.2 + conf * 0.75))
-        cands_out.append(FieldCandidate(value=float(amt), confidence=float(conf), reasons=tuple(rs)))
+        key = round(float(amt), 2)
+        slot = by_val.get(key)
+        if slot is None:
+            by_val[key] = {"score": sc, "reasons": list(rs),
+                           "total_key": False, "clean": True}
+            order.append(key)
+            continue
+        slot["score"] = max(slot["score"], sc)
+        for r in rs:
+            if r not in slot["reasons"]:
+                slot["reasons"].append(r)
+    for amt, sc, rs, li, ln, tie in scored:
+        slot = by_val[round(float(amt), 2)]
+        if tie[0]:
+            slot["total_key"] = True
+        if not tie[1]:
+            slot["clean"] = False
+    scores = [by_val[k]["score"] for k in order]
+    confs = normalize_confidences(scores)
+    cands_out: list[FieldCandidate] = []
+    for key, conf in zip(order, confs):
+        slot = by_val[key]
+        if slot["total_key"] and slot["clean"]:
+            # A keyword-backed, unpenalised candidate is the grand total with
+            # near-certainty; never let span compression drop it below the
+            # pass-2 HIGH_CONF gate.
+            conf = max(conf, HIGH_CONF + 0.02)
+        cands_out.append(FieldCandidate(
+            value=float(key),
+            confidence=float(max(0.1, min(0.95, conf))),
+            reasons=tuple(slot["reasons"])))
     return cands_out

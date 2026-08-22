@@ -5,6 +5,7 @@ ingestion/receipt/merchant_extractor.py — O5 merchant candidate scoring.
 from __future__ import annotations
 
 import re
+from ingestion.receipt.confidence import normalize_confidences
 from ingestion.receipt.models import FieldCandidate, OCRDocument
 
 _ADDRESS_TERMS = ("ul.", "ulica", "street", "beograd", "novisad", "srbija", "adresa")
@@ -89,12 +90,8 @@ def extract_merchant_candidates(document: OCRDocument, raw_text: str | None = No
     if not cands:
         return []
     cands.sort(key=lambda x: x[1], reverse=True)
-    max_sc = cands[0][1]
-    min_sc = cands[-1][1]
-    span = max(max_sc - min_sc, 1.0)
+    confs = normalize_confidences([sc for _, sc, _ in cands])
     out: list[FieldCandidate] = []
-    for text, sc, rs in cands:
-        conf = (sc - min_sc) / span
-        conf = max(0.1, min(0.95, 0.2 + conf * 0.75))
+    for (text, _sc, rs), conf in zip(cands, confs):
         out.append(FieldCandidate(value=text, confidence=float(conf), reasons=tuple(rs)))
     return out

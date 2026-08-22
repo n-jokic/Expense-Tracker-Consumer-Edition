@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from ingestion.receipt.confidence import normalize_confidences
 from ingestion.receipt.models import FieldCandidate, OCRDocument
 
 _DATE_PATTERNS = [
@@ -72,11 +73,10 @@ def extract_date_candidates(document: OCRDocument, raw_text: str | None = None) 
     if not cands:
         return []
     cands.sort(key=lambda x: x[1], reverse=True)
-    max_sc = cands[0][1]; min_sc = cands[-1][1]; span = max(max_sc - min_sc, 1.0)
+    scores = [c[1] for c in cands]
+    confs = normalize_confidences(scores, ceiling=0.96, single_value=0.75)
     out: list[FieldCandidate] = []
-    for dt, sc, rs, idx, line in cands:
-        conf = (sc - min_sc) / span
-        conf = max(0.1, min(0.96, 0.2 + conf * 0.75))
+    for (dt, _sc, rs, _idx, _line), conf in zip(cands, confs):
         if dt > today or dt < today - timedelta(days=365*10):
             conf = min(conf, 0.45)
         out.append(FieldCandidate(value=dt, confidence=float(conf), reasons=tuple(rs)))
