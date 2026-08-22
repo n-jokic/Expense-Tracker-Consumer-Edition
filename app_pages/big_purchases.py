@@ -136,20 +136,19 @@ with st.form("bp_form", clear_on_submit=True):
                             help="1 = nice to have · 5 = life-changing")
     bp_notes = st.text_input("Notes (optional)")
 
-    # FIN-06: every wishlist item may declare where the money will come from.
-    bp_fund_mode = st.radio(
-        "Savings target",
-        ["No target — pay from unallocated funds",
-         "Create a new savings target",
-         "Link an existing goal"],
-        index=0, horizontal=True,
+    # FIN-06 / B2: ONE dropdown — link an existing goal, create a new
+    # target, or leave the item unfunded. Existing goals are picked, never
+    # typed.
+    _OPT_NONE = "No target — pay from unallocated funds"
+    _OPT_NEW  = "+ Create a new savings target..."
+    _goal_opts = sorted(_goal_choices())
+    bp_fund_choice = st.selectbox(
+        "Savings target", [_OPT_NONE, _OPT_NEW] + _goal_opts, index=0,
         help="Optional: tie this wish to a savings goal so you can fund "
              "the purchase from it later.")
     bp_new_goal   = ""
     bp_new_target = 0.0
-    bp_link_goal  = ""
-    _goal_opts = sorted(_goal_choices())
-    if bp_fund_mode == "Create a new savings target":
+    if bp_fund_choice == _OPT_NEW:
         b1, b2 = st.columns([2, 1])
         with b1:
             bp_new_goal = st.text_input("New target name", placeholder="e.g. Laptop fund")
@@ -157,22 +156,14 @@ with st.form("bp_form", clear_on_submit=True):
             bp_new_target = st.number_input("Target amount (EUR)", min_value=0.0,
                                             max_value=MAX_SAVINGS_TARGET, step=50.0,
                                             format="%.2f", value=0.0)
-    elif bp_fund_mode == "Link an existing goal":
-        if _goal_opts:
-            bp_link_goal = st.selectbox("Goal", _goal_opts)
-        else:
-            st.caption("No savings goals yet — pick “Create a new savings target” "
-                       "or leave the item without a target.")
 
     if st.form_submit_button("Add to wishlist", type="primary", width="stretch", icon=":material/add:"):
         if not bp_name.strip():
             st.error("Please give the item a name.")
         elif float(bp_price) <= 0:
             st.error("Price must be greater than 0.")
-        elif bp_fund_mode == "Create a new savings target" and not bp_new_goal.strip():
+        elif bp_fund_choice == _OPT_NEW and not bp_new_goal.strip():
             st.error("Please name the new savings target.")
-        elif bp_fund_mode == "Link an existing goal" and not bp_link_goal:
-            st.error("Pick a goal to link, or switch the savings target off.")
         else:
             _fresh_bp = q.big_purchases(user_id)
             if not _fresh_bp.empty and (
@@ -185,16 +176,16 @@ with st.form("bp_form", clear_on_submit=True):
             # item is created with its stable link in place.
             fund_src, fund_ref = None, None
             try:
-                if bp_fund_mode == "No target — pay from unallocated funds":
+                if bp_fund_choice == _OPT_NONE:
                     fund_src = FUNDING_UNALLOCATED
-                elif bp_fund_mode == "Create a new savings target":
+                elif bp_fund_choice == _OPT_NEW:
                     tres = create_wishlist_target(user_id, bp_new_goal.strip(),
                                                   target_eur=float(bp_new_target))
                     fund_src, fund_ref = FUNDING_SAVINGS_GOAL, tres.affected_ids[0]
                     _bump_to_revision(tres)
                 else:
                     fund_src = FUNDING_SAVINGS_GOAL
-                    fund_ref = _goal_choices().get(bp_link_goal)
+                    fund_ref = _goal_choices().get(bp_fund_choice)
                     if not fund_ref:
                         raise CommandError("The selected goal could not be linked.")
                 add_big_purchase(user_id, {
