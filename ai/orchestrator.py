@@ -320,6 +320,20 @@ def orchestrate(
                 tool_calls.append(tc)
                 if exec_err:
                     return {"answer": None, "error": exec_err, "tool_calls": [tc.__dict__]}
+                # AI-04 extension: breakdown questions get a validated chart
+                # built from their own canonical rows (never model numbers).
+                try:
+                    from ai.charts import breakdown_chart, merchants_chart
+
+                    chart = None
+                    if fast == "category_breakdown":
+                        chart = breakdown_chart((result or {}).get("breakdown"))
+                    elif fast == "merchant_breakdown":
+                        chart = merchants_chart((result or {}).get("merchants") or [])
+                    if chart:
+                        result["_chart"] = chart
+                except Exception as ce:
+                    log.warning("breakdown chart attach failed: %s", ce)
                 answer, diag = _compose_answer(q, tool_calls, settings)
                 return {
                     "answer": answer,
@@ -370,12 +384,7 @@ def orchestrate(
             from ai.providers.base import GenerationRequest
             from ai.router import parse_local_tool_json
 
-            planner_user = (
-                f"{hist_block}QUESTION: {q}\n"
-                f"{prior_results}\n"
-                "Output ONLY the next JSON tool call {\"tool\": \"...\", \"arguments\": {...}} "
-                "or, if you have enough information to answer, output {\"tool\": \"__answer__\"}."
-            )
+            planner_user = P.planner_user_prompt(q, today, hist_block, prior_results)
             req = GenerationRequest(system=P.PLANNER_SYSTEM, user=planner_user,
                                     max_tokens=256, wants_json=True)
             res = provider.generate(req)

@@ -11,6 +11,8 @@ import pytest
 
 from ai.charts import (
     ALLOWED_TYPES,
+    breakdown_chart,
+    merchants_chart,
     validate_chart_spec,
 )
 
@@ -150,3 +152,33 @@ def test_series_end_to_end_builds_validated_chart(user):
     assert spec is not None
     plotted_total = sum(r["amount_eur"] for r in spec["data"])
     assert plotted_total == pytest.approx(sum(r["amount_eur"] for r in series))
+
+
+# ── research.md L4: canonical breakdown/merchant chart builders ──────────
+
+def test_breakdown_chart_builds_validated_pie():
+    breakdown = {"Groceries": 120.5, "Dining Out": 80.25, "Transport": 10.0}
+    spec = breakdown_chart(breakdown)
+    assert spec is not None and spec["type"] == "pie"
+    assert spec["x"] == "category" and spec["y"] == "amount_eur"
+    total = sum(r["amount_eur"] for r in spec["data"])
+    assert total == pytest.approx(210.75)
+    # Data rows equal the canonical breakdown — nothing invented.
+    assert {r["category"] for r in spec["data"]} == set(breakdown)
+
+
+def test_breakdown_chart_rejects_empty_and_nonnumeric():
+    assert breakdown_chart({}) is None
+    assert breakdown_chart(None) is None
+    # A non-numeric value would poison the pie — builder must drop/None it.
+    assert breakdown_chart({"Groceries": 10.0, "Weird": "12 EUR"}) is None
+
+
+def test_merchants_chart_builds_validated_bar():
+    merchants = [{"merchant": "Lidl", "amount_eur": 55.2},
+                 {"merchant": "Billa", "amount_eur": 30.0}]
+    spec = merchants_chart(merchants)
+    assert spec is not None and spec["type"] == "bar"
+    assert [r["merchant"] for r in spec["data"]] == ["Lidl", "Billa"]
+    assert merchants_chart([]) is None
+    assert merchants_chart([{"nonsense": 1}]) is None

@@ -55,6 +55,40 @@ def test_cases_have_expected_tool_in_registry():
         assert "expected" in case
 
 
+# ── Routing accuracy (research.md L2) ─────────────────────────────────────
+# "How am I doing financially?" intentionally routes to __coach__ (cashflow +
+# budget + savings + recurring) even though the case file pins
+# aggregate_spending — the coach answers the question better and includes the
+# aggregate. Allowed divergence, not a hijack.
+ALLOWED_COACH_DIVERGENCE = {"How am I doing financially?"}
+
+
+def test_routing_accuracy_no_hijacks(capsys):
+    import datetime
+
+    TODAY = datetime.date(2026, 8, 21)
+    cases = _load_cases()
+    hits = hijacks = planner_only = 0
+    for case in cases:
+        q, expected = case["question"], case["expected_tool"]
+        got = router.fast_route(q)
+        if got is None:
+            planner_only += 1
+        elif got == expected:
+            hits += 1
+            args = router.infer_deterministic_args(expected, q, TODAY)
+            ok, err = router.validate_tool_call(expected, args)
+            assert ok, f"{q!r}: inferred args invalid {args} ({err})"
+        else:
+            assert q in ALLOWED_COACH_DIVERGENCE, (
+                f"fast_route hijacked [{got}] for expected [{expected}]: {q!r}")
+            hijacks += 1
+    print(f"\nrouting: hits={hits} allowed_divergence={hijacks} "
+          f"planner_only={planner_only}")
+    assert hits >= 60, f"deterministic hit-rate regressed: {hits}"
+    assert planner_only <= 40
+
+
 def test_cases_questions_nonempty_and_unique():
     cases = _load_cases()
     qs = [c["question"] for c in cases]

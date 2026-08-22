@@ -47,6 +47,45 @@ def repair_prompt(question: str, previous_output: str,
     return "\n".join(parts)
 
 
+def planner_tool_reference() -> str:
+    """Compact per-tool argument reference rendered into the planner prompt so
+    small models stop guessing argument names."""
+    try:
+        from ai.tool_registry import TOOL_SCHEMAS
+    except Exception:
+        return ""
+    lines = []
+    for name, spec in sorted(TOOL_SCHEMAS.items()):
+        req = list(spec.get("required", []))
+        opt = list(spec.get("optional", []))
+        parts = req + ([f"optional: {', '.join(opt)}"] if opt else [])
+        lines.append(f"{name}({', '.join(parts)})" if parts else f"{name}()")
+    return "\n".join(lines)
+
+
+def planner_user_prompt(question: str, today, history_block: str = "",
+                        prior_results: str = "") -> str:
+    """Full planner user turn: date anchor + question + schemas + prior calls.
+
+    The Today line lets tiny local models resolve "this month" instead of
+    guessing a year/month; schemas remove argument-name hallucinations."""
+    schema_block = planner_tool_reference()
+    parts = [f"Today is {today.isoformat()}."]
+    if history_block:
+        parts.append(history_block.rstrip())
+    parts.append(f"QUESTION: {question}")
+    if prior_results:
+        parts.append(prior_results.rstrip())
+    if schema_block:
+        parts.append(f"TOOL ARGUMENT SCHEMAS:\n{schema_block}")
+    parts.append(
+        'Output ONLY the next JSON tool call {"tool": "...", '
+        '"arguments": {...}} or, if you have enough information to answer, '
+        'output {"tool": "__answer__"}.'
+    )
+    return "\n".join(parts)
+
+
 # Deterministic template when LLM is unavailable or fails
 DETERMINISTIC_ANSWER_TEMPLATE = (
     "Based on your data ({calculation}): {summary}"

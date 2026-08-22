@@ -68,3 +68,36 @@ def validate_chart_spec(spec: Any, rows: list[dict],
             return None
     return {"type": kind.lower(), "title": title, "x": x, "y": y,
             "data": [{x: r[x], y: r[y]} for r in rows]}
+
+
+def breakdown_chart(breakdown: dict, *, title: str = "Spending by category") -> dict | None:
+    """Pie spec over a canonical {category: amount_eur} breakdown (validated).
+
+    Strict: any non-numeric value means the data is not trustworthy chart
+    fodder — return None so the UI falls back to text/table."""
+    items = list((breakdown or {}).items())
+    if not items or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for _, v in items):
+        return None
+    rows = [{"category": str(k), "amount_eur": float(v)} for k, v in items]
+    return validate_chart_spec({"type": "pie", "title": title,
+                                "x": "category", "y": "amount_eur"}, rows)
+
+
+def merchants_chart(merchants: list, *, title: str = "Top merchants") -> dict | None:
+    """Bar spec over canonical merchant rows [{"merchant", "amount_eur"}].
+
+    Strict: any row missing either field (or with a non-numeric amount)
+    poisons the whole spec — return None instead of a partial chart."""
+    rows_in = list(merchants or [])
+    if not rows_in or not all(
+            isinstance(m, dict) and isinstance(m.get("merchant"), str)
+            and isinstance(m.get("amount_eur"), (int, float))
+            and not isinstance(m.get("amount_eur"), bool)
+            for m in rows_in):
+        return None
+    rows = [{"merchant": m["merchant"], "amount_eur": float(m["amount_eur"])}
+            for m in rows_in]
+    return validate_chart_spec({"type": "bar", "title": title,
+                                "x": "merchant", "y": "amount_eur"}, rows)

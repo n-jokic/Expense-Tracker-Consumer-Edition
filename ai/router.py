@@ -21,6 +21,7 @@ MAX_RESULT_ROWS = 100
 # and current date without invoking the LLM.
 DETERMINISTIC_PATTERNS: list[tuple[str, str]] = [
     (r"improve.*financ|financial.*improve|doing financially|help.*financ", "__coach__"),
+    (r"search my|find my|show my .*(?:purchases?|transactions?|expenses?)", "search_transactions"),
     (r"can i afford|afford.*(?:€|eur|euro)|purchase", "purchase_scenario"),
     (r"compare|higher.*than|more expensive|spending.*vs|vs.*spending", "compare_periods"),
     (r"top.*merchant|merchant.*breakdown|where.*shop", "merchant_breakdown"),
@@ -32,10 +33,11 @@ DETERMINISTIC_PATTERNS: list[tuple[str, str]] = [
     (r"budget.*left|budget.*remaining|remaining budget", "budget_status"),
     (r"how much budget", "budget_status"),
     (r"budget runway|days.*budget|budget.*days", "budget_runway"),
-    (r"subscriptions?|recurring.*bill|recurring cost", "recurring_costs"),
-    (r"recurring", "recurring_costs"),
+    (r"subscriptions?.*(?:chang|increase|recently|went up)|changed price|price increases?|(?:that|this) period", "subscription_changes"),
+    (r"recurring.*bill|recurring cost|recurring", "recurring_costs"),
     (r"income.*this month|this month.*income", "cashflow_summary"),
     (r"cashflow|cash flow", "cashflow_summary"),
+    (r"months to goal|savings progress|goal progress|when will i reach", "project_savings"),
     (r"savings.*status|savings goal|how.*savings", "savings_status"),
     (r"debt|loan.*summary|how much.*owe", "debt_summary"),
     (r"anomal|unusual.*spending|unusual.*expense", "anomalies"),
