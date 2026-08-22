@@ -517,6 +517,24 @@ class IncomeTemplate(Base):
     sort_order  = Column(Integer, default=0)
 
 
+class Trip(Base):
+    """#14: a planned or past vacation with an EUR envelope, participants and
+    a persisted packing checklist."""
+    __tablename__ = "trips"
+    id               = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name             = Column(String)
+    destination      = Column(String, default="")
+    start_date       = Column(Date)
+    end_date         = Column(Date)
+    envelope_eur     = Column(Float, default=0.0)
+    dest_currency    = Column(String, default="EUR")
+    participants_json = Column(JSON, nullable=True)   # list[str] names
+    checklist_json   = Column(JSON, nullable=True)    # list[{text, done}]
+    created_at       = Column(DateTime, default=_utcnow)
+    updated_at       = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id         = Column(Integer, primary_key=True, autoincrement=True)
@@ -1569,6 +1587,64 @@ def delete_income_template(user_id, tpl_id):
         if n:
             log_audit(s, user_id, "DELETE", "income_templates",
                       str(tpl_id), {})
+    return bool(n)
+
+
+# ── Trips (#14): vacation envelopes ──────────────────────────────────────────
+
+_TRIP_COLS = ["id", "name", "destination", "start_date", "end_date",
+              "envelope_eur", "dest_currency", "participants_json",
+              "checklist_json", "created_at", "updated_at"]
+
+
+def get_trips(user_id):
+    """All trips oldest-start first."""
+    with get_session() as s:
+        rows = (s.query(Trip)
+                .filter(Trip.user_id == user_id)
+                .order_by(Trip.start_date.asc().nulls_last(),
+                          Trip.created_at.asc()).all())
+    return _to_df(rows, _TRIP_COLS)
+
+
+def add_trip(user_id, row):
+    trip_id = str(uuid.uuid4())
+    with get_session() as s:
+        s.add(Trip(
+            id=trip_id, user_id=user_id,
+            name=row.get("name", "Trip"),
+            destination=row.get("destination", ""),
+            start_date=row.get("start_date"),
+            end_date=row.get("end_date"),
+            envelope_eur=float(row.get("envelope_eur", 0)),
+            dest_currency=row.get("dest_currency", "EUR"),
+            participants_json=row.get("participants_json") or [],
+            checklist_json=row.get("checklist_json") or []))
+        log_audit(s, user_id, "CREATE", "trips", trip_id,
+                  {"name": row.get("name")})
+    return trip_id
+
+
+def update_trip(user_id, trip_id, updates):
+    with get_session() as s:
+        obj = (s.query(Trip).filter(Trip.id == str(trip_id),
+                                    Trip.user_id == user_id).first())
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k) and k not in ("id", "user_id"):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "trips", str(trip_id), updates)
+    return True
+
+
+def delete_trip(user_id, trip_id):
+    with get_session() as s:
+        n = (s.query(Trip).filter(Trip.id == str(trip_id),
+                                  Trip.user_id == user_id)
+             .delete(synchronize_session=False))
+        if n:
+            log_audit(s, user_id, "DELETE", "trips", str(trip_id), {})
     return bool(n)
 
 
@@ -3018,6 +3094,8 @@ def delete_user_account(user_id):
         s.query(UserTaxonomy).filter(UserTaxonomy.user_id == user_id).delete(
             synchronize_session=False)
         s.query(IncomeTemplate).filter(IncomeTemplate.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(Trip).filter(Trip.user_id == user_id).delete(
             synchronize_session=False)
         s.query(MlModel).filter(MlModel.user_id == user_id).delete(
             synchronize_session=False)

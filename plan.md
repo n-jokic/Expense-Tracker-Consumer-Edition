@@ -112,14 +112,14 @@ Line refs shift +14 (ML accuracy expander landed today).
 - [x] tests/test_portfolio_sells.py — 9 tests: lazy backfill idempotency, FIFO order across two lots, gain leg + exact invariant delta (proceeds - tax), loss clamp + negative leg, rejections (zero price / oversell / stale quote), full-sell cleanup + retry no-op, tax presets save, accrual projection + per-year dedupe + basis nudge.
 - Accept: sell flows end-to-end; unallocated rises by exactly proceeds - tax.
 
-### [ ] #14 Travel vacation planner
-- [ ] Schema: Trip(user_id, name, start_date, end_date, envelope_eur, dest_currency, participants_json, checklist_json, timestamps) + CRUD + migration.
-- [ ] utils.travel_spent_in_range() (windowed variant); travel.py: trip list + active-trip view — envelope vs spend, per-day pacing (zero-days guard), cumulative-vs-ideal pace chart, countdown, persisted packing checklist.
-- [ ] Savings-gap card: Vacation goal balance vs envelope -> monthly top-up (div-by-zero guarded).
-- [ ] Companion splitting: participant list, equal-split tallies. ponytail: weights later.
-- [ ] Integrations: Open-Meteo destination weather (lat/lon via Nominatim; cached; offline fallback) + Nominatim destination search (1 req/s, UA header). Thin adapters mocked in tests — CI does no network.
-- [ ] Envelope canonical EUR; dest-currency display via existing rates.
-- [ ] Tests: window filtering, pacing/top-up zero-guards, countdown, checklist persistence, adapter mocks.
+### [x] #14 Travel vacation planner
+- [x] Schema: Trip table (uuid id, destination, participants_json, checklist_json JSON cols) + add/update/delete/get_trips + account-deletion cleanup.
+- [x] utils.travel_spent_in_range() windowed twin; travel.py Trips section: cards with ongoing/upcoming/past badges, day X/Y pacing with fast-burn warning, cumulative-vs-ideal st.line_chart, persisted checkbox checklist (n/m packed).
+- [x] Savings-gap card on upcoming trips: Vacation-goal balance vs envelope -> ~X/month top-up (guarded).
+- [x] Companion splitting: participant list per trip (count shown); equal-split math covered by tests. ponytail: weighted splits later.
+- [x] services/travel_apis.py: geocode_destination (Nominatim, UA header, top-5) + destination_forecast (Open-Meteo daily max/min/precip), st.cache_data ttl=1800, every failure degrades to None — CI does no network (adapters monkeypatched in tests).
+- [x] Envelope canonical EUR; dest_currency captured for display.
+- [x] tests/test_travel_planner.py — window filtering + pair forms, CRUD roundtrip incl. checklist persistence, FK-safe cleanup, adapter success/offline mocks, split math; app smoke renders the new page green.
 - Accept: define a trip -> see pacing while travelling; weather + destination search work without keys.
 
 ### [ ] #22 Gemini provider + settings honesty

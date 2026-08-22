@@ -137,6 +137,34 @@ def travel_spent(expenses_df, pairs, year: int) -> float:
                 mask = mask | (y["subcategory"].fillna("") == bare)
     return float(y[mask]["amount_eur"].sum())
 
+
+def travel_spent_in_range(expenses_df, pairs, start, end) -> float:
+    """#14 windowed twin of travel_spent: sum over [start, end] inclusive."""
+    if expenses_df is None or expenses_df.empty or not pairs:
+        return 0.0
+    win = expenses_df[(expenses_df["date"].dt.date >= start)
+                      & (expenses_df["date"].dt.date <= end)]
+    if win.empty:
+        return 0.0
+    mask = pd.Series(False, index=win.index)
+    for pair in pairs:
+        if not pair:
+            continue
+        if " › " in pair:
+            cat, sub = pair.split(" › ", 1)
+            cat, sub = cat.strip(), sub.strip()
+            if sub and sub != "(all)":
+                mask = mask | ((win["category"] == cat) & (win["subcategory"] == sub))
+            else:
+                mask = mask | (win["category"] == cat)
+        else:
+            bare = pair.strip()
+            if bare in CATEGORIES:
+                mask = mask | (win["category"] == bare)
+            elif bare in ALL_SUBCATS:
+                mask = mask | (win["subcategory"].fillna("") == bare)
+    return float(win[mask]["amount_eur"].sum())
+
 QUADRANT_COLORS = _ui_styles.QUADRANT_COLORS  # keep canonical palette
 CHART_COLORS = _ui_styles.CHART_COLORS
 
