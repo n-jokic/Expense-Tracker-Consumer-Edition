@@ -122,3 +122,16 @@
 - [x] After OCR-01–ML-01: real-receipt benchmark and all ML UI states pass.
       (5-image benchmark green since `f6f27b3`; ML states via `9cdc783`;
       superseding duplicate line above closed)
+### Advisor / ML / UI improvement wave (research.md)
+
+- [x] Phase L wave 1 (b202584): planner date+schema context pack; routing fixes
+      (eval hits 54->61, hijacks 8->1 allowed coach divergence); validated pie/bar
+      chart answers for breakdown fast-routes; dead answer_query path deleted.
+      Gate: AI subset 75 passed (+8 documented env errors), safety/providers 56,
+      MCP 15. Smoke: ask page renders, suggestions route deterministically.
+- [x] L3 proposal confirm (d1acf31): audited set_budget command with full
+      server-side re-validation; ask.py Confirm pops the stored proposal before
+      apply (double-click safe); proposal pins year/month at detection time.
+      Gate: tests/test_proposal_confirm.py 11/11.
+- [x] L6 ask-page fragment SKIPPED deliberately (rationale in research.md).
+

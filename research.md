@@ -5,8 +5,24 @@
 > against Streamlit 1.61 bundled references) plus web research on small-model
 > tool-calling patterns. Sizes: S = small diff, M = medium.
 >
-> Status: proposed — not yet implemented. Wave 1 items are independent and can
-> land one at a time; `pytest tests` must stay green after each.
+> Status: IN PROGRESS - wave-by-wave. pytest tests stays green after each item
+> (except ~8 documented sandbox-ACL env errors in local-model tests, pre-existing).
+
+## Progress checklist
+
+- [x] docs: research.md committed (c3fa40b)
+- [x] L1 planner context pack - date + TOOL_SCHEMAS in prompt (b202584)
+- [x] L2 routing accuracy test + regex fixes: hits 54->61/100, hijacks 8->1 allowed (b202584)
+- [x] L4 validated chart answers for category/merchant breakdowns (b202584)
+- [x] L5 delete dead answer_query path (-248 lines) (b202584)
+- [ ] M1 render backtest accuracy | M2 ML anomalies service-wide | M3 StandardScaler
+- [ ] M4 backtest-calibrated intervals | M5 balanced classifiers | M6 suggest-budgets | M7 cache scan
+- [ ] M tests: ml/evaluation, hybrid candidate, wrapper tests
+- [ ] U1 dual theme + color centralization + dead CSS removal
+- [ ] U3 filters->sidebar | U5 expanders | U6 mobile editors | U7 Ask-AI pills
+- [x] L3 proposal confirm wiring via audited set_budget command (11 tests)
+- [x] L6 ask fragment — SKIPPED deliberately: the submit path must refresh data page-wide anyway, so a fragment adds widget-identity churn with no measurable win; revisit only if profiling shows badge redraw cost
+- [ ] Final gate: full suite green; this checklist fully ticked
 
 ## Goal
 Make the three researched areas measurably better with the smallest diffs the
