@@ -254,6 +254,65 @@ def test_dashboard_quick_add_logs_expense(smoke_user):
     assert row.iloc[0]["subcategory"] == "Coffee & Snacks"
 
 
+def _open_dashboard(at):
+    at.switch_page(os.path.join(APP_DIR, "app_pages", "dashboard.py"))
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_dashboard_quick_add_preset_editor_saves(smoke_user):
+    """C1: the preset editor persists user-edited one-tap buttons."""
+    from db import get_settings
+    at = _authenticated_at(smoke_user)
+    at.run()
+    _open_dashboard(at)
+    edit_btn = [b for b in at.button if b.label == "✏️ Edit presets"]
+    assert edit_btn, "Edit presets header action missing"
+    edit_btn[0].click()
+    at.run()
+    # The header action flips its flag mid-run; AppTest does not auto-rerun,
+    # so one more execution is needed before the editor widgets exist.
+    at.run()
+    assert not at.exception, at.exception
+    amt = [n for n in at.number_input if n.key == "qp0_0_amt"]
+    assert amt, "first preset amount widget missing in editor"
+    amt[0].set_value(3.75)
+    save = [b for b in at.button if b.label == "Save presets"]
+    assert save, "Save presets button missing"
+    save[0].click()
+    at.run()
+    assert not at.exception, at.exception
+    presets = get_settings(smoke_user).get("quick_presets") or []
+    coffee = [p for p in presets if p.get("id") == "coffee"]
+    assert coffee, "edited coffee preset not persisted"
+    assert abs(float(coffee[0]["amount"]) - 3.75) < 1e-9
+
+
+def test_dashboard_quick_add_tap_time_adjust(smoke_user):
+    """C1: the ✎ inline adjust logs the expense at the adjusted price."""
+    from db import get_expenses
+    at = _authenticated_at(smoke_user)
+    at.run()
+    _open_dashboard(at)
+    adj_btn = [b for b in at.button if b.key == "qa_adj_open_coffee"]
+    assert adj_btn, "per-preset ✎ adjust button missing"
+    adj_btn[0].click()
+    at.run()
+    assert not at.exception, at.exception
+    num = [n for n in at.number_input if n.key == "qa_adj_val_coffee"]
+    assert num, "inline adjust amount input missing"
+    num[0].set_value(3.10)
+    log_it = [b for b in at.button if b.label == "Log it"]
+    assert log_it, "Log it button missing in adjust panel"
+    log_it[0].click()
+    at.run()
+    assert not at.exception, at.exception
+    rows = get_expenses(smoke_user)
+    row = rows[rows["description"] == "Coffee"].sort_values(
+        "created_at").tail(1).iloc[0]
+    assert abs(float(row["amount_eur"]) - 3.10) < 1e-9
+
+
 def test_onboarding_gate_blocks_new_users(smoke_user):
     at = _authenticated_at(smoke_user)
     at.session_state["onboarding_complete"] = False

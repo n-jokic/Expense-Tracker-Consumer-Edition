@@ -16,7 +16,8 @@ from db import add_expense
 from utils import (
     NEAR_LIMIT_THRESHOLD, SAVINGS_TARGET_PCT, SAVINGS_GOAL_PCT, CHART_COLORS,
     fmt, fmt_row, to_display, get_currency_symbol, effective_category_budgets,
-    filter_started_templates, progress_ratio,
+    filter_started_templates, progress_ratio, to_eur,
+    CAT_LIST, CATEGORIES, SUPPORTED_CURRENCIES,
 )
 from ui.panel import PanelSpec, panel
 
@@ -107,52 +108,188 @@ if personal_view:
                     amt  = fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates)
                     st.markdown(f"- {d.strftime('%d %b')} — **{desc}** · {amt}")
 
-    # One-tap quick logging for small everyday expenses.
+    # One-tap quick logging (C1) — BISECTION VARIANT B1: no @st.dialog.
+    _QP_DEFAULTS = [
+        {"id": "coffee", "label": "☕ Coffee", "amount": 2.50, "currency": "EUR",
+         "category": "Dining Out", "subcategory": "Coffee & Snacks",
+         "description": "Coffee"},
+        {"id": "lunch", "label": "🍔 Lunch", "amount": 10.00, "currency": "EUR",
+         "category": "Dining Out", "subcategory": "Work Lunch",
+         "description": "Lunch"},
+        {"id": "transit", "label": "🚌 Transit", "amount": 2.00, "currency": "EUR",
+         "category": "Transport", "subcategory": "Public Transit",
+         "description": "Transit"},
+    ]
+    def _load_presets():
+        raw = st.session_state.settings.get("quick_presets") or []
+        out = []
+        if isinstance(raw, list):
+            for i, p in enumerate(raw):
+                try:
+                    cat = p.get("category") if p.get("category") in CAT_LIST else CAT_LIST[0]
+                    sub = str(p.get("subcategory") or "")
+                    if sub and sub not in CATEGORIES.get(cat, []):
+                        sub = ""
+                    out.append({
+                        "id": str(p.get("id") or f"p{i}"),
+                        "label": str(p.get("label") or f"Preset {i + 1}"),
+                        "amount": float(p.get("amount") or 0.0),
+                        "currency": (p.get("currency")
+                                     if p.get("currency") in SUPPORTED_CURRENCIES else "EUR"),
+                        "category": cat, "subcategory": sub,
+                        "description": str(p.get("description") or f"Quick {i + 1}"),
+                    })
+                except Exception:
+                    continue
+        return out or [dict(x) for x in _QP_DEFAULTS]
+    presets = _load_presets()
+    edit_key = "dash_one_tap_edit"
     spec = PanelSpec(id="dash_one_tap", title="One-tap logging",
                      icon=":material/touch_app:", collapsible=True, default_expanded=True)
-    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    def _open_qp_edit():
+        # Stable label/key: the flag must never change widget identity.
+        st.session_state[edit_key] = True
+    expanded, container = panel(
+        spec, user_id=user_id, area="dashboard",
+        actions=[("✏️ Edit presets", _open_qp_edit)])
+    # Read AFTER panel(): a click during THIS run must take effect
+    # immediately — that is also what AppTest needs to see the editor.
+    editing = bool(st.session_state.get(edit_key))
+    def _quick_log(preset, amount=None):
+        amt = float(preset["amount"] if amount is None else amount)
+        cur = preset["currency"]
+        desc = preset["description"]
+        eur = to_eur(amt, cur, rates)
+        qa_key = f"qa_{preset['id']}_{today.isoformat()}"
+        if st.session_state.get(qa_key):
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            return
+        fresh = q.expenses(user_id)
+        if not fresh.empty and (
+                (fresh["date"].dt.date == today)
+                & (fresh["description"] == desc)
+                & (fresh["amount_eur"].round(2) == round(eur, 2))).any():
+            st.session_state[qa_key] = True
+            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            return
+        try:
+            add_expense(user_id, {
+                "date": today, "category": preset["category"],
+                "subcategory": preset["subcategory"], "description": desc,
+                "amount": amt, "currency": cur, "amount_eur": eur,
+                "recurring": False, "notes": "Quick-add",
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+        else:
+            q.bump_db_version()
+            st.toast(f"{preset['label']} logged — {fmt(eur, DC, rates)}",
+                     icon=":material/check:")
     if expanded:
         with container:
-            _presets = [
-                ("☕ Coffee", 2.50, "Dining Out", "Coffee & Snacks", "Coffee"),
-                ("🍔 Lunch", 10.00, "Dining Out", "Work Lunch", "Lunch"),
-                ("🚌 Transit", 2.00, "Transport", "Public Transit", "Transit"),
-            ]
-            qb1, qb2, qb3 = st.columns(3)
-            for col, (label, amt, cat, sub, desc) in zip((qb1, qb2, qb3), _presets):
-                with col:
-                    if st.button(f"{label} · {fmt(amt, DC, rates)}",
-                                 key=f"qa_{desc.lower()}", width="stretch"):
-                        _qa_key = f"qa_{desc}_{today.isoformat()}"
-                        if st.session_state.get(_qa_key):
-                            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+            if editing:
+                gen = int(st.session_state.get("dash_qp_gen", 0))
+                draft = st.session_state.get("dash_qp_draft")
+                if draft is None:
+                    draft = [dict(p) for p in presets]
+                    st.session_state["dash_qp_draft"] = draft
+                st.caption("Edit your one-tap buttons. Amounts are in each "
+                           "row's own currency; Del removes the row.")
+                kept = []
+                for i, p in list(enumerate(draft)):
+                    k = f"qp{gen}_{i}"
+                    c1, c2, c3, c4, c5, c6 = st.columns([1.3, 1, 1, 1.5, 1.5, 0.45])
+                    label = c1.text_input("Label", value=p["label"],
+                                          key=f"{k}_label", label_visibility="collapsed")
+                    amt = c2.number_input("Amount", min_value=0.0, step=0.10,
+                                          format="%.2f", value=float(p["amount"]),
+                                          key=f"{k}_amt", label_visibility="collapsed")
+                    curs = list(SUPPORTED_CURRENCIES.keys())
+                    cur = c3.selectbox("Currency", curs,
+                                       index=curs.index(p["currency"])
+                                       if p["currency"] in curs else 0,
+                                       key=f"{k}_cur", label_visibility="collapsed")
+                    cat = c4.selectbox("Category", CAT_LIST,
+                                       index=CAT_LIST.index(p["category"])
+                                       if p["category"] in CAT_LIST else 0,
+                                       key=f"{k}_cat", label_visibility="collapsed")
+                    subs = ["—"] + CATEGORIES.get(cat, [])
+                    sub0 = p["subcategory"] if p["subcategory"] in subs[1:] else "—"
+                    sub = c5.selectbox("Subcategory", subs,
+                                       index=subs.index(sub0),
+                                       key=f"{k}_sub", label_visibility="collapsed")
+                    drop = c6.checkbox("Del", value=False, key=f"{k}_del")
+                    if not drop:
+                        kept.append({
+                            "id": p["id"],
+                            "label": label.strip() or p["label"],
+                            "amount": float(amt), "currency": cur,
+                            "category": cat,
+                            "subcategory": "" if sub == "—" else sub,
+                            "description": p["description"],
+                        })
+                # Keep the working copy in sync so "+ Add preset" doesn't
+                # discard edits typed this run (same widget keys survive).
+                st.session_state["dash_qp_draft"] = kept
+                b_add, b_save, b_cancel, b_done, _sp = st.columns([1, 1, 1, 1, 1])
+                if b_add.button("+ Add preset", width="stretch"):
+                    kept.append({"id": f"p{len(kept)}-{gen}", "label": "",
+                                 "amount": 0.0, "currency": DC,
+                                 "category": CAT_LIST[0], "subcategory": "",
+                                 "description": f"Quick {len(kept) + 1}"})
+                    st.session_state["dash_qp_draft"] = kept
+                    st.rerun()
+                if b_cancel.button("Cancel", width="stretch"):
+                    st.session_state.pop("dash_qp_draft", None)
+                    st.session_state[edit_key] = False
+                    st.rerun()
+                if b_done.button("✓ Done", width="stretch"):
+                    st.session_state.pop("dash_qp_draft", None)
+                    st.session_state[edit_key] = False
+                    st.rerun()
+                if b_save.button("Save presets", type="primary", width="stretch"):
+                    q.save_settings(user_id, {"quick_presets": kept})
+                    st.session_state.pop("dash_qp_draft", None)
+                    st.session_state["dash_qp_gen"] = gen + 1
+                    st.session_state[edit_key] = False
+                    q.bump_db_version()
+                    st.toast("Presets saved.", icon=":material/check:")
+                    st.rerun()
+            else:
+                adj_id = st.session_state.get("qa_adjust_id")
+                for row_start in range(0, len(presets), 3):
+                    chunk = presets[row_start:row_start + 3]
+                    cols = st.columns(3)
+                    for col, p in zip(cols, chunk):
+                        with col:
+                            eur0 = to_eur(float(p["amount"]), p["currency"], rates)
+                            if st.button(f"{p['label']} · {fmt(eur0, DC, rates)}",
+                                         key=f"qa_go_{p['id']}", width="stretch"):
+                                _quick_log(p)
+                                st.rerun()
+                            if st.button("✎", key=f"qa_adj_open_{p['id']}",
+                                         help="Adjust the price just for this log"):
+                                st.session_state["qa_adjust_id"] = (
+                                    None if adj_id == p["id"] else p["id"])
+                                st.rerun()
+                # Inline adjust panel (no st.dialog: dialogs stall AppTest).
+                adj = next((p for p in presets if p["id"] == adj_id), None)
+                if adj is not None:
+                    sym = get_currency_symbol(adj["currency"])
+                    with st.container(border=True):
+                        st.markdown(f"**Adjust “{adj['label']}” for this log**")
+                        amt = st.number_input(f"Amount ({sym})", min_value=0.0,
+                                              step=0.10, format="%.2f",
+                                              value=float(adj["amount"]),
+                                              key=f"qa_adj_val_{adj['id']}")
+                        c_log, c_cancel, _rest = st.columns([1, 1, 2])
+                        if c_log.button("Log it", type="primary", width="stretch"):
+                            _quick_log(adj, amount=float(amt))
+                            st.session_state.pop("qa_adjust_id", None)
                             st.rerun()
-                        _fresh_qa = q.expenses(user_id)
-                        if not _fresh_qa.empty and (
-                            (_fresh_qa["date"].dt.date == today)
-                            & (_fresh_qa["description"] == desc)
-                            & (_fresh_qa["amount_eur"].round(2) == round(amt, 2))
-                        ).any():
-                            st.session_state[_qa_key] = True
-                            st.toast("Already saved — duplicate prevented.", icon=":material/check:")
+                        if c_cancel.button("Cancel", width="stretch"):
+                            st.session_state.pop("qa_adjust_id", None)
                             st.rerun()
-                        st.session_state[_qa_key] = True
-                        try:
-                            add_expense(user_id, {
-                                "date": today, "category": cat, "subcategory": sub,
-                                "description": desc, "amount": amt, "currency": "EUR",
-                                "amount_eur": amt, "recurring": False,
-                                "notes": "Quick-add",
-                            })
-                        except Exception as e:
-                            st.session_state.pop(_qa_key, None)
-                            st.error(f"Couldn't save: {e}")
-                        else:
-                            q.bump_db_version()
-                            st.toast(f"{label} logged — {fmt(amt, DC, rates)}",
-                                     icon=":material/check:")
-                            st.rerun()
-
     # Recent activity: the 5 most recent expenses.
     spec = PanelSpec(id="dash_recent", title="Recent activity",
                      icon=":material/history:", collapsible=True, default_expanded=True)

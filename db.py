@@ -669,6 +669,10 @@ class UserSettings(Base):
     ai_api_key_enc       = Column(String, nullable=True)      # Fernet-encrypted
     # Persistent UI layout state (panel order/collapse) — see ui/layout_state.py
     ui_layout            = Column(JSON, nullable=True)
+    # C1: user-editable one-tap quick-add presets. List of
+    # {id,label,amount,currency,category,subcategory,description}; empty/None
+    # => dashboard falls back to its built-in three.
+    quick_presets        = Column(JSON, nullable=True)
 
 
 class MlModel(Base):
@@ -769,6 +773,7 @@ def _migrate(engine):
         "ai_api_model": "VARCHAR",
         "ai_api_key_enc": "VARCHAR",
         "ui_layout": "JSON",
+        "quick_presets": "JSON",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -2148,6 +2153,8 @@ _SETTINGS_DEFAULTS = {
     "ai_provider": "none", "ai_local_model": None, "ai_local_gpu_layers": -1,
     "ai_api_base": None, "ai_api_model": None, "ai_api_key_enc": None,
     "ui_layout": {},
+    # C1: user-editable one-tap presets; None/[] => built-in defaults.
+    "quick_presets": None,
 }
 
 def get_settings(user_id):
