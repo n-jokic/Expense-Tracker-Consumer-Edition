@@ -104,12 +104,12 @@ Line refs shift +14 (ML accuracy expander landed today).
 
 ## Phase D — Larger features
 
-### [ ] #15 Portfolio sells — FIFO + tax model
-- [ ] Schema: HoldingLot(holding_id, lot_date, qty, cost_total, cost_eur, rate_at_buy); migration backfills one initial lot per existing holding.
-- [ ] Sell dialog (@st.dialog, mirror remove_holding_dialog): date, qty <= held, live proceeds (reject stale/zero price), tax-rate prefilled from settings. FIFO consumes oldest lots; gain = SUM(proceeds/unit - lot cost/unit)*qty; tax = max(0,gain)*rate; net -> unallocated via audited Income leg (zero-sum invariant). Qty rounds 4 dp; <1e-6 deletes holding (snapshots kept). Loss => tax clamped 0. ponytail: no loss-carryforward ledger yet.
-- [ ] UserSettings.tax_model JSON column (+ column migration): realized_default_rate, country DE/NL/none/custom presets (DE flat 26.375% / EUR 1,000 exemption; NL Box 3 ~5.6% deemed / exemption).
-- [ ] Unrealized tax: Metrics panel shows projected annual accrual (SUM max(0, value-cost)*rate). ponytail: ignores Vorabpauschale basis mechanics — upgrade path commented. Opt-in 'Book <year> accrual': deduped per (user, holding, year), nudges cost basis. Off by default. Settings section + 'not tax advice'.
-- [ ] Tests: FIFO order, partial sells, drift chunk-sells drain cost exactly, invariant delta (unallocated += net), zero-price rejection, accrual idempotency, lot backfill.
+### [x] #15 Portfolio sells — FIFO + tax model
+- [x] Schema: HoldingLot table + lazy ensure_holding_lots_backfilled (one initial lot per legacy holding; delete_user_account cleans lots).
+- [x] Sell dialog + services/portfolio_commands.sell_holding_units: FIFO oldest-first, stale-quote guard (>10% off saved price), zero-price rejection, qty 4dp, residual<1e-6 deletes holding+prices+lots, tax=max(0,gain)*rate clamped on loss, one audited 'Investment sale' income leg (idempotent via settlement_ref) sized so unallocated rises by EXACTLY proceeds - tax.
+- [x] UserSettings.tax_model JSON column + migration entry + TAX_PRESETS (DE 26.375%/EUR1000, NL 5.6%, none) + get/save_tax_model commands and Settings expander on the portfolio page.
+- [x] Metrics caption shows projected accrual (simplified-model note, upgrade path commented); opt-in Book <year> accrual deduped per (user, symbol, year) nudging cost basis; off by default; 'not tax advice' caption.
+- [x] tests/test_portfolio_sells.py — 9 tests: lazy backfill idempotency, FIFO order across two lots, gain leg + exact invariant delta (proceeds - tax), loss clamp + negative leg, rejections (zero price / oversell / stale quote), full-sell cleanup + retry no-op, tax presets save, accrual projection + per-year dedupe + basis nudge.
 - Accept: sell flows end-to-end; unallocated rises by exactly proceeds - tax.
 
 ### [ ] #14 Travel vacation planner

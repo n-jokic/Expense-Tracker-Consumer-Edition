@@ -12,6 +12,10 @@ import streamlit as st
 
 import queries as q
 from db import add_holding, update_holding, delete_holding
+from services.portfolio_commands import (
+    TAX_PRESETS, book_unrealized_tax_accrual, get_tax_model,
+    save_tax_model, sell_holding_units, unrealized_accrual_eur,
+)
 from finance import portfolio_metrics
 from market_data import refresh_prices_if_due, _fetch_cached
 from utils import (
@@ -146,6 +150,12 @@ if expanded:
             st.metric("Gain / loss", fmt(m["gain"], DC, rates), border=True)
             gain_pct_txt = (f"{m['gain_pct']:+.1f}%" if m["invested"] > 0 else "—")
             st.metric("Gain %", gain_pct_txt, border=True)
+        # #15: simplified projected accrual (not tax advice; opt-in booking below)
+        _tm = get_tax_model(user_id)
+        _acc = unrealized_accrual_eur(user_id)
+        st.caption(f"Projected annual unrealized-tax accrual at "
+                   f"{_tm['realized_default_rate'] * 100:.2f}% rate: "
+                   f"**{fmt(_acc, DC, rates)}** · simplified model — not tax advice.")
 
 # Allocation pie
 r1, r2 = st.columns(2)
@@ -247,6 +257,51 @@ if expanded:
         )
 
 
+@st.dialog("Sell units")
+def sell_holding_dialog(uid, holding_id, symbol, held_qty, last_price):
+    """#15 FIFO sell with live proceeds and withholding rate."""
+    tm = get_tax_model(uid)
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        s_qty = st.number_input("Quantity", min_value=0.0,
+                                max_value=float(held_qty), step=0.0001,
+                                format="%.4f", key=f"sell_q_{holding_id}")
+    with sc2:
+        s_price = st.number_input("Price / unit", min_value=0.0, step=0.01,
+                                  format="%.4f",
+                                  value=float(last_price or 0.0),
+                                  key=f"sell_p_{holding_id}")
+    s_date = st.date_input("Sale date", value=date.today(),
+                           key=f"sell_d_{holding_id}")
+    s_rate = st.number_input("Tax rate (withheld at source)", min_value=0.0,
+                             max_value=1.0,
+                             value=float(tm["realized_default_rate"]),
+                             format="%.4f", key=f"sell_r_{holding_id}",
+                             help="Losses clamp the tax to zero.")
+    if s_qty > 0 and s_price > 0:
+        st.caption(f"Gross proceeds ≈ {s_qty * s_price:,.2f} "
+                   "(holding currency; FX per your stored basis rate)")
+    hc1, hc2 = st.columns(2)
+    with hc1:
+        if st.button("Cancel", key=f"sell_cancel_{holding_id}",
+                     width="stretch"):
+            st.rerun()
+    with hc2:
+        if st.button("Confirm sale", type="primary",
+                     key=f"sell_go_{holding_id}", width="stretch"):
+            try:
+                sell_holding_units(uid, holding_id, float(s_qty),
+                                   float(s_price), sell_date=s_date,
+                                   tax_rate=float(s_rate))
+            except Exception as e:
+                st.error(f"Couldn't sell: {e}")
+                return
+            q.bump_db_version()
+            st.toast(f"Sold {s_qty:,.4f} {symbol} — net proceeds moved to "
+                     "unallocated.", icon=":material/check:")
+            st.rerun()
+
+
 @st.dialog("Remove holding?")
 def remove_holding_dialog(uid, holding_id, symbol, quantity):
     """Confirm removing a holding (and its saved price history) from the portfolio."""
@@ -289,6 +344,61 @@ with st.expander("Manage holdings", icon=":material/edit:"):
                 else:
                     q.bump_db_version()
                     st.rerun()
+        if st.button("Sell", icon=":material/currency_exchange:",
+                     key=f"sell_open_{r['id']}", type="secondary",
+                     width="stretch"):
+            sell_holding_dialog(user_id, r["id"], r["symbol"],
+                                float(r["quantity"]),
+                                float(r.get("last_price") or 0.0))
         if st.button("Remove holding", icon=":material/delete:", key=f"hold_d_{r['id']}",
                      type="secondary", width="stretch"):
             remove_holding_dialog(user_id, r["id"], r["symbol"], float(r["quantity"]))
+
+    # ── Tax model & opt-in accrual booking (#15) ──
+    with st.expander("Tax model & accrual booking", icon=":material/account_balance:"):
+        st.caption("Presets for realized-gains withholding on sells "
+                   "(DE flat rate incl. soli / NL Box-3 deemed yield). "
+                   "Simplified model — not tax advice.")
+        tm = get_tax_model(user_id)
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            country = st.selectbox(
+                "Preset", ["none", "DE", "NL", "custom"],
+                index=(["none", "DE", "NL", "custom"].index(tm["country"])
+                       if tm["country"] in ("none", "DE", "NL", "custom") else 3),
+                key="tax_preset")
+        with tc2:
+            t_rate = st.number_input("Default rate", min_value=0.0,
+                                     max_value=1.0,
+                                     value=float(tm["realized_default_rate"]),
+                                     format="%.4f", key="tax_rate_in")
+        preset_rate = TAX_PRESETS.get(country, {}).get(
+            "realized_default_rate", None)
+        if preset_rate is not None and country != "custom":
+            t_rate = float(preset_rate)
+        if (country != tm["country"]
+                or abs(float(t_rate) - float(tm["realized_default_rate"])) > 1e-9):
+            if st.button("Save tax model", icon=":material/save:",
+                         key="tax_save"):
+                save_tax_model(user_id, {"country": country,
+                                         "realized_default_rate": float(t_rate)})
+                q.bump_db_version()
+                st.toast("Tax model saved.", icon=":material/check:")
+                st.rerun()
+        ta1, _ta2 = st.columns([2, 3])
+        with ta1:
+            year = st.number_input("Accrual year", min_value=2000,
+                                   max_value=2100,
+                                   value=date.today().year, step=1,
+                                   key="accrual_year")
+        if st.button(f"Book {int(year)} accrual",
+                     help="Opt-in, once per holding per year; nudges cost basis"):
+            res = book_unrealized_tax_accrual(user_id, int(year))
+            if res.changed:
+                q.bump_db_version()
+                st.toast(f"Accrual booked for {len(res.affected_ids)} "
+                         "holding(s).", icon=":material/check:")
+                st.rerun()
+            else:
+                st.info("Nothing to book — already booked or no gains at "
+                        "the current rate.")

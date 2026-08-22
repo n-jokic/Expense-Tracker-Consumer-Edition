@@ -584,6 +584,22 @@ class HoldingPrice(Base):
     value_eur  = Column(Float, default=0.0)       # quantity * price / rate
 
 
+class HoldingLot(Base):
+    """#15: FIFO cost-basis lot for a holding. Buys append lots; sells consume
+    them oldest-first. Backfilled lazily with one initial lot per legacy
+    holding so every existing position keeps a complete basis history."""
+    __tablename__ = "holding_lots"
+    id           = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=False)
+    holding_id   = Column(String, ForeignKey("holdings.id"), nullable=False)
+    lot_date     = Column(Date, default=date.today)
+    quantity     = Column(Float, default=0.0)
+    cost_total   = Column(Float, default=0.0)   # remaining basis, original ccy
+    cost_eur     = Column(Float, default=0.0)   # remaining basis, EUR
+    rate_at_buy  = Column(Float, default=1.0)   # 1 EUR = X in holding ccy
+    created_at   = Column(DateTime, default=_utcnow)
+
+
 class Device(Base):
     __tablename__ = "devices"
     id           = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -692,6 +708,7 @@ class UserSettings(Base):
     # {"enabled": bool, "targets": [{"type": "goal"|"loan", "ref": str,
     #   "pct": float}, ...]} — None/empty disables the feature.
     auto_alloc_rules     = Column(JSON, nullable=True)
+    tax_model            = Column(JSON, nullable=True)   # #15 realized/unrealized tax settings
 
 
 class MlModel(Base):
@@ -813,6 +830,7 @@ def _migrate(engine):
         "ui_layout": "JSON",
         "quick_presets": "JSON",
         "auto_alloc_rules": "JSON",
+        "tax_model": "JSON",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -2354,9 +2372,72 @@ def delete_holding(user_id, h_id):
         if not obj:
             return False
         s.query(HoldingPrice).filter(HoldingPrice.holding_id == h_id).delete()
+        s.query(HoldingLot).filter(HoldingLot.holding_id == h_id).delete()
         s.delete(obj)
         log_audit(s, user_id, "DELETE", "holdings", h_id, {})
     return True
+
+
+# ── FIFO holding lots (#15) ───────────────────────────────────────────────────
+
+_HOLDING_LOT_COLS = ["id", "holding_id", "lot_date", "quantity",
+                     "cost_total", "cost_eur", "rate_at_buy", "created_at"]
+
+
+def get_holding_lots(user_id, holding_id):
+    """Open (unconsumed) lots for one holding, oldest first."""
+    with get_session() as s:
+        rows = (s.query(HoldingLot)
+                .filter(HoldingLot.user_id == user_id,
+                        HoldingLot.holding_id == holding_id,
+                        HoldingLot.quantity > 1e-9)
+                .order_by(HoldingLot.lot_date.asc().nullslast(),
+                          HoldingLot.created_at.asc()).all())
+    df = _to_df(rows, _HOLDING_LOT_COLS)
+    return _parse_dates(df, ["lot_date", "created_at"])
+
+
+def ensure_holding_lots_backfilled(user_id):
+    """#15 lazy migration: every legacy holding without lots gets exactly one
+    initial lot carrying its full remaining basis. Safe to call often."""
+    with get_session() as s:
+        holdings = (s.query(Holding)
+                    .filter(Holding.user_id == user_id,
+                            Holding.quantity > 1e-9).all())
+        created = 0
+        for h in holdings:
+            has_lot = (s.query(HoldingLot.id)
+                       .filter(HoldingLot.holding_id == h.id).first())
+            if has_lot:
+                continue
+            rate_buy = (float(h.cost_eur) > 0 and float(h.cost_total) > 0
+                        and round(float(h.cost_total) / float(h.cost_eur), 6)
+                        or 1.0)
+            lot_date = h.created_at.date() if h.created_at else date.today()
+            s.add(HoldingLot(
+                user_id=user_id, holding_id=h.id, lot_date=lot_date,
+                quantity=float(h.quantity or 0.0),
+                cost_total=float(h.cost_total or 0.0),
+                cost_eur=float(h.cost_eur or 0.0), rate_at_buy=rate_buy))
+            log_audit(s, user_id, "CREATE", "holding_lots", str(h.id),
+                      {"backfill": True})
+            created += 1
+    return created
+
+
+def add_holding_lot(user_id, holding_id, row):
+    """Direct lot insert (tests + future buy flows); returns the lot id."""
+    lot_id = str(uuid.uuid4())
+    with get_session() as s:
+        s.add(HoldingLot(
+            id=lot_id, user_id=user_id, holding_id=holding_id,
+            lot_date=row.get("lot_date") or date.today(),
+            quantity=float(row.get("quantity", 0)),
+            cost_total=float(row.get("cost_total", 0)),
+            cost_eur=float(row.get("cost_eur", 0)),
+            rate_at_buy=float(row.get("rate_at_buy", 1.0))))
+        log_audit(s, user_id, "CREATE", "holding_lots", lot_id, row)
+    return lot_id
 
 
 def get_holding_prices(user_id):
@@ -2451,6 +2532,8 @@ _SETTINGS_DEFAULTS = {
     "quick_presets": None,
     # D2: % auto-allocation rules; None/{} => feature off.
     "auto_alloc_rules": None,
+    # #15: realized/unrealized tax model; None => presets default.
+    "tax_model": None,
 }
 
 def get_settings(user_id):
@@ -2798,6 +2881,8 @@ def delete_user_account(user_id):
         s.query(UserTaxonomy).filter(UserTaxonomy.user_id == user_id).delete(
             synchronize_session=False)
         s.query(MlModel).filter(MlModel.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(HoldingLot).filter(HoldingLot.user_id == user_id).delete(
             synchronize_session=False)
         s.query(Holding).filter(Holding.user_id == user_id).delete(
             synchronize_session=False)
