@@ -15,13 +15,14 @@
 - [x] L2 routing accuracy test + regex fixes: hits 54->61/100, hijacks 8->1 allowed (b202584)
 - [x] L4 validated chart answers for category/merchant breakdowns (b202584)
 - [x] L5 delete dead answer_query path (-248 lines) (b202584)
-- [ ] M1 render backtest accuracy | M2 ML anomalies service-wide | M3 StandardScaler
-- [ ] M4 backtest-calibrated intervals | M5 balanced classifiers | M6 suggest-budgets | M7 cache scan
-- [ ] M tests: ml/evaluation, hybrid candidate, wrapper tests
-- [ ] U1 dual theme + color centralization + dead CSS removal
-- [ ] U3 filters->sidebar | U5 expanders | U6 mobile editors | U7 Ask-AI pills
+- [x] M1 backtest accuracy expander | M2 ML anomalies service+UI unified | M3 StandardScaler
+- [x] M4 residual-calibrated intervals | M5 balanced category model (sub-model scoped out) | M6 suggest-budgets | M7 cached scan   (081088c)
+- [x] M tests: test_ml_improvements.py 13 cases incl. evaluation helpers + hybrid candidate
+- [x] U1 dual theme config + C_* palette + dead CSS removed + inject_mobile_css deduped
+- [x] U3 filters->sidebar | U5 expanders | U6 stacked editor grids | U7 Ask-AI pills   (see Phase U commit)
 - [x] L3 proposal confirm wiring via audited set_budget command (11 tests)
 - [x] L6 ask fragment — SKIPPED deliberately: the submit path must refresh data page-wide anyway, so a fragment adds widget-identity churn with no measurable win; revisit only if profiling shows badge redraw cost
+- [x] Wave 2 UI: U2 editor fragments (090384f) + U4 single KPI band w/ metric sparklines (2d0b7e1)
 - [ ] Final gate: full suite green; this checklist fully ticked
 
 ## Goal

@@ -357,11 +357,14 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
     X = df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
 
     # research.md M3: raw amount_eur otherwise dominates IsolationForest splits;
-    # standardize so behavioral ratios carry comparable weight.
+    # standardize so behavioral ratios carry comparable weight. The scaled
+    # matrix keeps a DataFrame shell so feature names survive for callers
+    # (and tests) that introspect what the forest was fed.
     try:
         from sklearn.preprocessing import StandardScaler
 
-        X = StandardScaler().fit_transform(X)
+        _sc = StandardScaler()
+        X = pd.DataFrame(_sc.fit_transform(X), columns=X.columns, index=X.index)
     except Exception:
         pass  # ponytail: unscaled fallback keeps the scan alive on partial sklearn
 
