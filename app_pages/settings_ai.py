@@ -44,21 +44,24 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                          "local": "Local Gemma model (llama.cpp)",
                          "api": "External API"}.get,
             key="ai_provider_select")
-        # AI-04: which external API family? Each has its own adapter, auth
-        # and endpoint; the choice is stored as ai_api_kind.
+        # AI-04/#22: which external API family? Each has its own adapter,
+        # auth and endpoint; the choice is persisted as the ai_api_kind
+        # column (legacy installs were backfilled from the old URL sniff).
         cur_kind = str(settings.get("ai_api_kind") or "").strip().lower()
-        if "anthropic" in str(settings.get("ai_api_base") or "").lower():
-            cur_kind = cur_kind or "anthropic"
         ai_api_kind = None
         if ai_provider == "api":
             ai_api_kind = st.selectbox(
                 "API family",
-                ["openai_compatible", "anthropic"],
-                index=1 if cur_kind == "anthropic" else 0,
+                ["openai_compatible", "anthropic", "gemini"],
+                index={"anthropic": 1, "gemini": 2}.get(cur_kind, 0),
                 format_func={"openai_compatible":
                              "OpenAI-compatible (OpenRouter, OpenAI, …)",
-                             "anthropic": "Anthropic Claude (native)"}.get,
-                key="ai_api_kind_select")
+                             "anthropic": "Anthropic Claude (native)",
+                             "gemini": "Google Gemini (AI Studio key)"}.get,
+                key="ai_api_kind_select",
+                help="Gemini uses a Google AI Studio key and its own "
+                     "generateContent endpoint; model defaults to "
+                     "gemini-2.0-flash when left blank.")
         # Form key includes provider so switching provider reconstructs the form.
         with st.form(f"ai_form_{ai_provider}"):
             ai_model_path = ai_gpu = ai_base = ai_model = ai_key = None
@@ -96,8 +99,9 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                 ai_model = st.text_input("Model name",
                                          value=str(settings.get("ai_api_model")
                                                    or DEFAULT_API_MODEL))
-                ai_key = st.text_input("API key", type="password",
-                                       placeholder="Leave blank to keep the existing key")
+                ai_key = st.text_input("Platform API key", type="password",
+                                        placeholder="Leave blank to keep the existing key",
+                                        help="A platform API key with API billing — app/browser subscriptions (ChatGPT Plus, Claude Pro, Gemini app) do not include API access.")
                 # OCR-02: explicit opt-in gate — never on by default.
                 cloud_fb = st.checkbox(
                     "Allow cloud OCR fallback for unreadable receipts "
@@ -120,6 +124,21 @@ def render_ai_settings(user_id: int, settings: dict) -> None:
                     "(weekly totals, category names). Identifiers, emails, "
                     "local file paths and anything credential-shaped are "
                     "redacted first. Raw transactions never leave the device.")
+                # #22 honesty copy: what a platform key is and is not.
+                _kind_l = str(ai_api_kind or cur_kind or "").strip().lower()
+                _kind_label = {"anthropic": "Anthropic Claude",
+                               "gemini": "Google Gemini"}.get(
+                    _kind_l, "OpenAI-compatible")
+                _tier_note = (
+                    "Gemini's free tier via Google AI Studio covers roughly "
+                    "1,500 requests/day — plenty for personal use."
+                    if _kind_l == "gemini" else
+                    "Create the key in the provider's developer console.")
+                st.caption(
+                    ":material/key: **" + _kind_label + "** needs a *platform API* key "
+                    "with API billing — ChatGPT/Claude/Gemini app subscriptions do not "
+                    "include API access, and Claude does not allow OAuth logins in "
+                    "third-party apps. " + _tier_note)
             elif ai_provider == "local":
                 st.caption(
                     ":material/shield: Nothing leaves the device with the "

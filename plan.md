@@ -122,11 +122,11 @@ Line refs shift +14 (ML accuracy expander landed today).
 - [x] tests/test_travel_planner.py — window filtering + pair forms, CRUD roundtrip incl. checklist persistence, FK-safe cleanup, adapter success/offline mocks, split math; app smoke renders the new page green.
 - Accept: define a trip -> see pacing while travelling; weather + destination search work without keys.
 
-### [ ] #22 Gemini provider + settings honesty
-- [ ] ai/providers/gemini.py (generateContent, x-goog-api-key, retry cloned from OpenAI provider); orchestrator dispatch; resolve_provider recognition.
-- [ ] Bug fix: ai_api_kind becomes a real column (_add_missing_columns + defaults + save path); one-time derivation from legacy URL-sniff persisted; sniffing retired.
-- [ ] settings_ai.py: gemini in selectbox; label 'Platform API key'; copy states ChatGPT/Claude subscriptions != API billing (Claude OAuth barred for third-party apps); Gemini free tier ~1,500 req/day via AI Studio. README updated.
-- [ ] Tests: response shape (mocked HTTP), dispatch, kind-column persistence.
+### [x] #22 Gemini provider + settings honesty
+- [x] ai/providers/gemini.py: POST {base}/models/{model}:generateContent, x-goog-api-key header, systemInstruction + generationConfig (responseMimeType for JSON turns), same bounded retry/Retry-After policy as the other adapters; orchestrator dispatches on the persisted kind; resolve_provider already treats it as 'api'.
+- [x] Bug fix shipped: UserSettings.ai_api_kind column (+migration +defaults; save_settings no longer silently drops it); db._derive_ai_api_kind backfills 'anthropic' once from legacy anthropic-base rows inside _migrate; orchestrator URL-sniffing retired (kind decides).
+- [x] settings_ai.py: 'Google Gemini (AI Studio key)' in the family selectbox; key input relabeled 'Platform API key' with subscription-vs-API help; family-aware billing honesty caption (Claude OAuth barred; Gemini free tier ~1,500 req/day). README updated at the v1.0 release step below.
+- [x] tests/test_gemini_provider.py — 8 tests: candidates parsing, endpoint/header shape, json-mode mime, 429→500→200 retry, 403 rejection diagnostic, offline degrade after capped attempts, legacy backfill idempotency, kind persistence through save_settings.
 - Accept: free-tier Gemini key works end-to-end; provider selection survives restart.
 
 ### [x] #25 Income tab rework — recurring incomes

@@ -49,13 +49,18 @@ def _get_provider(settings: dict):
 
             return LlamaCppProvider(settings)
         if provider == "api":
-            # AI-04: native Claude adapter vs OpenAI-compatible endpoints.
+            # AI-04/#22: the persisted ai_api_kind column picks the adapter.
+            # Legacy installs were backfilled once from the old URL sniff
+            # (db._derive_ai_api_kind) — runtime sniffing is retired.
             kind = str(settings.get("ai_api_kind") or "").strip().lower()
-            base = str(settings.get("ai_api_base") or "").lower()
-            if kind == "anthropic" or "anthropic" in base:
+            if kind == "anthropic":
                 from ai.providers.anthropic import AnthropicProvider
 
                 return AnthropicProvider(settings)
+            if kind == "gemini":
+                from ai.providers.gemini import GeminiProvider
+
+                return GeminiProvider(settings)
             from ai.providers.openai_compatible import OpenAICompatibleProvider
 
             return OpenAICompatibleProvider(settings)

@@ -735,6 +735,9 @@ class UserSettings(Base):
     ai_api_base          = Column(String, nullable=True)      # OpenAI-compatible
     ai_api_model         = Column(String, nullable=True)
     ai_api_key_enc       = Column(String, nullable=True)      # Fernet-encrypted
+    # #22: which external API family the key belongs to. Was historically
+    # derived by sniffing ai_api_base — now a first-class persisted column.
+    ai_api_kind          = Column(String, nullable=True)      # openai_compatible | anthropic | gemini
     # Persistent UI layout state (panel order/collapse) — see ui/layout_state.py
     ui_layout            = Column(JSON, nullable=True)
     # C1: user-editable one-tap quick-add presets. List of
@@ -830,6 +833,18 @@ def _add_missing_columns(engine, table: str, columns: dict):
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
+def _derive_ai_api_kind(engine):
+    """#22 one-time backfill: legacy installs stored no ai_api_kind and the
+    orchestrator sniffed it from ai_api_base. Persist that derivation once so
+    runtime sniffing can be retired. Idempotent — only touches NULL kinds."""
+    from sqlalchemy import text as _text
+    with engine.begin() as conn:
+        conn.execute(_text(
+            "UPDATE user_settings SET ai_api_kind = 'anthropic' "
+            "WHERE ai_api_kind IS NULL AND ai_api_base IS NOT NULL "
+            "AND lower(ai_api_base) LIKE '%anthropic%'"))
+
+
 def _migrate(engine):
     """Lightweight additive migrations for installs created before new columns."""
     _add_missing_columns(engine, "user_settings", {
@@ -864,11 +879,13 @@ def _migrate(engine):
         "ai_api_base": "VARCHAR",
         "ai_api_model": "VARCHAR",
         "ai_api_key_enc": "VARCHAR",
+        "ai_api_kind": "VARCHAR",
         "ui_layout": "JSON",
         "quick_presets": "JSON",
         "auto_alloc_rules": "JSON",
         "tax_model": "JSON",
     })
+    _derive_ai_api_kind(engine)
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
         "hours": "FLOAT",
@@ -2747,6 +2764,8 @@ _SETTINGS_DEFAULTS = {
     "auto_alloc_rules": None,
     # #15: realized/unrealized tax model; None => presets default.
     "tax_model": None,
+    # #22: external API family (openai_compatible | anthropic | gemini).
+    "ai_api_kind": None,
 }
 
 def get_settings(user_id):
