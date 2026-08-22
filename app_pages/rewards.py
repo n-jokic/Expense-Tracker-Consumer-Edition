@@ -20,6 +20,8 @@ from utils import (CAT_LIST, DEFAULT_FUN_CATEGORIES,
                    fmt, to_eur, to_display, fun_spent, progress_ratio)
 
 user_id  = st.session_state.user_id
+# #16: the user's editable taxonomy drives every picker on this page
+CAT_LIST, CATEGORIES = q.effective_categories(user_id)
 DC       = st.session_state.dc
 rates    = st.session_state.rates
 settings = st.session_state.settings
@@ -77,10 +79,15 @@ with st.form("fun_form"):
                             step=10.0, format="%.2f",
                             value=to_display(_fun_raw if math.isfinite(_fun_raw) else 0.0,
                                              DC, rates))
-    f_cats = st.multiselect("Categories in the fun pool", CAT_LIST,
-                            default=[c for c in (settings.get("fun_categories")
-                                                 or DEFAULT_FUN_CATEGORIES)
-                                     if c in CAT_LIST])
+    # #16 merge: keep previously-saved pool entries visible/selectable even
+    # if their category has since been removed from the user's taxonomy.
+    _pool_stored = [str(c) for c in (settings.get("fun_categories")
+                                     or DEFAULT_FUN_CATEGORIES)]
+    _fun_opts = list(dict.fromkeys(list(CAT_LIST)
+                                   + [c for c in _pool_stored if c]))
+    f_cats = st.multiselect("Categories in the fun pool", _fun_opts,
+                            default=[c for c in _pool_stored
+                                     if c in _fun_opts])
     if st.form_submit_button("Save fun money", type="primary", icon=":material/save:"):
         try:
             q.save_settings(user_id, {"fun_money": float(to_eur(f_amt, DC, rates)),

@@ -1170,10 +1170,13 @@ def set_budget(user_id: int, category: str, amount_eur: float,
     from datetime import date as _date
 
     from db import add_budget as _db_add
-    from domain.taxonomy import CAT_LIST
+
+    # #16: budgets may target any category in the user's effective taxonomy,
+    # including freshly added custom ones — the static CAT_LIST no longer rules.
+    from db import effective_taxonomy as _eff_tax
 
     cat = str(category or "").strip()
-    if cat not in CAT_LIST:
+    if cat not in _eff_tax(user_id)[0]:
         raise CommandError(f"unknown budget category: {cat!r}")
     try:
         amount = float(amount_eur)

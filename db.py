@@ -18,7 +18,7 @@ from decimal import Decimal
 import pandas as pd
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, JSON,
-    DateTime, Date, ForeignKey, Text, event, UniqueConstraint, text
+    DateTime, Date, ForeignKey, Text, event, UniqueConstraint, text, func
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -722,6 +722,25 @@ class MlFeedbackEvent(Base):
     selected_category = Column(String, nullable=True)
     model_version = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_utcnow)
+
+
+class UserTaxonomy(Base):
+    """#16: per-user editable category/subcategory registry.
+
+    One row per (category, subcategory) pair; a category without subcategories
+    keeps a single row with subcategory="". Seeded on first access from
+    domain/taxonomy.CATEGORIES; users add/rename/reorder/delete on top."""
+    __tablename__ = "user_taxonomy"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    category = Column(String, nullable=False)
+    subcategory = Column(String, nullable=False, default="")
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_deleted = Column(Boolean, nullable=False, default=False,
+                        server_default=text("0"))
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    __table_args__ = (UniqueConstraint("user_id", "category", "subcategory",
+                                       name="uq_user_taxonomy_pair"),)
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────
@@ -1799,6 +1818,249 @@ def get_budgets(user_id):
     return _to_df(rows, _BUD_COLS)
 
 
+# ── User taxonomy (#16): per-user category/subcategory registry ───────────────
+
+TAXONOMY_RESERVED_CATEGORY = "Uncategorized"
+_TAXONOMY_COLS = ["id", "user_id", "category", "subcategory",
+                  "sort_order", "is_deleted", "created_at"]
+
+
+def ensure_user_taxonomy_seeded(user_id):
+    """Seed the user's registry from domain/taxonomy.CATEGORIES on first
+    access. Idempotent: a second call is a no-op. 'Uncategorized' is seeded
+    last and treated as reserved by every mutation below."""
+    from domain.taxonomy import CATEGORIES as _SEED
+
+    with get_session() as s:
+        if (s.query(UserTaxonomy)
+             .filter(UserTaxonomy.user_id == user_id).first()):
+            return False
+        order = 0
+        for cat, subs in _SEED.items():
+            pairs = [(cat, sub) for sub in subs] or [(cat, "")]
+            for cat_, sub in pairs:
+                s.add(UserTaxonomy(user_id=user_id, category=cat_,
+                                   subcategory=sub, sort_order=order))
+                order += 1
+        s.add(UserTaxonomy(user_id=user_id,
+                           category=TAXONOMY_RESERVED_CATEGORY,
+                           subcategory="", sort_order=order))
+        log_audit(s, user_id, "CREATE", "user_taxonomy", user_id,
+                  {"seed": True})
+    return True
+
+
+def get_user_taxonomy(user_id, include_deleted=False):
+    """Full registry as a DataFrame; deleted rows hidden unless asked."""
+    with get_session() as s:
+        q = s.query(UserTaxonomy).filter(UserTaxonomy.user_id == user_id)
+        if not include_deleted:
+            q = q.filter(UserTaxonomy.is_deleted.is_not(True))
+        rows = (q.order_by(UserTaxonomy.sort_order.asc(),
+                           UserTaxonomy.id.asc()).all())
+    df = _to_df(rows, _TAXONOMY_COLS)
+    return _parse_dates(df, ["created_at"])
+
+
+def upsert_user_category(user_id, category, subcategories, sort_order=0):
+    """Create a category or replace its whole subcategory set. Reserved and
+    empty names are refused; returns the category name."""
+    cat = str(category or "").strip()
+    if not cat:
+        raise ValueError("category name must not be empty")
+    if cat == TAXONOMY_RESERVED_CATEGORY:
+        raise ValueError(f"{TAXONOMY_RESERVED_CATEGORY!r} is reserved")
+    subs = [str(x or "").strip() for x in (subcategories or [])]
+    subs = [x for x in subs if x] or [""]
+    with get_session() as s:
+        existing = (s.query(UserTaxonomy)
+                    .filter(UserTaxonomy.user_id == user_id,
+                            UserTaxonomy.category == cat).all())
+        action = "UPDATE" if existing else "CREATE"
+        keep = set(subs)
+        for obj in existing:
+            if obj.subcategory not in keep:
+                s.delete(obj)
+        have = {obj.subcategory for obj in existing}
+        for i, sub in enumerate(subs):
+            if sub in have:
+                (s.query(UserTaxonomy)
+                 .filter(UserTaxonomy.user_id == user_id,
+                         UserTaxonomy.category == cat,
+                         UserTaxonomy.subcategory == sub)
+                 .update({"sort_order": sort_order + i},
+                         synchronize_session=False))
+            else:
+                s.add(UserTaxonomy(user_id=user_id, category=cat,
+                                   subcategory=sub,
+                                   sort_order=sort_order + i))
+        log_audit(s, user_id, action, "user_taxonomy", cat,
+                  {"subcategories": subs, "sort_order": sort_order})
+    return cat
+
+
+def _bulk_remap_category(s, user_id, old, new):
+    """Move expenses, recurring templates and budgets from one category to
+    another inside an open session; audits each touched table."""
+    n_exp = (s.query(Expense)
+             .filter(Expense.user_id == user_id, Expense.category == old)
+             .update({"category": new}, synchronize_session=False))
+    n_rec = (s.query(Recurring)
+             .filter(Recurring.user_id == user_id, Recurring.category == old)
+             .update({"category": new}, synchronize_session=False))
+    n_bud = (s.query(Budget)
+             .filter(Budget.user_id == user_id, Budget.category == old)
+             .update({"category": new}, synchronize_session=False))
+    if n_exp:
+        log_audit(s, user_id, "UPDATE", "expenses", f"remap:{old}->{new}",
+                  {"rows": int(n_exp)})
+    if n_rec:
+        log_audit(s, user_id, "UPDATE", "recurring", f"remap:{old}->{new}",
+                  {"rows": int(n_rec)})
+    if n_bud:
+        log_audit(s, user_id, "UPDATE", "budgets", f"remap:{old}->{new}",
+                  {"rows": int(n_bud)})
+    return int(n_exp) + int(n_rec) + int(n_bud)
+
+
+def rename_user_category(user_id, old, new):
+    """Rename a category everywhere (registry + expenses + recurring +
+    budgets) atomically. The reserved name can be neither source nor target;
+    renaming onto an existing different category is refused — remap instead."""
+    old_c, new_c = str(old or "").strip(), str(new or "").strip()
+    if not old_c or not new_c:
+        raise ValueError("category names must not be empty")
+    if old_c == TAXONOMY_RESERVED_CATEGORY:
+        raise ValueError(f"{TAXONOMY_RESERVED_CATEGORY!r} cannot be renamed")
+    if new_c == TAXONOMY_RESERVED_CATEGORY:
+        raise ValueError(f"cannot rename onto {TAXONOMY_RESERVED_CATEGORY!r}")
+    with get_session() as s:
+        clash = (s.query(UserTaxonomy)
+                 .filter(UserTaxonomy.user_id == user_id,
+                         UserTaxonomy.category == new_c,
+                         UserTaxonomy.is_deleted.is_not(True)).first())
+        if clash:
+            raise ValueError(f"{new_c!r} already exists — use remap instead")
+        moved = _bulk_remap_category(s, user_id, old_c, new_c)
+        (s.query(UserTaxonomy)
+         .filter(UserTaxonomy.user_id == user_id,
+                 UserTaxonomy.category == old_c)
+         .update({"category": new_c}, synchronize_session=False))
+        log_audit(s, user_id, "UPDATE", "user_taxonomy", new_c,
+                  {"renamed_from": old_c, "moved_rows": moved})
+    return new_c
+
+
+def soft_delete_user_category(user_id, category):
+    """Hide a category from pickers/effective lists without touching data."""
+    cat = str(category or "").strip()
+    if cat == TAXONOMY_RESERVED_CATEGORY:
+        raise ValueError(f"{TAXONOMY_RESERVED_CATEGORY!r} cannot be deleted")
+    with get_session() as s:
+        n = (s.query(UserTaxonomy)
+             .filter(UserTaxonomy.user_id == user_id,
+                     UserTaxonomy.category == cat,
+                     UserTaxonomy.is_deleted.is_not(True))
+             .update({"is_deleted": True}, synchronize_session=False))
+        if n:
+            log_audit(s, user_id, "DELETE", "user_taxonomy", cat,
+                      {"soft": True})
+    return bool(n)
+
+
+def remap_user_category(user_id, old, new):
+    """Force-move every expense/recurring/budget row from one category to
+    another, then drop the source's registry rows entirely. Intended for the
+    delete-with-usage flow after can_delete reports usage."""
+    old_c, new_c = str(old or "").strip(), str(new or "").strip()
+    if not old_c or not new_c or old_c == new_c:
+        raise ValueError("remap needs two distinct non-empty categories")
+    if old_c == TAXONOMY_RESERVED_CATEGORY:
+        raise ValueError(f"cannot move out of {TAXONOMY_RESERVED_CATEGORY!r}")
+    with get_session() as s:
+        ensure_user_taxonomy_seeded(user_id)
+        has_target = (s.query(UserTaxonomy)
+                      .filter(UserTaxonomy.user_id == user_id,
+                              UserTaxonomy.category == new_c).first())
+        if not has_target:
+            max_order = (s.query(func.max(UserTaxonomy.sort_order))
+                         .filter(UserTaxonomy.user_id == user_id).scalar())
+            s.add(UserTaxonomy(user_id=user_id, category=new_c,
+                               subcategory="",
+                               sort_order=(max_order or 0) + 1))
+        moved = _bulk_remap_category(s, user_id, old_c, new_c)
+        n_gone = (s.query(UserTaxonomy)
+                  .filter(UserTaxonomy.user_id == user_id,
+                          UserTaxonomy.category == old_c)
+                  .delete(synchronize_session=False))
+        log_audit(s, user_id, "DELETE", "user_taxonomy", old_c,
+                  {"remapped_to": new_c, "moved_rows": moved,
+                   "registry_rows_removed": int(n_gone)})
+    return moved
+
+
+def effective_taxonomy(user_id):
+    """Live registry as (categories_list, categories_dict) in the same shape
+    as domain/taxonomy.CAT_LIST / CATEGORIES, honoring user edits. A
+    category's subcategory="" row is a no-subcats marker and is ignored when
+    real subcategories exist. Uncached — callers on hot paths should wrap it
+    (queries.effective_categories does)."""
+    df = get_user_taxonomy(user_id)
+    if df.empty:
+        ensure_user_taxonomy_seeded(user_id)
+        df = get_user_taxonomy(user_id)
+    cats: dict[str, list[str]] = {}
+    order: dict[str, int] = {}
+    for _, r in df.iterrows():
+        cat = str(r["category"])
+        sub = str(r["subcategory"] or "")
+        order.setdefault(cat, int(r["sort_order"]))
+        bucket = cats.setdefault(cat, [])
+        if sub:
+            bucket.append(sub)
+    # drop the "" marker for categories that also carry real subcategories
+    return ([c for c, _ in sorted(order.items(), key=lambda kv: kv[1])],
+            {c: subs for c, subs in cats.items()})
+
+
+def reorder_user_categories(user_id, ordered_names):
+    """#16 Settings UI: assign category-level order. Rows keep their
+    intra-category subcategory order; each category gets a 1000-wide band so
+    single-row sort_orders stay stable in between."""
+    with get_session() as s:
+        for idx, cat in enumerate(ordered_names):
+            rows = (s.query(UserTaxonomy)
+                    .filter(UserTaxonomy.user_id == user_id,
+                            UserTaxonomy.category == str(cat))
+                    .order_by(UserTaxonomy.sort_order.asc(),
+                              UserTaxonomy.id.asc()).all())
+            for off, r in enumerate(rows):
+                r.sort_order = idx * 1000 + off
+        log_audit(s, user_id, "UPDATE", "user_taxonomy", "reorder",
+                  {"order": [str(c) for c in ordered_names]})
+    return True
+
+
+def can_delete_user_category(user_id, category):
+    """Usage census for the delete dialog: counts across expenses, recurring
+    templates and budgets. deletable=False only for the reserved category."""
+    cat = str(category or "").strip()
+    with get_session() as s:
+        n_exp = (s.query(Expense)
+                 .filter(Expense.user_id == user_id, Expense.category == cat)
+                 .count())
+        n_rec = (s.query(Recurring)
+                 .filter(Recurring.user_id == user_id,
+                         Recurring.category == cat).count())
+        n_bud = (s.query(Budget)
+                 .filter(Budget.user_id == user_id, Budget.category == cat)
+                 .count())
+    return {"deletable": cat != TAXONOMY_RESERVED_CATEGORY,
+            "expense_count": int(n_exp),
+            "recurring_count": int(n_rec),
+            "budget_count": int(n_bud)}
+
+
 def add_budget(user_id, row):
     """Upsert a budget row: one row per (user, year, month, category,
     subcategory) scope — saving the same scope again updates it instead of
@@ -2532,6 +2794,8 @@ def delete_user_account(user_id):
             s.query(HoldingPrice).filter(HoldingPrice.holding_id.in_(holding_ids)).delete(
                 synchronize_session=False)
         s.query(MlFeedbackEvent).filter(MlFeedbackEvent.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(UserTaxonomy).filter(UserTaxonomy.user_id == user_id).delete(
             synchronize_session=False)
         s.query(MlModel).filter(MlModel.user_id == user_id).delete(
             synchronize_session=False)

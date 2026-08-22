@@ -92,14 +92,14 @@ Line refs shift +14 (ML accuracy expander landed today).
 
 ## Phase C — Structural foundation
 
-### [ ] #16 User-configurable categories/subcategories
-- [ ] db.py: user_taxonomy(user_id, category, subcategory, sort_order, is_deleted, created_at); seed-on-first-access from domain/taxonomy.CATEGORIES; 'Uncategorized' seeded non-deletable.
-- [ ] CRUD: get/upsert/rename/delete(soft)/remap(bulk UPDATE)/can_delete_category(counts across expenses+recurring+budgets).
-- [ ] queries.effective_categories(uid) cached on (uid, db_version).
-- [ ] Picker swap: log_expense (form + data-editor), budgets, recurring x2, big_purchases x2, dashboard, travel, rewards fun-cats merge. Ripple found today: services/commands.py:1173 set_budget must use effective list.
-- [ ] domain/validation.py: strict vs caller's taxonomy; import paths map unknowns -> keyword fallback -> catch-all.
-- [ ] Settings -> Categories UI: add/rename/reorder (numeric up/down); delete = force-remap dialog ('N transactions use this — move to:').
-- [ ] Tests extending test_taxonomy_migration patterns: seed idempotency, remap counts, guards, custom category through set_budget.
+### [x] #16 User-configurable categories/subcategories
+- [x] db.py: UserTaxonomy table + ensure_user_taxonomy_seeded (idempotent, from CATEGORIES) + TAXONOMY_RESERVED_CATEGORY guard; delete_user_account cleanup integrated.
+- [x] CRUD: get_user_taxonomy / upsert / rename (atomic registry+data move) / soft_delete / remap (+reorder_user_categories) / can_delete census; all audited.
+- [x] queries.effective_categories cached on (uid, db_version); db.effective_taxonomy is the uncached core.
+- [x] Picker swap via page-top effective shadow in log_expense/budgets/recurring/big_purchases/dashboard/travel/rewards (+ fun-pool merge keeps stored entries selectable); set_budget validates against the effective list.
+- [x] validate_category_in / validate_category_subcategory_in + map_unknown_category (exact -> keywords -> 'Uncategorized').
+- [x] Settings → Categories tab: add form, up/down reorder, inline rename+subcat editor, plain delete when unused, force-remap dialog when in use.
+- [x] tests/test_user_taxonomy_db.py (6) + tests/test_effective_taxonomy.py (5): seed idempotency, rename/remap counts, reserved guards, keyword-fallback chain incl. monkeypatched outcomes, set_budget on a custom category.
 - Accept: user adds a category in Settings and can immediately log/budget against it everywhere.
 
 ## Phase D — Larger features

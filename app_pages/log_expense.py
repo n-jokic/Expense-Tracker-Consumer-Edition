@@ -23,6 +23,8 @@ from utils import (
 from domain.validation import is_valid_amount
 
 user_id = st.session_state.user_id
+# #16: the user's editable taxonomy drives every picker on this page
+CAT_LIST, CATEGORIES = q.effective_categories(user_id)
 DC      = st.session_state.dc
 rates   = st.session_state.rates
 SYM     = get_currency_symbol(DC)

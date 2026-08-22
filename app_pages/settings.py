@@ -20,6 +20,10 @@ from db import (
     get_sync_conflicts, resolve_sync_conflict, apply_record_fields,
     get_household_by_member, get_earned_milestone_ids,
     list_ml_models, activate_ml_model, get_active_ml_model,
+    TAXONOMY_RESERVED_CATEGORY, ensure_user_taxonomy_seeded,
+    get_user_taxonomy, upsert_user_category, rename_user_category,
+    soft_delete_user_category, remap_user_category,
+    can_delete_user_category, reorder_user_categories,
 )
 from auth import change_password, logout
 from notifications import render_notification_settings
@@ -38,11 +42,12 @@ display_name = st.session_state.display_name
 
 st.title(":material/settings: Settings")
 
-tab_cur, tab_notif, tab_acct, tab_data, tab_sync, tab_ml = st.tabs(
+tab_cur, tab_notif, tab_acct, tab_data, tab_cats, tab_sync, tab_ml = st.tabs(
     [":material/currency_exchange: Currency",
      ":material/notifications: Notifications",
      ":material/manage_accounts: Account",
      ":material/database: Data",
+     ":material/category: Categories",
      ":material/sync: Sync",
      ":material/psychology: ML"]
 )
@@ -70,6 +75,31 @@ def revoke_device_dialog(uid: int, device_id: str, name: str):
                 return
             st.toast("Device revoked.", icon=":material/lock:")
             st.rerun()
+
+
+@st.dialog("Delete category with data?")
+def remap_delete_dialog(uid: int, cat: str, info: dict, remaining: list):
+    """#16 force-remap: the category is in use — move its rows first."""
+    st.write(
+        f"**{cat}** is used by {info['expense_count']} transactions, "
+        f"{info['recurring_count']} recurring templates and "
+        f"{info['budget_count']} budgets. Choose where they move:")
+    others = [c for c in remaining if c != cat]
+    if not others:
+        st.error("No other category exists to move data into.")
+        return
+    target = st.selectbox("Move to:", others)
+    _, hc2 = st.columns(2)
+    if hc2.button("Move & delete", type="primary",
+                  icon=":material/move_down:", width="stretch"):
+        try:
+            remap_user_category(uid, cat, target)
+            q.bump_db_version()
+            st.toast(f"Moved everything to **{target}** and removed "
+                     f"**{cat}**.", icon=":material/check:")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Couldn't remap: {e}")
 
 
 # ── Currency tab ──────────────────────────────────────────────────────────────
@@ -316,6 +346,111 @@ with tab_acct:
             else:
                 safe_error("Please type DELETE exactly to confirm.")
 
+
+# ── Categories tab (#16) ─────────────────────────────────────────────────────
+with tab_cats:
+    st.subheader(":material/category: Your categories")
+    st.caption("Your own category registry — every picker, budget and import "
+               "across the app reads this list. 'Uncategorized' is the "
+               "permanent catch-all and cannot be removed.")
+
+    ensure_user_taxonomy_seeded(user_id)
+    cats_eff, cats_dict_eff = q.effective_categories(user_id)
+
+    # ── Add ──
+    with st.form("cat_add_form", clear_on_submit=True):
+        new_name = st.text_input("New category name",
+                                 placeholder="e.g. Coffee fund")
+        new_subs = st.text_input("Subcategories (comma-separated, optional)",
+                                 placeholder="e.g. Beans, Cafe visits")
+        if st.form_submit_button("Add category", type="primary"):
+            try:
+                upsert_user_category(
+                    user_id, new_name,
+                    [s.strip() for s in (new_subs or "").split(",")
+                     if s.strip()],
+                    len(cats_eff) * 1000)
+                q.bump_db_version()
+                st.toast(f"Added **{new_name.strip()}**.",
+                         icon=":material/check:")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+    # ── Existing categories: reorder / rename / subcats / delete ──
+    for _i, cat in enumerate(cats_eff):
+        reserved = cat == TAXONOMY_RESERVED_CATEGORY
+        subs_summary = ", ".join(cats_dict_eff.get(cat) or []) or "—"
+        row = st.columns([3, 4, 1, 1, 2])
+        with row[0]:
+            st.markdown(f"**{cat}**" + (" 🔒" if reserved else ""))
+        with row[1]:
+            st.caption(subs_summary)
+        can_move = not reserved
+        with row[2]:
+            if (can_move and _i > 0
+                    and st.button("⬆", key=f"cat_up_{cat}",
+                                  help="Move up")):
+                seq = cats_eff[:]
+                seq[_i - 1], seq[_i] = seq[_i], seq[_i - 1]
+                reorder_user_categories(user_id, seq)
+                q.bump_db_version()
+                st.rerun()
+        with row[3]:
+            if (can_move and _i < len(cats_eff) - 1
+                    and st.button("⬇", key=f"cat_down_{cat}",
+                                  help="Move down")):
+                seq = cats_eff[:]
+                seq[_i + 1], seq[_i] = seq[_i], seq[_i + 1]
+                reorder_user_categories(user_id, seq)
+                q.bump_db_version()
+                st.rerun()
+        with row[4]:
+            info = can_delete_user_category(user_id, cat)
+            in_use = (info["expense_count"] + info["recurring_count"]
+                      + info["budget_count"])
+            if not reserved:
+                if st.button("Rename", key=f"cat_ren_{cat}"):
+                    st.session_state["cat_rename_open"] = cat
+                if in_use:
+                    if st.button("Delete", key=f"cat_del_{cat}",
+                                 help=f"{in_use} rows use this — you'll "
+                                      "choose where they move"):
+                        remap_delete_dialog(user_id, cat, info, cats_eff)
+                elif st.button("Delete", key=f"cat_del_{cat}",
+                               help="No data uses this category"):
+                    soft_delete_user_category(user_id, cat)
+                    q.bump_db_version()
+                    st.toast(f"Removed **{cat}**.", icon=":material/delete:")
+                    st.rerun()
+
+        # inline rename + subcategory editor for the opened category
+        if st.session_state.get("cat_rename_open") == cat:
+            with st.form(f"cat_edit_form_{cat}"):
+                ren = st.text_input("Name", value=cat)
+                subs_new = st.text_input("Subcategories (comma-separated)",
+                                          value=subs_summary)
+                ok_btn = st.form_submit_button("Save changes",
+                                               icon=":material/save:")
+                cancel = st.form_submit_button("Cancel")
+                if ok_btn:
+                    try:
+                        target = ren.strip()
+                        if target != cat:
+                            rename_user_category(user_id, cat, target)
+                        upsert_user_category(
+                            user_id, target,
+                            [s.strip() for s in subs_new.split(",")
+                             if s.strip()],
+                            int(cats_eff.index(cat)) * 1000)
+                        q.bump_db_version()
+                        st.session_state.pop("cat_rename_open", None)
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                if cancel:
+                    st.session_state.pop("cat_rename_open", None)
+                    st.rerun()
 
 # ── Data tab ──────────────────────────────────────────────────────────────────
 with tab_data:

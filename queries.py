@@ -104,6 +104,18 @@ def _household_of(uid: int, version: int):
     return _db_household_by_member(uid)
 
 
+@st.cache_data
+def _effective_categories(uid: int, version: int):
+    from db import effective_taxonomy
+    return effective_taxonomy(uid)
+
+
+def effective_categories(user_id: int):
+    """#16: (cat_list, cats_dict) from the user's editable taxonomy,
+    cached on (user_id, db_version) like every other reader."""
+    return _effective_categories(int(user_id), db_version())
+
+
 def current_household_id(user_id: int) -> int | None:
     """Authoritative household membership for the CURRENT device (#21a).
 

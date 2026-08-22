@@ -30,6 +30,47 @@ def validate_category_subcategory(category: str, subcategory: str = "") -> tuple
     return cat, sub
 
 
+def validate_category_in(category: str, cats_dict: dict[str, list]) -> str:
+    """#16: taxonomy-aware variant — validates against the caller's effective
+    registry (queries.effective_categories output) instead of the static map."""
+    cat = (category or "").strip()
+    if cat not in cats_dict:
+        raise ValueError(f"unknown category '{cat}' — use one of: "
+                         f"{', '.join(cats_dict)}")
+    return cat
+
+
+def validate_category_subcategory_in(category: str, subcategory: str,
+                                     cats_dict: dict[str, list]) -> tuple[str, str]:
+    """Taxonomy-aware pair validation; empty subcategory stays always valid."""
+    cat = validate_category_in(category, cats_dict)
+    sub = (subcategory or "").strip()
+    if sub and sub not in (cats_dict.get(cat) or []):
+        raise ValueError(f"unknown subcategory '{sub}' for {cat} "
+                         f"(valid: {', '.join(cats_dict.get(cat) or [])})")
+    return cat, sub
+
+
+def map_unknown_category(text: str, cats_dict: dict[str, list]) -> tuple[str, str]:
+    """#16 import-path fallback chain for rows whose stored category is no
+    longer valid: exact match -> keyword rules -> 'Uncategorized' catch-all.
+    Returns (category, subcategory)."""
+    raw_cat = str(text or "").strip()
+    if raw_cat in cats_dict:
+        return raw_cat, ""
+    try:
+        from bank_import import categorize_expense
+        kw_cat, kw_sub = categorize_expense(raw_cat)
+    except Exception:
+        kw_cat, kw_sub = None, ""
+    if kw_cat and kw_cat in cats_dict:
+        subs = cats_dict.get(kw_cat) or []
+        if kw_sub and kw_sub in subs:
+            return kw_cat, kw_sub
+        return kw_cat, ""
+    return "Uncategorized", ""
+
+
 def validate_income_type(income_type: str) -> str:
     itype = (income_type or "Other").strip()
     if itype not in INCOME_TYPES:
