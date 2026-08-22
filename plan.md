@@ -42,7 +42,7 @@
 
 ## Phase B — Small features
 
-### [ ] B1. Early-repayment fee % editable at repayment time (item 8)
+### [x] B1. Early-repayment fee % editable at repayment time (item 8)
 - `loans.py early_repayment_dialog` (:237-294): surcharge-mode selectbox (`fixed`/`percent`) + value input, defaulting to loan's stored values, live caption recompute.
 - Optional "Save as default for this loan" checkbox → persists via existing loan-update path.
 - Booking unchanged (`record_loan_payment` fee-inclusive expense + audited split).
@@ -117,4 +117,5 @@ Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence rewor
 - [x] Plan stored (this file).
 - [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
 - [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.
+- [x] B1 done — early-repayment dialog: fee mode/value widgets pre-filled from loan terms, live surcharge recompute, optional "Save as this loan's default fee" via update_loan. Loan + smoke suites: 42 passed.
 - [x] A3 done — **root cause found & fixed**: (a) grouped_board declared `collapsed_groups`/`group_order` state keys without matching on_*_change callbacks → Streamlit rejected EVERY invocation, silent fallback meant drag/collapse never worked (also broke Big-Purchases board); added the missing callbacks. (b) both module-level component caches went stale vs the per-runtime bidi registry ("Component not registered") → register per render in ui/board.py; utils.draggable_card_board now delegates to the canonical board. Fallback is now loud (logged + visible warning). tests/test_recurring_board.py: canonical path renders, no fallback fired, layout persists. Full tests/: **742 passed**; all 6 failed + 11 errors are sandbox PermissionError-at-setup family (verified environmental). No streamlit-sortables needed — decision gate resolved by fixing the existing board.

@@ -245,17 +245,40 @@ def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
         st.info("This loan has no remaining principal.")
         return
 
-    mode = str(row.get("early_repayment_surcharge_type") or "fixed")
-    if mode not in {"fixed", "percent"}:
-        mode = "fixed"
-    configured = float(row.get("early_repayment_surcharge_value") or 0.0)
+    stored_mode = str(row.get("early_repayment_surcharge_type") or "fixed")
+    if stored_mode not in {"fixed", "percent"}:
+        stored_mode = "fixed"
+    configured = (float(row.get("early_repayment_surcharge_value") or 0.0)
+                  if pd.notna(row.get("early_repayment_surcharge_value")) else 0.0)
     p_date = st.date_input("Date", value=today, key=f"loan_early_date_{row['id']}")
+    # B1: the fee is editable at repayment time — pre-filled from the loan's
+    # stored terms so a changed bank offer can be reflected per-payment.
+    mode = st.selectbox(
+        "Early repayment fee", ["fixed", "percent"],
+        index=["fixed", "percent"].index(stored_mode),
+        format_func=lambda v: f"Fixed amount ({lsym})" if v == "fixed" else "Percentage",
+        key=f"loan_early_feemode_{row['id']}",
+        help="Pre-filled from this loan's terms; adjust if the current "
+             "conditions differ.",
+    )
+    fee_max = 100.0 if mode == "percent" else MAX_SAVINGS_TARGET
+    fee_value = st.number_input(
+        "Fee value (% or loan currency)", min_value=0.0,
+        max_value=fee_max,
+        step=0.1 if mode == "percent" else 10.0,
+        format="%.2f",
+        value=min(configured, fee_max),
+        key=f"loan_early_feeval_{row['id']}",
+    )
+    save_default = st.checkbox(
+        "Save as this loan's default fee", value=False,
+        key=f"loan_early_feesave_{row['id']}")
     principal = st.number_input(
         f"Principal ({lsym})", min_value=0.01, max_value=max(max_principal, 0.01),
         value=min(max_principal, max(max_principal, 0.01)), step=10.0,
         format="%.2f", key=f"loan_early_amount_{row['id']}",
     )
-    surcharge = calculate_early_repayment_surcharge(principal, mode, configured)
+    surcharge = calculate_early_repayment_surcharge(principal, mode, float(fee_value))
     principal_eur = to_eur(principal, lcur, rates)
     surcharge_eur = to_eur(surcharge, lcur, rates)
     st.caption(f"Principal: **{fmt(principal_eur, DC, rates)}** · "
@@ -275,6 +298,17 @@ def early_repayment_dialog(uid: int, row, sched: dict, payments: list):
         ).any():
             st.toast("Already saved — duplicate payment prevented.", icon=":material/check:")
             st.rerun()
+        # B1: optionally persist the adjusted fee as this loan's default terms.
+        if save_default and (mode != stored_mode
+                             or abs(float(fee_value) - configured) > 0.005):
+            try:
+                update_loan(uid, str(row["id"]), {
+                    "early_repayment_surcharge_type": mode,
+                    "early_repayment_surcharge_value": float(fee_value),
+                })
+            except Exception as e:
+                st.error(f"Fee applied to this repayment, but the loan's "
+                         f"default could not be updated: {e}")
         # ONE atomic command: expense + audited split + payoff flip.
         try:
             record_loan_payment(
