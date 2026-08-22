@@ -11,7 +11,10 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import add_income, update_income, soft_delete_income, restore_income
+from db import (
+    add_income, update_income, soft_delete_income, restore_income,
+    get_salary_raises, record_salary_raise,
+)
 from utils import (
     INCOME_SOURCES, INCOME_TYPES, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt, fmt_dual, to_eur, get_currency_symbol,
@@ -62,6 +65,61 @@ with st.expander("My fixed salary", icon=":material/work:"):
             else:
                 st.success("Fixed salary saved!", icon=":material/check:")
                 st.rerun()
+
+    # ── Raise history + manual raise (C2, item 5) ───────────────────────────
+    _raises = get_salary_raises(user_id)
+    if _raises:
+        st.caption(f"Raise history ({len(_raises)}) — newest first:")
+        for _r in _raises:
+            _sym = get_currency_symbol(_r["currency"])
+            _eff = _r["effective_date"].strftime("%d %b %Y") if hasattr(_r["effective_date"], "strftime") else str(_r["effective_date"])
+            _note = f" — {_r['note']}" if _r["note"] else ""
+            st.markdown(
+                f"- **{_eff}**: {fmt_dual(_r['amount'], _r['currency'], _r['amount_eur'])}{_note}")
+
+    with st.expander("Record a raise…", icon=":material/trending_up:"):
+        with st.form("salary_raise_form", clear_on_submit=True):
+            _cur_sal = float(settings.get("salary_amount") or 0.0)
+            _cur_cur = settings.get("salary_currency", "EUR")
+            r1c, r2c, r3c = st.columns([2, 1.5, 2])
+            with r1c:
+                r_amt = st.number_input(
+                    "New monthly amount",
+                    value=_cur_sal if math.isfinite(_cur_sal) and _cur_sal > 0 else 0.0,
+                    min_value=0.0, max_value=MAX_AMOUNT, step=10.0, format="%.2f")
+            with r2c:
+                r_cur_default = settings.get("salary_currency", "EUR")
+                r_cur = st.selectbox(
+                    "Currency", list(SUPPORTED_CURRENCIES.keys()),
+                    index=list(SUPPORTED_CURRENCIES.keys()).index(r_cur_default)
+                    if r_cur_default in SUPPORTED_CURRENCIES else 0)
+            with r3c:
+                r_eff = st.date_input("Effective from", value=today)
+            r_note = st.text_input("Note (optional)",
+                                   placeholder="e.g. annual review, promotion")
+            if st.form_submit_button("Record raise", type="primary",
+                                     width="stretch",
+                                     icon=":material/trending_up:"):
+                if r_amt <= 0:
+                    st.error("Amount must be above zero.")
+                elif _cur_sal > 0 and float(r_amt) <= _cur_sal + 0.005 \
+                        and r_cur == _cur_cur:
+                    st.error("That is not a raise — the new amount must be "
+                             "higher than the current fixed salary.")
+                else:
+                    try:
+                        record_salary_raise(
+                            user_id,
+                            amount=float(r_amt), currency=r_cur,
+                            amount_eur=to_eur(float(r_amt), r_cur, rates),
+                            effective_date=r_eff, note=r_note.strip(),
+                        )
+                    except Exception as e:
+                        st.error(f"Couldn't record the raise: {e}")
+                    else:
+                        q.bump_db_version()
+                        st.success("Raise recorded!", icon=":material/trending_up:")
+                        st.rerun()
 
 salary_amount   = float(settings.get("salary_amount") or 0.0)
 salary_currency = settings.get("salary_currency", "EUR")
@@ -198,10 +256,15 @@ if saved:
             "currency": cur, "budgeted_eur": be, "actual_eur": ae, "notes": notes,
         })
         if inc_type == "Salary" and raise_cb and not use_fixed and actual_val > salary_amount + 0.005:
-            q.save_settings(user_id, {
-                "salary_amount": actual_val, "salary_currency": cur,
-                "salary_active": True,
-            })
+            # C2: raises are history — one txn writes the SalaryRaise row AND
+            # bumps the fixed salary (effective from this income's date).
+            record_salary_raise(
+                user_id,
+                amount=float(actual_val), currency=cur,
+                amount_eur=to_eur(float(actual_val), cur, rates),
+                effective_date=inc_date,
+                note="Recorded from a logged salary entry",
+            )
             st.toast("Raise recorded — fixed salary updated!", icon=":material/trending_up:")
     except Exception as e:
         st.error(f"Couldn't save: {e}")

@@ -68,7 +68,7 @@
 - Update `tests/test_app_smoke.py:232-244`.
 - Acceptance: add/edit/remove/reorder presets persists; instant tap + ✎-adjust paths both dedupe-safe.
 
-### [ ] C2. Raise history with effective dates (item 5)
+### [x] C2. Raise history with effective dates (item 5)
 - New `SalaryRaise` model (id, user_id FK, amount, currency, effective_date, income_id nullable, note, created_at) — table auto-created by create_all; accessor `salary_raises(user_id)`.
 - Raise flow (`log_income.py:200-205`): insert history row (effective_date = income date) AND overwrite `salary_amount`. Existing readers (forecast, hourly fallback, gamification, big-purchases) keep reading setting — zero regressions.
 - Render raise list inside "My fixed salary" expander.
@@ -117,6 +117,7 @@ Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence rewor
 - [x] Plan stored (this file).
 - [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
 - [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.
+- [x] C2 done — SalaryRaise table + record_salary_raise (ONE txn: history row + salary_amount bump + audit with previous amount) + get_salary_raises; income-hook now routes through it (effective_date = income date); 'My fixed salary' expander gains raise-history list and a guarded 'Record a raise…' form. tests/test_salary_raise.py 4/4; smoke+finance+forecast+sync 76/76.
 - [x] C1 done — user_settings.quick_presets JSON column (+migration+default); dashboard one-tap panel rebuilt: ✏️ editor (label/amount/currency/category/sub/del + add/save/cancel/done), per-preset ✎ inline tap-time price adjust, dedupe helper _quick_log. Gotchas pinned by tests: page-scope @st.dialog hangs AppTest (replaced with inline adjust panel); header-action flags need a post-panel read for same-run effect. tests/test_app_smoke.py 10/10 incl. 2 new C1 regressions; purchase/unallocated 32/32.
 - [x] B3 done — buy drains goal + no other unbought links + no active terms => same-tx soft-delete (AUTO_ARCHIVE audit); refund restores only AUTO_ARCHIVE'd goals, never resurrects the purchase's own debit or user-deleted goals. tests/test_purchase_auto_archive.py 5/5; purchase+unallocated+smoke: 32+8 passed. Gotcha documented in test helper: outside Streamlit runtime, queries.db_version() is a session-local counter so ttl-cached readers need explicit .clear() in tests.
 - [x] B2 done — add-form funding is one selectbox (unallocated / create-new / existing goals); create-new reveals name+target inputs; resolution + validation rebranched; no stale radio refs. purchase+smoke+ui suites: 32 passed (1 env setup error, pre-existing).

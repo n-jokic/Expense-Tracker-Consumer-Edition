@@ -466,6 +466,21 @@ class Budget(Base):
     budgeted_eur = Column(Float, default=0.0)
 
 
+class SalaryRaise(Base):
+    """C2: history of fixed-salary raises. One row per raise; the CURRENT
+    salary still lives in user_settings.salary_amount - this table is the
+    audit trail of how it got there (item 5)."""
+    __tablename__ = "salary_raises"
+    id             = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
+    amount         = Column(Float, nullable=False)          # in `currency`
+    currency       = Column(String, default="EUR")
+    amount_eur     = Column(Float, nullable=False)
+    effective_date = Column(Date, nullable=False)
+    note           = Column(Text)
+    created_at     = Column(DateTime, default=_utcnow)
+
+
 class Recurring(Base):
     __tablename__ = "recurring"
     id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -2221,6 +2236,55 @@ def save_settings(user_id, settings_dict):
     return True
 
 
+def get_salary_raises(user_id):
+    """C2: raise history, newest first. Returns [] when none."""
+    with get_session() as s:
+        rows = (s.query(SalaryRaise)
+                .filter(SalaryRaise.user_id == user_id)
+                .order_by(SalaryRaise.effective_date.desc(),
+                          SalaryRaise.created_at.desc())
+                .all())
+        return [{
+            "id": r.id, "amount": float(r.amount or 0.0),
+            "currency": r.currency or "EUR",
+            "amount_eur": float(r.amount_eur or 0.0),
+            "effective_date": r.effective_date,
+            "note": r.note or "",
+        } for r in rows]
+
+
+def record_salary_raise(user_id, *, amount, currency, amount_eur,
+                        effective_date, note=""):
+    """C2: ONE transaction = history row + fixed-salary bump + audit.
+
+    The stored salary_amount moves to the new value FROM effective_date
+    onward (item 5): raises belong to the fixed salary and increase it
+    from that point on; the history table keeps the trail."""
+    with get_session() as s:
+        row = SalaryRaise(
+            user_id=user_id,
+            amount=float(amount), currency=currency,
+            amount_eur=float(amount_eur),
+            effective_date=effective_date, note=note or None,
+        )
+        s.add(row)
+        obj = s.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+        if not obj:
+            obj = UserSettings(user_id=user_id)
+            s.add(obj)
+        old_amount = float(getattr(obj, "salary_amount", 0.0) or 0.0)
+        obj.salary_amount = float(amount)
+        obj.salary_currency = currency
+        obj.salary_active = True
+        log_audit(s, user_id, "CREATE", "salary_raises", row.id, {
+            "amount": float(amount), "currency": currency,
+            "amount_eur": float(amount_eur),
+            "effective_date": str(effective_date),
+            "previous_salary_amount": old_amount,
+        })
+    return True
+
+
 # ── Audit log ─────────────────────────────────────────────────────────────────
 
 def get_audit_log(user_id, limit=200):
@@ -2479,6 +2543,8 @@ def delete_user_account(user_id):
         s.query(Recurring).filter(Recurring.user_id == user_id).delete(
             synchronize_session=False)
         s.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(SalaryRaise).filter(SalaryRaise.user_id == user_id).delete(
             synchronize_session=False)
         s.query(AuditLog).filter(AuditLog.user_id == user_id).delete(
             synchronize_session=False)
