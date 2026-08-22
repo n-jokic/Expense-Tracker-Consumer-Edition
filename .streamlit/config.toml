@@ -1,14 +1,24 @@
-[theme]
+# research.md U1: light and dark palettes (Streamlit >=1.57 dual theme).
+# Users pick the mode from the app menu; both share the same brand accent.
+# chartCategoricalColors mirrors ui.styles.CHART_COLORS so plotly figures
+# built without an explicit palette still match the app.
+
+[theme.light]
 primaryColor = "#0F3460"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F0F2F6"
 textColor = "#262730"
-font = "sans serif"
+
+[theme.dark]
+primaryColor = "#7EA8FF"
+backgroundColor = "#0E1526"
+secondaryBackgroundColor = "#16203A"
+textColor = "#E8EDF5"
 
 [server]
 maxUploadSize = 10
 # Serve on all interfaces so phones on the same Wi-Fi can connect.
-# XSRF protection stays enabled (default) — enableCORS is left alone.
+# XSRF protection stays enabled (default) - enableCORS is left alone.
 address = "0.0.0.0"
 
 [browser]

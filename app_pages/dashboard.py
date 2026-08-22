@@ -24,6 +24,7 @@ from utils import (
     CAT_LIST, CATEGORIES, SUPPORTED_CURRENCIES,
 )
 from ui.panel import PanelSpec, panel
+from ui.styles import C_BLUE, C_NEG, C_POS, C_PRIMARY, C_PRIMARY_SOFT, C_WARN
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -205,18 +206,20 @@ if personal_view:
                 _total_pct = 0.0
                 for i, t in enumerate(_aar["targets"]):
                     k = f"aar_{i}"
-                    c1, c2, c3, c4 = st.columns([1.1, 2.2, 0.9, 0.4])
-                    ttype = c1.selectbox(
+                    # research.md U6: stacked 2x2 grid for phone width; keys unchanged.
+                    r1c1, r1c2 = st.columns([1.1, 2.2])
+                    r2c1, r2c2 = st.columns([0.9, 0.4])
+                    ttype = r1c1.selectbox(
                         "Type", ["goal", "loan"],
                         index=0 if t.get("type") == "goal" else 1,
                         key=f"{k}_type", label_visibility="collapsed")
                     if ttype == "goal":
                         opts = _goal_opts or [str(t.get("ref")) or "(no goals yet)"]
                         cur = t.get("ref") if t.get("ref") in opts else opts[0]
-                        ref = c2.selectbox("Target", opts,
-                                           index=opts.index(cur),
-                                           key=f"{k}_ref",
-                                           label_visibility="collapsed")
+                        ref = r1c2.selectbox("Target", opts,
+                                             index=opts.index(cur),
+                                             key=f"{k}_ref",
+                                             label_visibility="collapsed")
                     else:
                         pairs = [(lid, lname) for lid, lname in _loan_map.items()]
                         if not pairs:
@@ -225,16 +228,16 @@ if personal_view:
                         labels2 = [pname for _, pname in pairs]
                         cur_i = ids.index(t.get("ref")) if t.get("ref") in ids else 0
                         ref = ids[cur_i]
-                        c2.selectbox("Loan", labels2, index=cur_i,
-                                     key=f"{k}_ref", label_visibility="collapsed")
-                    pct = c3.number_input("%", min_value=0.0, max_value=100.0,
-                                          step=1.0,
-                                          value=float(t.get("pct") or 0.0),
-                                          key=f"{k}_pct",
-                                          label_visibility="collapsed")
+                        r1c2.selectbox("Loan", labels2, index=cur_i,
+                                       key=f"{k}_ref", label_visibility="collapsed")
+                    pct = r2c1.number_input("%", min_value=0.0, max_value=100.0,
+                                            step=1.0,
+                                            value=float(t.get("pct") or 0.0),
+                                            key=f"{k}_pct",
+                                            label_visibility="collapsed")
                     _total_pct += float(pct)
-                    drop = c4.checkbox("✖", value=False, key=f"{k}_del",
-                                       help="Remove this rule")
+                    drop = r2c2.checkbox("✖", value=False, key=f"{k}_del",
+                                         help="Remove this rule")
                     t["type"], t["ref"], t["pct"] = ttype, ref, float(pct)
                     t["_drop"] = drop
                 kept = [dict(t) for t in _aar["targets"] if not t.get("_drop")]
@@ -368,27 +371,30 @@ if personal_view:
                 kept = []
                 for i, p in list(enumerate(draft)):
                     k = f"qp{gen}_{i}"
-                    c1, c2, c3, c4, c5, c6 = st.columns([1.3, 1, 1, 1.5, 1.5, 0.45])
-                    label = c1.text_input("Label", value=p["label"],
-                                          key=f"{k}_label", label_visibility="collapsed")
-                    amt = c2.number_input("Amount", min_value=0.0, step=0.10,
-                                          format="%.2f", value=float(p["amount"]),
-                                          key=f"{k}_amt", label_visibility="collapsed")
+                    # research.md U6: two stacked rows of three — six side-by-side
+                    # inputs are unusable at phone width. Widget keys unchanged.
+                    r1c1, r1c2, r1c3 = st.columns([1.3, 1, 1])
+                    r2c1, r2c2, r2c3 = st.columns([1.5, 1.5, 0.45])
+                    label = r1c1.text_input("Label", value=p["label"],
+                                            key=f"{k}_label", label_visibility="collapsed")
+                    amt = r1c2.number_input("Amount", min_value=0.0, step=0.10,
+                                            format="%.2f", value=float(p["amount"]),
+                                            key=f"{k}_amt", label_visibility="collapsed")
                     curs = list(SUPPORTED_CURRENCIES.keys())
-                    cur = c3.selectbox("Currency", curs,
-                                       index=curs.index(p["currency"])
-                                       if p["currency"] in curs else 0,
-                                       key=f"{k}_cur", label_visibility="collapsed")
-                    cat = c4.selectbox("Category", CAT_LIST,
-                                       index=CAT_LIST.index(p["category"])
-                                       if p["category"] in CAT_LIST else 0,
-                                       key=f"{k}_cat", label_visibility="collapsed")
+                    cur = r1c3.selectbox("Currency", curs,
+                                         index=curs.index(p["currency"])
+                                         if p["currency"] in curs else 0,
+                                         key=f"{k}_cur", label_visibility="collapsed")
+                    cat = r2c1.selectbox("Category", CAT_LIST,
+                                         index=CAT_LIST.index(p["category"])
+                                         if p["category"] in CAT_LIST else 0,
+                                         key=f"{k}_cat", label_visibility="collapsed")
                     subs = ["—"] + CATEGORIES.get(cat, [])
                     sub0 = p["subcategory"] if p["subcategory"] in subs[1:] else "—"
-                    sub = c5.selectbox("Subcategory", subs,
-                                       index=subs.index(sub0),
-                                       key=f"{k}_sub", label_visibility="collapsed")
-                    drop = c6.checkbox("Del", value=False, key=f"{k}_del")
+                    sub = r2c2.selectbox("Subcategory", subs,
+                                         index=subs.index(sub0),
+                                         key=f"{k}_sub", label_visibility="collapsed")
+                    drop = r2c3.checkbox("Del", value=False, key=f"{k}_del")
                     if not drop:
                         kept.append({
                             "id": p["id"],
@@ -498,12 +504,12 @@ ayrs = sorted(set(
     (list(dfi["date"].dropna().dt.year.unique()) if not dfi.empty else [])
 ), reverse=True) or [date.today().year]
 
-fc1, fc2 = st.columns([1, 2])
-with fc1:
-    sy = st.selectbox("Year", ayrs)
-with fc2:
+# research.md U3: period filters live in the sidebar (dashboards guidance),
+# beside the currency control, freeing a full page row for content.
+with st.sidebar:
+    sy = st.selectbox("Year", ayrs, key="dash_year")
     mo_opts = ["All months"] + [calendar.month_name[m] for m in range(1, 13)]
-    sml = st.select_slider("Month", mo_opts)
+    sml = st.select_slider("Month", mo_opts, key="dash_month")
     sm  = mo_opts.index(sml)
 
 def flt(df):
@@ -551,6 +557,16 @@ if personal_view:
         st.metric("Saved", fmt(sd, DC, rates), border=True)
         st.metric("Net balance", fmt(ne, DC, rates), border=True)
         st.metric("Savings rate", f"{sr:.1f}%", border=True)
+
+    # research.md U7: one-tap handoff from the dashboard into the advisor.
+    _ask_pick = st.pills("Ask AI", [
+        "How much did I spend this month?",
+        "Where does my money go?",
+        "Can I afford a big purchase?",
+    ], selection_mode="single")
+    if _ask_pick:
+        st.query_params["ask"] = _ask_pick[0]
+        st.switch_page("app_pages/ask.py")
 else:
     # Household spending summary — no personal net balance or savings KPIs.
     hh_members = q.household_members(hh_id)
@@ -575,7 +591,7 @@ if not dfe.empty:
         _fig = go.Figure(go.Scatter(
             x=[d.strftime("%a") for d in _week_days], y=_vals,
             mode="lines+markers", line=dict(color=CHART_COLORS[0], width=2),
-            fill="tozeroy", fillcolor="rgba(15,52,96,0.08)"))
+            fill="tozeroy", fillcolor=C_PRIMARY_SOFT))
         _fig.update_layout(height=150, margin=dict(t=10, b=10, l=10, r=10),
                            xaxis_title=None, yaxis_title=None,
                            showlegend=False,
@@ -766,11 +782,11 @@ with r1b:
                 lambda r: "Over budget" if r["budgeted_eur"] > 0 and r["ae"] > r["budgeted_eur"]
                 else ("Near limit" if r["budgeted_eur"] > 0 and r["ae"] >= r["budgeted_eur"] * NEAR_LIMIT_THRESHOLD
                       else "On track"), axis=1)
-            cmap = {"Over budget": "#E94560", "Near limit": "#F4A261", "On track": "#00B050"}
+            cmap = {"Over budget": C_NEG, "Near limit": C_WARN, "On track": C_POS}
             fig  = go.Figure()
             fig.add_trace(go.Bar(name="Budget", x=mg["category"],
                                  y=mg["budgeted_eur"].apply(lambda x: to_display(x, DC, rates)),
-                                 marker_color="#0F3460", opacity=0.45))
+                                 marker_color=C_PRIMARY, opacity=0.45))
             for st2, col2 in cmap.items():
                 sub = mg[mg["status"] == st2]
                 if not sub.empty:
@@ -800,30 +816,32 @@ if personal_view:
         "Savings":  to_display(mv(dfs, "deposited_eur", m), DC, rates),
     } for m in range(1, 13)])
     fig = go.Figure()
-    for col3, clr, dsh in [("Income","#00B050","solid"),("Expenses","#E94560","solid"),("Savings","#0F3460","dot")]:
+    for col3, clr, dsh in [("Income", C_POS, "solid"), ("Expenses", C_NEG, "solid"),
+                           ("Savings", C_PRIMARY, "dot")]:
         fig.add_trace(go.Scatter(x=trnd["Month"], y=trnd[col3], name=col3,
                                  line=dict(color=clr, width=2.5, dash=dsh), mode="lines+markers"))
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", y=1.06), margin=dict(t=20,b=0), yaxis_title=SYM)
     st.plotly_chart(fig, width="stretch")
 
-    # Cumulative net cash flow (personal)
-    st.subheader("Cumulative net cash flow")
-    cf = pd.DataFrame([{
-        "Month": calendar.month_abbr[m],
-        "Net": to_display(mv(dfi, "actual_eur", m) - mv(dfe, "amount_eur", m) - mv(dfs, "deposited_eur", m),
-                          DC, rates),
-    } for m in range(1, 13)])
-    cf["Cumulative"] = cf["Net"].cumsum()
-    figc = go.Figure()
-    figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Net"], name="Monthly net",
-                              mode="lines+markers", line=dict(color="#457B9D", width=2)))
-    figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Cumulative"], name="Cumulative",
-                              mode="lines+markers", line=dict(color="#0F3460", width=2.5)))
-    figc.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                       legend=dict(orientation="h", y=1.1), margin=dict(t=20,b=0),
-                       yaxis_title=SYM)
-    st.plotly_chart(figc, width="stretch")
+    # Cumulative net cash flow (personal) — demoted behind an expander
+    # (research.md U5) so the default scroll stays scannable.
+    with st.expander("Cumulative net cash flow", expanded=False):
+        cf = pd.DataFrame([{
+            "Month": calendar.month_abbr[m],
+            "Net": to_display(mv(dfi, "actual_eur", m) - mv(dfe, "amount_eur", m) - mv(dfs, "deposited_eur", m),
+                              DC, rates),
+        } for m in range(1, 13)])
+        cf["Cumulative"] = cf["Net"].cumsum()
+        figc = go.Figure()
+        figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Net"], name="Monthly net",
+                                  mode="lines+markers", line=dict(color=C_BLUE, width=2)))
+        figc.add_trace(go.Scatter(x=cf["Month"], y=cf["Cumulative"], name="Cumulative",
+                                  mode="lines+markers", line=dict(color=C_PRIMARY, width=2.5)))
+        figc.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                           legend=dict(orientation="h", y=1.1), margin=dict(t=20,b=0),
+                           yaxis_title=SYM)
+        st.plotly_chart(figc, width="stretch")
 
     # Savings rate chart (personal)
     r3a, r3b = st.columns(2)
@@ -836,11 +854,11 @@ if personal_view:
         } for m in range(1, 13)])
         fig = px.bar(rts, x="Month", y="Rate%",
                      text=rts["Rate%"].apply(lambda x: f"{x:.1f}%"),
-                     color="Rate%", color_continuous_scale=["#E94560","#F4A261","#00B050"],
+                     color="Rate%", color_continuous_scale=[C_NEG, C_WARN, C_POS],
                      range_color=[0, 30])
-        fig.add_hline(y=SAVINGS_TARGET_PCT, line_dash="dash", line_color="#F4A261",
+        fig.add_hline(y=SAVINGS_TARGET_PCT, line_dash="dash", line_color=C_WARN,
                       annotation_text=f"{SAVINGS_TARGET_PCT}% target")
-        fig.add_hline(y=SAVINGS_GOAL_PCT, line_dash="dash", line_color="#00B050",
+        fig.add_hline(y=SAVINGS_GOAL_PCT, line_dash="dash", line_color=C_POS,
                       annotation_text=f"{SAVINGS_GOAL_PCT}% goal")
         fig.update_traces(textposition="outside")
         fig.update_layout(coloraxis_showscale=False, plot_bgcolor="rgba(0,0,0,0)",
@@ -861,24 +879,24 @@ if personal_view:
         else:
             st.caption("No savings data for this year.")
 
-# Top 10
+# Top 10 — behind an expander (research.md U5)
 if not exp.empty:
-    st.subheader("Top 10 largest expenses")
-    tp = exp.nlargest(10, "amount_eur")[
-        ["date","category","subcategory","description","amount","currency","amount_eur"]
-    ].copy()
-    tp["date"]   = tp["date"].dt.strftime("%d %b %Y").fillna("")
-    tp["Amount"] = tp.apply(lambda r: fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates), axis=1)
-    st.dataframe(
-        tp[["date","category","subcategory","description","Amount"]].rename(
-            columns={"date": "Date", "category": "Category",
-                     "subcategory": "Subcategory", "description": "Description"}),
-        hide_index=True, width="stretch",
-        column_config={
-            "Date": st.column_config.TextColumn("Date"),
-            "Category": st.column_config.TextColumn("Category"),
-            "Subcategory": st.column_config.TextColumn("Subcategory"),
-            "Description": st.column_config.TextColumn("Description"),
-            "Amount": st.column_config.TextColumn("Amount"),
-        },
-    )
+    with st.expander("Top 10 largest expenses", expanded=False):
+        tp = exp.nlargest(10, "amount_eur")[
+            ["date","category","subcategory","description","amount","currency","amount_eur"]
+        ].copy()
+        tp["date"]   = tp["date"].dt.strftime("%d %b %Y").fillna("")
+        tp["Amount"] = tp.apply(lambda r: fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates), axis=1)
+        st.dataframe(
+            tp[["date","category","subcategory","description","Amount"]].rename(
+                columns={"date": "Date", "category": "Category",
+                         "subcategory": "Subcategory", "description": "Description"}),
+            hide_index=True, width="stretch",
+            column_config={
+                "Date": st.column_config.TextColumn("Date"),
+                "Category": st.column_config.TextColumn("Category"),
+                "Subcategory": st.column_config.TextColumn("Subcategory"),
+                "Description": st.column_config.TextColumn("Description"),
+                "Amount": st.column_config.TextColumn("Amount"),
+            },
+        )

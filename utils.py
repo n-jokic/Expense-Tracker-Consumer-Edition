@@ -227,19 +227,16 @@ def help_expander(title: str, content: str):
         st.markdown(content)
 
 def inject_mobile_css():
+    # research.md U1c/U6: dead .kpi*/.pw/.pb rules removed; full-width mobile
+    # buttons now apply only where they read as primary actions (sidebar,
+    # forms) so small icon buttons keep their natural size.
     st.markdown("""
     <style>
-    .kpi { background: var(--secondary-background-color); border-radius: 14px; padding: 18px 12px; text-align: center; border: 1px solid rgba(128,128,128,0.15); margin-bottom: 6px; transition: box-shadow 0.2s ease, transform 0.15s ease; }
-    .kpi:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); transform: translateY(-2px); }
-    .kpi-val { font-size: 22px; font-weight: 700; margin: 6px 0; }
-    .kpi-sub { font-size: 11px; color: #888; margin-top: 3px; }
-    .kpi-lbl { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .7px; }
     .pos { color: #00B050; } .neg { color: #E94560; } .neu { color: #0F3460; }
-    .pw { background: #e0e0e0; border-radius: 8px; height: 14px; overflow: hidden; margin: 5px 0; }
-    .pb { height: 100%; border-radius: 8px; transition: width 0.4s ease; }
     .badge { display: inline-block; background: var(--secondary-background-color); border: 1px solid rgba(128,128,128,0.2); border-radius: 20px; padding: 4px 10px; font-size: 12px; margin: 2px; }
     @media (max-width: 768px) {
-        .stButton > button { width: 100%; font-size: 16px; padding: 12px; border-radius: 10px; }
+        section[data-testid="stSidebar"] .stButton > button,
+        div[data-testid="stForm"] .stButton > button { width: 100%; font-size: 16px; padding: 12px; border-radius: 10px; }
         div[data-testid="column"]:has([data-testid="stMetric"]) { min-width: 100% !important; }
         .stDataFrame { font-size: 13px; }
         h1 { font-size: 1.6rem !important; } h2 { font-size: 1.3rem !important; }
