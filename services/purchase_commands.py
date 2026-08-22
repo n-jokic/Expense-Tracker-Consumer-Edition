@@ -232,6 +232,105 @@ def funding_summary(purchase: Mapping, goal_rows: Iterable[Mapping]) -> str:
 # ── FIN-07: atomic buy / refund ───────────────────────────────────────────────
 
 
+def _autoarchive_goal_if_drained(s, user_id: int, goal_name: str,
+                                 purchase_id: str) -> bool:
+    """B3: soft-delete a goal whose principal this buy fully consumed AND
+    that no other unbought wishlist item still links to AND that has no
+    active term accounts. Runs INSIDE the caller's transaction so the
+    archive commits atomically with the buy."""
+    from datetime import datetime, timezone
+    from db import AuditLog, BigPurchase, Savings, SavingsAccount, log_audit
+
+    if _goal_principal_eur(s, user_id, goal_name) > 0.005:
+        return False
+    active_terms = s.query(SavingsAccount).filter(
+        SavingsAccount.user_id == user_id,
+        SavingsAccount.goal_name == goal_name,
+        SavingsAccount.is_deleted.isnot(True),
+        SavingsAccount.status == "active").count()
+    if active_terms:
+        return False
+    for other in s.query(BigPurchase).filter(
+            BigPurchase.user_id == user_id,
+            BigPurchase.funding_goal_ref.isnot(None),
+            BigPurchase.id != str(purchase_id),
+            BigPurchase.status != "bought").all():
+        if resolve_funding_goal_name_in_session(
+                s, user_id, other.funding_goal_ref) == goal_name:
+            return False
+    now = datetime.now(timezone.utc)
+    n = na = 0
+    for obj in s.query(Savings).filter(
+            Savings.user_id == user_id,
+            Savings.goal_name == goal_name,
+            Savings.is_deleted.isnot(True)).all():
+        obj.is_deleted = True
+        obj.deleted_at = now
+        n += 1
+    for obj in s.query(SavingsAccount).filter(
+            SavingsAccount.user_id == user_id,
+            SavingsAccount.goal_name == goal_name,
+            SavingsAccount.is_deleted.isnot(True)).all():
+        obj.is_deleted = True
+        obj.deleted_at = now
+        na += 1
+    log_audit(s, user_id, "AUTO_ARCHIVE", "savings_goal", goal_name,
+              {"entries_trashed": n, "accounts_trashed": na,
+               "purchase_id": str(purchase_id)})
+    return True
+
+
+def _autorestore_goal_if_archived(s, user_id: int, goal_name: str | None,
+                                  purchase_id: str) -> bool:
+    """B3 mirror of the auto-archive: on refund, bring back a goal ONLY if
+    it is fully gone AND an AUTO_ARCHIVE audit exists for it (a goal the
+    user deleted manually stays deleted). Same-transaction discipline."""
+    from datetime import datetime, timezone
+    from db import AuditLog, Savings, SavingsAccount, log_audit
+    if not goal_name:
+        return False
+    live = s.query(Savings).filter(
+        Savings.user_id == user_id,
+        Savings.goal_name == goal_name,
+        Savings.is_deleted.isnot(True)).count()
+    if live:
+        return False
+    last_archive = (s.query(AuditLog)
+                    .filter(AuditLog.user_id == user_id,
+                            AuditLog.action == "AUTO_ARCHIVE",
+                            AuditLog.table_name == "savings_goal",
+                            AuditLog.record_id == goal_name)
+                    .order_by(AuditLog.timestamp.desc(),
+                              AuditLog.id.desc()).first())
+    if last_archive is None:
+        return False
+    now = datetime.now(timezone.utc)
+    n = na = 0
+    # Pre-buy, this purchase's own debit row did not exist — never resurrect it.
+    from sqlalchemy import or_
+    own_ref = buy_debit_ref(str(purchase_id))
+    for obj in s.query(Savings).filter(
+            Savings.user_id == user_id,
+            Savings.goal_name == goal_name,
+            Savings.is_deleted.is_(True),
+            or_(Savings.settlement_ref.is_(None),
+                Savings.settlement_ref != own_ref)).all():
+        obj.is_deleted = False
+        obj.deleted_at = None
+        n += 1
+    for obj in s.query(SavingsAccount).filter(
+            SavingsAccount.user_id == user_id,
+            SavingsAccount.goal_name == goal_name,
+            SavingsAccount.deleted_at.isnot(None)).all():
+        obj.is_deleted = False
+        obj.deleted_at = None
+        na += 1
+    log_audit(s, user_id, "AUTO_RESTORE", "savings_goal", goal_name,
+              {"entries_restored": n, "accounts_restored": na,
+               "purchase_id": str(purchase_id)})
+    return True
+
+
 def buy_wishlist_item(user_id: int, purchase_id: str, *,
                       entry_date=None, amount_eur: float | None = None,
                       category: str | None = None,
@@ -344,11 +443,18 @@ def buy_wishlist_item(user_id: int, purchase_id: str, *,
         item.expense_id = str(exp.id)
         item.funding_source = src
 
+        # B3: drain-and-last-link => archive the goal in the same transaction.
+        goal_auto_archived = False
+        if src == FUNDING_SAVINGS_GOAL and goal_name:
+            goal_auto_archived = _autoarchive_goal_if_drained(
+                s, user_id, goal_name, str(purchase_id))
+
         s.flush()
         log_audit(s, user_id, "BUY", "big_purchases", str(purchase_id),
                   {"expense_id": str(exp.id), "amount_eur": amount,
                    "funding_source": src, "goal": goal_name,
-                   "debit_row": debit_row_id, "pre_buy_status": pre_status})
+                   "debit_row": debit_row_id, "pre_buy_status": pre_status,
+                   "goal_auto_archived": goal_auto_archived})
         s.commit()
     except Exception:
         s.rollback()
@@ -405,8 +511,21 @@ def refund_wishlist_item(user_id: int, purchase_id: str) -> CommandResult:
         item.status = restore
         item.pre_buy_status = None
 
+        # B3: if this buy's drain auto-archived the funding goal, undo that
+        # so the restored link resolves again. The archive also soft-deleted
+        # this purchase's OWN debit row, so look it up regardless of state
+        # (the filtered `debit` above can legitimately be None here).
+        goal_auto_restored = False
+        debit_any = s.query(Savings).filter(
+            Savings.user_id == user_id,
+            Savings.settlement_ref == buy_debit_ref(str(purchase_id))).first()
+        if debit_any is not None and getattr(debit_any, "goal_name", None):
+            goal_auto_restored = _autorestore_goal_if_archived(
+                s, user_id, str(debit_any.goal_name), str(purchase_id))
+
         log_audit(s, user_id, "REFUND", "big_purchases", str(purchase_id),
-                  {"restored_status": restore, "reversed": touched})
+                  {"restored_status": restore, "reversed": touched,
+                   "goal_auto_restored": goal_auto_restored})
         s.commit()
     except Exception:
         s.rollback()

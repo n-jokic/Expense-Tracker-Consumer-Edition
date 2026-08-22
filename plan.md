@@ -53,7 +53,7 @@
 - Adjust validation (:172-175) and `fund_src/fund_ref` resolution (:186-199). Edit dialog unchanged.
 - Acceptance: link/unlink/create-new flows save with correct stable ref; no typing of existing goal names anywhere.
 
-### [ ] B3. Auto-archive drained goal after purchase (item 10)
+### [x] B3. Auto-archive drained goal after purchase (item 10)
 - Hook in `buy_wishlist_item` (`services/purchase_commands.py:235-359`) post-debit pre-commit: remaining principal ≤ €0.005 AND no other non-bought purchases sharing `funding_goal_ref` AND no active term accounts → soft-delete goal rows + audit `BUY`/`auto_archived_goal`.
 - Symmetric restore in `refund_wishlist_item` (:362-417): if refunded item's goal resolves to nothing alive → restore its soft-deleted rows + audit `AUTO_RESTORE`.
 - Restorable via existing Trash expander (`savings.py:906-940`).
@@ -117,6 +117,7 @@ Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence rewor
 - [x] Plan stored (this file).
 - [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
 - [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.
+- [x] B3 done — buy drains goal + no other unbought links + no active terms => same-tx soft-delete (AUTO_ARCHIVE audit); refund restores only AUTO_ARCHIVE'd goals, never resurrects the purchase's own debit or user-deleted goals. tests/test_purchase_auto_archive.py 5/5; purchase+unallocated+smoke: 32+8 passed. Gotcha documented in test helper: outside Streamlit runtime, queries.db_version() is a session-local counter so ttl-cached readers need explicit .clear() in tests.
 - [x] B2 done — add-form funding is one selectbox (unallocated / create-new / existing goals); create-new reveals name+target inputs; resolution + validation rebranched; no stale radio refs. purchase+smoke+ui suites: 32 passed (1 env setup error, pre-existing).
 - [x] B1 done — early-repayment dialog: fee mode/value widgets pre-filled from loan terms, live surcharge recompute, optional "Save as this loan's default fee" via update_loan. Loan + smoke suites: 42 passed.
 - [x] A3 done — **root cause found & fixed**: (a) grouped_board declared `collapsed_groups`/`group_order` state keys without matching on_*_change callbacks → Streamlit rejected EVERY invocation, silent fallback meant drag/collapse never worked (also broke Big-Purchases board); added the missing callbacks. (b) both module-level component caches went stale vs the per-runtime bidi registry ("Component not registered") → register per render in ui/board.py; utils.draggable_card_board now delegates to the canonical board. Fallback is now loud (logged + visible warning). tests/test_recurring_board.py: canonical path renders, no fallback fired, layout persists. Full tests/: **742 passed**; all 6 failed + 11 errors are sandbox PermissionError-at-setup family (verified environmental). No streamlit-sortables needed — decision gate resolved by fixing the existing board.
