@@ -15,6 +15,7 @@ from db import (
     add_income, update_income, soft_delete_income, restore_income,
     get_salary_raises, record_salary_raise,
 )
+from services.commands import apply_auto_allocations
 from utils import (
     INCOME_SOURCES, INCOME_TYPES, SUPPORTED_CURRENCIES, MAX_AMOUNT,
     fmt, fmt_dual, to_eur, get_currency_symbol,
@@ -164,6 +165,16 @@ if salary_active and salary_amount > 0:
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
             else:
+                _alloc = apply_auto_allocations(
+                    user_id, income_amount_eur=ae, income_date=pay_date)
+                if _alloc.get("enabled"):
+                    st.session_state["last_auto_alloc"] = _alloc
+                    for _a in _alloc.get("applied", []):
+                        st.toast(f"Auto-allocated {fmt(_a['amount_eur'], DC, rates)}"
+                                 f" → {_a['ref']}", icon=":material/savings:")
+                    if _alloc.get("scaled"):
+                        st.toast("Unallocated pool was tight — auto-allocation"
+                                 " scaled down.", icon=":material/warning:")
                 q.bump_db_version()
                 st.toast(f"Salary logged for {calendar.month_name[pay_date.month]}", icon=":material/work:")
                 st.rerun()
@@ -266,6 +277,17 @@ if saved:
                 note="Recorded from a logged salary entry",
             )
             st.toast("Raise recorded — fixed salary updated!", icon=":material/trending_up:")
+        # D2: %-auto-allocation of this income (never aborts the save).
+        _alloc = apply_auto_allocations(
+            user_id, income_amount_eur=ae, income_date=inc_date)
+        if _alloc.get("enabled"):
+            st.session_state["last_auto_alloc"] = _alloc
+            for _a in _alloc.get("applied", []):
+                st.toast(f"Auto-allocated {fmt(_a['amount_eur'], DC, rates)}"
+                         f" → {_a['ref']}", icon=":material/savings:")
+            if _alloc.get("scaled"):
+                st.toast("Unallocated pool was tight — auto-allocation"
+                         " scaled down.", icon=":material/warning:")
     except Exception as e:
         st.error(f"Couldn't save: {e}")
     else:

@@ -1047,3 +1047,112 @@ def save_receipt_items(user_id: int, items: list[dict], *, entry_date=None,
         s.close()
     return CommandResult(changed=True, revision=_bump(user_id),
                          affected_ids=tuple(ids))
+
+
+# ── D2 (item 11): %-auto-allocation of freshly logged income ─────────────────
+
+def apply_auto_allocations(user_id: int, *, income_amount_eur: float,
+                           income_date) -> dict:
+    """Split fresh income into goals/loans by user-defined %-rules.
+
+    Rules live in user_settings.auto_alloc_rules:
+      {"enabled": true, "targets": [{"type": "goal" or "loan",
+       "ref": str, "pct": float}, ...]}
+
+    * goal targets deposit via deposit_to_goal (pool-validating);
+    * loan targets move REAL money as early repayments, capped at the
+      remaining balance;
+    * when requests exceed the unallocated pool every target scales down
+      pro-rata (the pool is never overdrawn);
+    * a per-target failure is recorded and NEVER aborts the income save.
+
+    Returns a display summary dict; only raises on programming errors.
+    """
+    import db
+    import pandas as _pd
+    import finance as fin
+    from services import finance_queries as fq
+    summary = {"enabled": False, "applied": [], "skipped": [],
+               "errors": [], "scaled": False}
+    rules = db.get_settings(user_id).get("auto_alloc_rules") or {}
+    if not isinstance(rules, dict) or not rules.get("enabled"):
+        return summary
+    summary["enabled"] = True
+    targets = [t for t in (rules.get("targets") or [])
+               if isinstance(t, dict) and float(t.get("pct") or 0.0) > 0]
+    if not targets:
+        return summary
+    pool = fq.unallocated_funds_eur(user_id)
+    total_pct = sum(float(t["pct"]) for t in targets)
+    requested = _q2(income_amount_eur * total_pct / 100.0)
+    scale = 1.0
+    if requested > pool + 0.005 and requested > 0:
+        scale = max(0.0, pool) / requested
+        summary["scaled"] = True
+    for t in targets:
+        ttype = str(t.get("type"))
+        tref = str(t.get("ref"))
+        pct = float(t["pct"])
+        amount = _q2(income_amount_eur * pct / 100.0 * scale)
+        entry = {"type": ttype, "ref": tref, "pct": pct, "amount_eur": amount}
+        if amount < 0.005:
+            summary["skipped"].append(entry)
+            continue
+        try:
+            if ttype == "goal":
+                res = deposit_to_goal(user_id, goal_name=tref,
+                                      amount_eur=amount,
+                                      entry_date=income_date)
+                if not getattr(res, "changed", True):
+                    raise CommandError("deposit was not applied")
+                entry["detail"] = "deposited to goal"
+                summary["applied"].append(entry)
+            elif ttype == "loan":
+                loans_df = db.get_loans(user_id)
+                loan = None
+                if not loans_df.empty:
+                    m = loans_df[loans_df["id"].astype(str) == tref]
+                    if not m.empty:
+                        loan = m.iloc[0].to_dict()
+                if loan is None:
+                    raise LoanNotFound(f"Loan {tref} not found.")
+                if str(loan.get("status")) != "active":
+                    raise CommandError("loan is not active")
+                pay_df = db.get_loan_payments(user_id, tref)
+                payments = []
+                for _, p in pay_df.iterrows():
+                    if _pd.isna(p.get("date")):
+                        continue
+                    payments.append({
+                        "date": p["date"].date(),
+                        "amount_eur": float(p.get("amount_eur") or 0.0),
+                        "surcharge_eur": float(p.get("loan_surcharge_eur") or 0.0)})
+                start_d = (loan["start_date"].date()
+                           if not _pd.isna(loan.get("start_date"))
+                           else income_date)
+                sched = fin.loan_schedule(
+                    float(loan.get("principal_eur") or 0.0),
+                    float(loan.get("annual_rate") or 0.0),
+                    int(loan.get("term_months") or 0),
+                    start_d, int(loan.get("payment_day") or 1),
+                    payments, income_date)
+                remaining = float(sched["remaining_balance"])
+                capped = min(amount, max(0.0, remaining))
+                if capped < 0.005:
+                    entry["amount_eur"] = 0.0
+                    summary["skipped"].append(entry)
+                    continue
+                entry["amount_eur"] = capped
+                record_loan_payment(user_id, tref, capped, income_date,
+                                    surcharge_eur=0.0,
+                                    payment_type="early",
+                                    notes="auto-allocation from income")
+                entry["detail"] = "early repayment"
+                summary["applied"].append(entry)
+            else:
+                raise CommandError("unknown target type: " + ttype)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            summary["errors"].append(entry)
+    return summary
+

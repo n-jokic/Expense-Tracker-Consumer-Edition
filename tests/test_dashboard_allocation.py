@@ -130,6 +130,36 @@ def test_breakdown_shows_goals_and_reserve(user, at):
         "planning" in s for s in [body, caps]), "planning label missing"
 
 
+def test_auto_alloc_editor_toggle_persists(user):
+    """D2: the dashboard editor persists the enabled flag to settings."""
+    import os
+    from streamlit.testing.v1 import AppTest as _AT
+    from ui.layout_state import is_collapsed, toggle_collapsed
+    # Ensure the panel is EXPANDED without using its chevron: the chevron's
+    # handler reruns inside AppTest and double-fires the click.
+    if is_collapsed(user, "dash_auto_alloc", area="dashboard"):
+        toggle_collapsed(user, "dash_auto_alloc", area="dashboard")
+    t = _AT.from_file(APP, default_timeout=60)
+    t.session_state["authenticated"] = True
+    t.session_state["user_id"] = user
+    t.session_state["username"] = U
+    t.session_state["display_name"] = "T"
+    t.session_state["household_id"] = None
+    t.session_state["onboarding_complete"] = True
+    t.session_state["onboarding_step"] = 0
+    t.run()
+    t.switch_page(os.path.join(APP_DIR, "app_pages", "dashboard.py"))
+    t.run()
+    assert not t.exception, t.exception
+    tog = [x for x in t.toggle if x.key == "aar_enabled_toggle"]
+    assert tog, "enable toggle missing"
+    tog[0].set_value(True)
+    t.run()
+    assert not t.exception, t.exception
+    rules = db.get_settings(user).get("auto_alloc_rules") or {}
+    assert rules.get("enabled") is True
+
+
 def test_panel_collapse_persists(user, at):
     chev = [b for b in at.button if b.key == "panel_toggle_dash_allocation"]
     assert chev, "allocation panel toggle missing"

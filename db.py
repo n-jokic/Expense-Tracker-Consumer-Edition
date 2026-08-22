@@ -688,6 +688,10 @@ class UserSettings(Base):
     # {id,label,amount,currency,category,subcategory,description}; empty/None
     # => dashboard falls back to its built-in three.
     quick_presets        = Column(JSON, nullable=True)
+    # D2 (item 11): % auto-allocation rules applied when income is logged.
+    # {"enabled": bool, "targets": [{"type": "goal"|"loan", "ref": str,
+    #   "pct": float}, ...]} — None/empty disables the feature.
+    auto_alloc_rules     = Column(JSON, nullable=True)
 
 
 class MlModel(Base):
@@ -789,6 +793,7 @@ def _migrate(engine):
         "ai_api_key_enc": "VARCHAR",
         "ui_layout": "JSON",
         "quick_presets": "JSON",
+        "auto_alloc_rules": "JSON",
     })
     _add_missing_columns(engine, "income", {
         "income_type": "VARCHAR DEFAULT 'Other'",
@@ -2170,6 +2175,8 @@ _SETTINGS_DEFAULTS = {
     "ui_layout": {},
     # C1: user-editable one-tap presets; None/[] => built-in defaults.
     "quick_presets": None,
+    # D2: % auto-allocation rules; None/{} => feature off.
+    "auto_alloc_rules": None,
 }
 
 def get_settings(user_id):

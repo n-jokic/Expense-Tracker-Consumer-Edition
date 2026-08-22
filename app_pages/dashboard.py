@@ -170,6 +170,114 @@ if personal_view:
                 st.caption("Budgets and this reserve are planning aids — "
                            "they do not change your unallocated balance.")
 
+    # ── Auto-allocation rules editor (D2 / item 11) ──────────────────────────
+    _aar = st.session_state.settings.get("auto_alloc_rules") or {}
+    if not isinstance(_aar, dict):
+        _aar = {}
+    _aar = {"enabled": bool(_aar.get("enabled")),
+            "targets": list(_aar.get("targets") or [])}
+    _goal_opts = [g["goal_name"] for g in get_savings_summary(user_id)["goals"]]
+    _loans_df = q.loans(user_id)
+    _loan_map = {} if _loans_df.empty else {
+        str(r["id"]): str(r["name"] or r["id"]) for _, r in _loans_df.iterrows()}
+    spec = PanelSpec(id="dash_auto_alloc", title="Auto-allocation of income",
+                     icon=":material/call_split:", collapsible=True,
+                     default_expanded=False,
+                     summary=("ON · " + str(len(_aar["targets"])) + " rule(s)"
+                              if _aar["enabled"] else "off"))
+    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    if expanded:
+        with container:
+            _new_enabled = st.toggle(
+                "Split every logged income automatically",
+                value=_aar["enabled"], key="aar_enabled_toggle",
+                help="Goals receive a deposit; LOAN targets move real money "
+                     "as early repayments at log time.")
+            if _new_enabled != _aar["enabled"]:
+                _aar["enabled"] = _new_enabled
+                q.save_settings(user_id, {"auto_alloc_rules": _aar})
+                q.bump_db_version()
+                st.rerun()
+            if not _aar["enabled"]:
+                st.caption("Turn on to split each new income entry across your "
+                           "goals and loans.")
+            else:
+                _total_pct = 0.0
+                for i, t in enumerate(_aar["targets"]):
+                    k = f"aar_{i}"
+                    c1, c2, c3, c4 = st.columns([1.1, 2.2, 0.9, 0.4])
+                    ttype = c1.selectbox(
+                        "Type", ["goal", "loan"],
+                        index=0 if t.get("type") == "goal" else 1,
+                        key=f"{k}_type", label_visibility="collapsed")
+                    if ttype == "goal":
+                        opts = _goal_opts or [str(t.get("ref")) or "(no goals yet)"]
+                        cur = t.get("ref") if t.get("ref") in opts else opts[0]
+                        ref = c2.selectbox("Target", opts,
+                                           index=opts.index(cur),
+                                           key=f"{k}_ref",
+                                           label_visibility="collapsed")
+                    else:
+                        pairs = [(lid, lname) for lid, lname in _loan_map.items()]
+                        if not pairs:
+                            pairs = [(t.get("ref") or "", "(no active loans)")]
+                        ids = [pid for pid, _ in pairs]
+                        labels2 = [pname for _, pname in pairs]
+                        cur_i = ids.index(t.get("ref")) if t.get("ref") in ids else 0
+                        ref = ids[cur_i]
+                        c2.selectbox("Loan", labels2, index=cur_i,
+                                     key=f"{k}_ref", label_visibility="collapsed")
+                    pct = c3.number_input("%", min_value=0.0, max_value=100.0,
+                                          step=1.0,
+                                          value=float(t.get("pct") or 0.0),
+                                          key=f"{k}_pct",
+                                          label_visibility="collapsed")
+                    _total_pct += float(pct)
+                    drop = c4.checkbox("✖", value=False, key=f"{k}_del",
+                                       help="Remove this rule")
+                    t["type"], t["ref"], t["pct"] = ttype, ref, float(pct)
+                    t["_drop"] = drop
+                kept = [dict(t) for t in _aar["targets"] if not t.get("_drop")]
+                for t in kept:
+                    t.pop("_drop", None)
+                b_add2, _fill = st.columns([1, 3])
+                if b_add2.button("+ Add target", width="stretch"):
+                    kept.append({"type": "goal",
+                                 "ref": (_goal_opts[0] if _goal_opts else ""),
+                                 "pct": 10.0})
+                    q.save_settings(user_id, {"auto_alloc_rules":
+                                              {"enabled": True, "targets": kept}})
+                    q.bump_db_version()
+                    st.rerun()
+                _norm = [{kk: t[kk] for kk in ("type", "ref", "pct")} for t in kept]
+                if _norm != _aar["targets"]:
+                    if st.button("Save rules", type="primary", width="stretch",
+                                 icon=":material/save:"):
+                        q.save_settings(user_id, {"auto_alloc_rules":
+                                                  {"enabled": True,
+                                                   "targets": _norm}})
+                        q.bump_db_version()
+                        st.toast("Rules saved.", icon=":material/check:")
+                        st.rerun()
+                if _total_pct > 100.0:
+                    st.warning(f"Rules add up to {_total_pct:g}% of the income — "
+                               "they will be scaled down pro-rata whenever the "
+                               "unallocated pool is tight.")
+                _remainder = max(0.0, 100.0 - _total_pct)
+                st.caption(f"{_total_pct:g}% auto-allocated · {_remainder:g}% "
+                           "stays in unallocated funds (display only).")
+            _last = st.session_state.get("last_auto_alloc")
+            if isinstance(_last, dict) and _last.get("enabled"):
+                with st.expander("Last run", icon=":material/history:"):
+                    for a in _last.get("applied", []):
+                        st.markdown(f"- ✅ {a['ref']} · {fmt(a['amount_eur'], DC, rates)}")
+                    for s2 in _last.get("skipped", []):
+                        st.markdown(f"- ⏭️ {s2['ref']} · skipped")
+                    for e2 in _last.get("errors", []):
+                        st.markdown(f"- ⚠️ {e2['ref']} · {e2.get('error', 'failed')}")
+                    if _last.get("scaled"):
+                        st.caption("Requests exceeded the pool — all targets were "
+                                   "scaled down pro-rata.")
     # One-tap quick logging (C1) — BISECTION VARIANT B1: no @st.dialog.
     _QP_DEFAULTS = [
         {"id": "coffee", "label": "☕ Coffee", "amount": 2.50, "currency": "EUR",
