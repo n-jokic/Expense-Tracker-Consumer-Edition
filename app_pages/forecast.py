@@ -103,6 +103,20 @@ if method == "ML model":
             f"{ml_result['history_months']} months of history · "
             f"80% range: **{fmt(ml_result['lower'], DC, rates)} – {fmt(ml_result['upper'], DC, rates)}**"
         )
+        # research.md M1: backtest accuracy is computed on every call — show it
+        # so the prediction range carries visible evidence instead of blind trust.
+        with st.expander("Model accuracy", icon=":material/verified:"):
+            _mm = ml_result.get("model_metrics") or {}
+            if _mm:
+                _mmdf = pd.DataFrame(_mm).T.rename(columns={
+                    "mae": "MAE", "smape": "sMAPE %", "bias": "Bias"})
+                _mmdf.index.name = "model"
+                st.dataframe(_mmdf)
+            else:
+                st.caption("No backtest metrics yet - the model needs at least "
+                           "3 rolling origins of history.")
+            st.caption(f"{ml_result.get('backtest_origins', 0)} rolling origins · "
+                       f"selection: {ml_result.get('selection_reason', 'n/a')}")
 elif method == "7-day average":
     recent = period_exp[period_exp["date"] >= pd.Timestamp(today) - pd.Timedelta(days=6)]
     n_days = min(max(days_elapsed, 1), 7)

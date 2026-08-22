@@ -559,10 +559,26 @@ def subscription_changes(user_id: int, limit: int = 100) -> list[dict]:
 
 
 def anomalies(user_id: int, multiplier: float = 2.0, limit: int = 100) -> list[dict]:
-    df = unusual_expenses(db.get_expenses(user_id), multiplier=float(multiplier))
+    """ML-backed anomaly scan shared with the Insights page (research.md M2).
+
+    Returns raw expense rows enriched with IsolationForest score / severity /
+    reasons so AI-tool and MCP answers match what the UI shows. The legacy
+    multiplier argument is kept for signature compatibility but no longer
+    filters rows - the model decides; callers cap results via limit."""
+    import forecasting as fc
+
+    flagged = fc.detect_anomalies(db.get_expenses(user_id))
     rows = []
-    for _, row in df.head(limit).iterrows():
-        item = row.to_dict()
+    for _, row in flagged.head(limit).iterrows():
+        item = {k: row[k] for k in
+                ("date", "description", "category", "amount", "currency", "amount_eur")
+                if k in row.index}
+        item["anomaly_score"] = float(row["anomaly_score"])
+        item["severity"] = str(row.get("severity", "medium"))
+        try:
+            item["reasons"] = [str(r) for r in (row.get("reasons") or [])]
+        except (TypeError, ValueError):
+            item["reasons"] = []
         if hasattr(item.get("date"), "isoformat"):
             item["date"] = item["date"].isoformat()
         rows.append(item)

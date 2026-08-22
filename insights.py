@@ -17,6 +17,13 @@ from forecasting import detect_anomalies, detect_subscriptions
 import queries as q
 
 
+@st.cache_data(show_spinner=False)
+def _ml_flagged(expenses_df: pd.DataFrame):
+    """research.md M7: IsolationForest scan cached per dataset so Insights
+    reruns never refit the model for identical data."""
+    return detect_anomalies(expenses_df)
+
+
 # ── Canonical analysis: delegated to services/finance_queries.py ─────────────
 # The pure math now lives in the shared service so MCP + Streamlit + AI share
 # one implementation. This module re-exports the canonical functions for
@@ -249,7 +256,9 @@ def render_insights(expenses_df: pd.DataFrame, income_df: pd.DataFrame,
                      f"at **{fmt(amt, DC, rates)}** — {direction} vs last month."))
 
     # ── Insight 3: Unusual expenses ───────────────────────────────────────────
-    unusual = unusual_expenses(expenses_df, multiplier=2.5)
+    # research.md M2/M7: one ML anomaly definition everywhere, cached per
+    # dataset so reruns do not refit IsolationForest.
+    unusual = _ml_flagged(expenses_df)
     this_month_unusual = unusual[
         (unusual["date"].dt.year == year) & (unusual["date"].dt.month == month)
     ] if not unusual.empty else pd.DataFrame()

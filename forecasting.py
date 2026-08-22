@@ -195,7 +195,15 @@ def forecast_next_month(expenses_df: pd.DataFrame, recurring_templates=None) -> 
     elif selected == "ets":
         lower, upper = ets_lower, ets_upper
     else:
-        lower, upper = max(0.0, total * 0.8), total * 1.2
+        # research.md M4: derive the band from this model's OWN backtest
+        # residuals (~80% interval ~= +-1.28*MAE) instead of an arbitrary +-20%.
+        # Fallback keeps +-20% when backtesting is too thin to trust (<3 origins).
+        mae = float((selection.get("metrics") or {}).get(selected, {}).get("mae") or 0.0)
+        if int(selection.get("origins", 0)) >= 3 and math.isfinite(mae) and mae > 0:
+            band = max(1.28 * mae, 0.10 * total)   # never tighter than +-10%
+            lower, upper = max(0.0, total - band), total + band
+        else:
+            lower, upper = max(0.0, total * 0.8), total * 1.2
     out = {
         "total": total, "lower": lower, "upper": upper,
         "by_category": {}, "fallback": total is None,
@@ -347,6 +355,15 @@ def detect_anomalies(expenses_df: pd.DataFrame, contamination: float = 0.05) -> 
     # Keep only existing
     feature_cols = [c for c in feature_cols if c in df.columns]
     X = df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
+
+    # research.md M3: raw amount_eur otherwise dominates IsolationForest splits;
+    # standardize so behavioral ratios carry comparable weight.
+    try:
+        from sklearn.preprocessing import StandardScaler
+
+        X = StandardScaler().fit_transform(X)
+    except Exception:
+        pass  # ponytail: unscaled fallback keeps the scan alive on partial sklearn
 
     model = IsolationForest(contamination=contamination, random_state=42)
     labels = np.asarray(model.fit_predict(X))
@@ -535,6 +552,9 @@ class _SubcategorizerModel:
             from sklearn.feature_extraction.text import TfidfVectorizer
             self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
             X = self.vec.fit_transform(d["description"].astype(str))
+        # research.md M5 scope note: balancing lives on the CATEGORY model
+        # (628/641) where rare categories compete across many classes; here the
+        # model is per-category and balancing flattens 2-class confidence.
         self.clf = LogisticRegression(max_iter=500)
         # Calibrated classifier when enough data
         if len(d) >= 50 and d["subcategory"].nunique() >= 2:
@@ -608,7 +628,7 @@ class _CategorizerModel:
             from sklearn.feature_extraction.text import TfidfVectorizer
             self.vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
             X = self.vec.fit_transform(df["description"].astype(str))
-        self.clf = LogisticRegression(max_iter=500)
+        self.clf = LogisticRegression(max_iter=500, class_weight="balanced")
         if len(df) >= 50 and df["category"].nunique() >= 3:
             try:
                 from sklearn.calibration import CalibratedClassifierCV
@@ -621,7 +641,7 @@ class _CategorizerModel:
         except Exception:
             try:
                 from sklearn.linear_model import LogisticRegression
-                self.clf = LogisticRegression(max_iter=500)
+                self.clf = LogisticRegression(max_iter=500, class_weight="balanced")
                 self.clf.fit(X, df["category"])
             except Exception:
                 return False

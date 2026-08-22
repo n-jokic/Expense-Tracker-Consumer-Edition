@@ -99,6 +99,30 @@ if expanded:
                    "progress bars compare your spending against them.")
         bcat = st.selectbox("Category", CAT_LIST, key="bud_cat")
         bcur = st.selectbox("Enter in", list(SUPPORTED_CURRENCIES.keys()), key="bud_cur")
+
+        # research.md M6: ML budget recommender (linear trend over recent
+        # months) prefills the form below - nothing saves without Save.
+        if st.button("Suggest from my history", icon=":material/auto_awesome:",
+                     key="bud_suggest", width="stretch",
+                     help="Linear-trend estimate per category from your last 6 months"):
+            import forecasting as _fc
+
+            sug = _fc.suggest_budgets(dfe)
+            if sug:
+                st.session_state["bud_suggestions"] = sug
+                st.rerun()
+            else:
+                st.info("Not enough history yet - a category needs 3+ months "
+                        "with expenses before it can be suggested.")
+        _sug = st.session_state.get("bud_suggestions") or {}
+        if _sug:
+            with st.expander("Suggested monthly caps", icon=":material/lightbulb:"):
+                for _cname in sorted(_sug):
+                    st.markdown(f"- **{_cname}** · {fmt(_sug[_cname], DC, rates)}")
+                if st.button("Clear suggestions", key="bud_sug_clear"):
+                    st.session_state.pop("bud_suggestions", None)
+                    st.rerun()
+
         with st.form("cat_bud_form"):
             bc1, bc2, bc3, bc4 = st.columns(4)
             with bc1:
@@ -110,8 +134,11 @@ if expanded:
                 bsub = st.selectbox("Subcategory",
                                     ["(entire category)"] + CATEGORIES[bcat])
             with bc4:
+                _ba_val = min(float(_sug.get(bcat, 0.0)), MAX_SAVINGS_TARGET) \
+                    if bcat in _sug else 0.0
                 ba = st.number_input(f"Budget ({get_currency_symbol(bcur)})", min_value=0.0,
-                                     max_value=MAX_SAVINGS_TARGET, step=10.0, format="%.2f")
+                                     max_value=MAX_SAVINGS_TARGET, step=10.0, format="%.2f",
+                                     value=_ba_val)
             if st.form_submit_button("Save", type="primary", icon=":material/save:"):
                 be = to_eur(ba, bcur, rates)
                 try:
