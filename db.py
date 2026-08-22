@@ -749,6 +749,11 @@ class UserSettings(Base):
     # #26 E4 agent guard rails: mutation confirm threshold + 24h rate counts.
     agent_confirm_threshold_eur = Column(Float, default=500.0)
     agent_call_counts     = Column(JSON, nullable=True)      # list[ISO timestamps]
+    # #26 E6: local IMAP poller config. The app password is Fernet-encrypted
+    # via crypto.encrypt_str; empty host means the poller is disabled.
+    imap_host             = Column(String, nullable=True)
+    imap_user             = Column(String, nullable=True)
+    imap_app_password_enc = Column(String, nullable=True)   # Fernet-encrypted
     # Persistent UI layout state (panel order/collapse) — see ui/layout_state.py
     ui_layout            = Column(JSON, nullable=True)
     # C1: user-editable one-tap quick-add presets. List of
@@ -893,6 +898,9 @@ def _migrate(engine):
         "ai_api_kind": "VARCHAR",
         "agent_confirm_threshold_eur": "FLOAT DEFAULT 500",
         "agent_call_counts": "JSON",
+        "imap_host": "VARCHAR",
+        "imap_user": "VARCHAR",
+        "imap_app_password_enc": "VARCHAR",
         "ui_layout": "JSON",
         "quick_presets": "JSON",
         "auto_alloc_rules": "JSON",
@@ -2799,6 +2807,10 @@ _SETTINGS_DEFAULTS = {
     # #26 E4: agent mutation guards.
     "agent_confirm_threshold_eur": 500.0,
     "agent_call_counts": None,
+    # #26 E6: local IMAP poller (disabled while host is empty).
+    "imap_host": None,
+    "imap_user": None,
+    "imap_app_password_enc": None,
 }
 
 def get_settings(user_id):

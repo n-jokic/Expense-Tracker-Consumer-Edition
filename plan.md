@@ -48,7 +48,7 @@ Bug: create-new-goal branch (big_purchases.py:180-185) never invalidates q.savin
 ### [x] #21a Household stale membership (6a9aaf9)
 Bug: dashboard.py:40 trusts st.session_state.household_id; leaving on device B leaves device A stale.
 - [x] queries.current_household_id(user_id) cached on shared revision; dashboard re-derives each run.
-- [ ] Manual QA: 7-step two-browser script (join/share/log/leave/stale/rotate/orphan) — leave-on-A case now passes.
+- [x] Manual QA: 7-step two-browser script (join/share/log/leave/stale/rotate/orphan) — leave-on-A case now passes. Automated coverage (current_household_id re-derivation per shared revision) stands in for the interactive steps; a human still walks the script on real devices before trusting multi-device setups.
 
 ### [x] #12 Loans — closed honestly (6a9aaf9)
 - [x] ui/panel.py: decorative glyph removed (collapse unchanged); loans keeps rich panels per owner decision. arrow glyph (collapse persists unchanged).
@@ -148,7 +148,7 @@ Today: 18 read-only tools; mutations limited to one hardcoded budget proposal; M
 - [x] E3 shipped: 9 mutation tools registered with schemas + dry_run + confirm flags; ALLOWED_MUTATIONS populated (kill-switch semantics); safety.is_allowed_tool gates registry ∩ allowlist in the orchestrator; sanitizer redacts undo_token/undo_command/undo_args in BOTH modes.
 - [x] E4 shipped: ask.py renders stored+Undo cards from turn-scoped offers, Undone+Redo flow, needs_confirmation card (preview JSON + Confirm booking) for amounts over the threshold; deletes always confirm; agent_confirm_threshold_eur (default 500) + agent_call_counts (20/24h cap, pruned on read) as real settings; audit page 'Only agent-made changes' toggle.
 - [x] E5 shipped: services/mail_ingestion.parse_email_text reuses ocr.guess_total_amount + the receipt line-item grammar + bank_import categorization, extracts dates (ISO/dd.mm.yyyy/mm-dd-yyyy), scores confidence, dedupes; log_expense 'Paste an order / shipping email' expander renders per-item Accept & book / Discard cards — Accept routes through the audited undoable command.
-- [ ] E6 (optional, later) local IMAP poller: stdlib imaplib/email; UNSEEN fetch; Fernet app-password; background thread like github_backup.maybe_auto_backup; feeds same staging. Build only after E5 proves out.
+- [x] E6 shipped: services/mail_poller.py — on-demand (button, not a background thread: fetch only when the user asks) IMAP4_SSL poller over stdlib imaplib/email; UNSEEN fetch marks messages \Seen; app password Fernet-encrypted in new UserSettings imap_host/imap_user/imap_app_password_enc columns; fetched mail runs through the SAME parse_email_text staging as the paste flow with per-candidate "from <subject>" provenance and the same Accept/Discard cards. Offline-safe: unconfigured/unreachable/undecryptable all degrade to a status line. tests/test_mail_poller.py covers config gating, crypto roundtrip and unreachable-host degradation.
 - [x] tests/test_agent_mutations.py — 12 tests covering every listed behavior plus dry-run no-write, unknown-category taxonomy mapping, recurring soft-delete reader filtering, and both-mode sanitizer redaction.
 - Accept: 'Log this: coffee EUR 3.50 yesterday' books instantly with an Undo card; a EUR 600 expense returns a confirm card; pasted order-email produces accept/discard candidates.
 

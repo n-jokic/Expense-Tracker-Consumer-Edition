@@ -604,6 +604,33 @@ with tab_data:
             st.error(f"Last GitHub backup failed ({when}): "
                      f"{settings.get('gh_last_error')}")
 
+    # -- #26 E6: local IMAP poller configuration --------------------------
+    st.subheader(":material/mark_email_unread: Email inbox (IMAP)")
+    st.caption("Let the Log-expense page offer booking candidates from UNSEEN order emails. The app password is stored encrypted on this machine and mail is fetched only when you press the button -- nothing books automatically.")
+    with st.form("imap_form"):
+        imap_host = st.text_input("IMAP server",
+                                  value=settings.get("imap_host") or "",
+                                  placeholder="imap.gmail.com")
+        imap_user = st.text_input("Account",
+                                  value=settings.get("imap_user") or "",
+                                  placeholder="you@gmail.com")
+        imap_pw = st.text_input("App password", type="password",
+                                placeholder="Leave blank to keep the stored one")
+        saved_imap = st.form_submit_button(
+            "Save inbox settings", icon=":material/save:", width="stretch")
+    if saved_imap:
+        updates = {"imap_host": imap_host.strip(), "imap_user": imap_user.strip()}
+        if imap_pw:
+            from crypto import encrypt_str
+            updates["imap_app_password_enc"] = encrypt_str(imap_pw)
+        try:
+            q.save_settings(user_id, updates)
+        except Exception as e:
+            st.error(f"Could not save: {e}")
+        else:
+            st.success("Inbox settings saved.", icon=":material/check:")
+            st.rerun()
+
 
 # ── Sync tab (phone pairing + conflicts) ─────────────────────────────────────
 with tab_sync:

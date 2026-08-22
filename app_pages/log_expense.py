@@ -51,13 +51,32 @@ with st.expander("Paste an order / shipping email",
     st.caption("Parse a pasted confirmation email into booking candidates — "
                "nothing is saved until you accept an item.")
     _pasted = st.text_area("Email text", height=130, key="mail_paste")
+    _imap_row1, _imap_row2 = st.columns([1, 1])
     if st.button("Parse candidates", key="mail_parse_btn",
                  icon=":material/manage_search:",
                  disabled=not (_pasted or "").strip()):
         from services.mail_ingestion import parse_email_text
 
         st.session_state["mail_candidates"] = parse_email_text(_pasted)
+        st.session_state["mail_parsed_once"] = True
         st.rerun()
+    # #26 E6: pull UNSEEN order emails from the configured inbox — same
+    # staging cards, nothing books automatically.
+    from db import get_settings
+    from services.mail_poller import is_configured
+    if is_configured(get_settings(user_id)):
+        if st.button("Fetch unseen from inbox", key="mail_fetch_btn",
+                     icon=":material/mark_email_unread:"):
+            from services.mail_poller import poll_for_candidates
+
+            _cands, _status = poll_for_candidates(user_id)
+            if _cands:
+                st.session_state["mail_candidates"] = (
+                    st.session_state.get("mail_candidates") or []) + _cands
+            elif _status:
+                st.caption(_status)
+            if _cands:
+                st.rerun()
     _mail_cands = st.session_state.get("mail_candidates") or []
     if not _mail_cands and st.session_state.get("mail_parsed_once"):
         st.caption("No amounts found in that text.")
@@ -69,7 +88,9 @@ with st.expander("Paste an order / shipping email",
                 f"**{_cand['description']}** · "
                 f"{fmt_dual(_cand['amount_eur'], DC, rates)} · "
                 f"{_cand['category']}{_sub} · {_cand.get('date') or 'today'}")
-            st.caption(f"confidence {_cand.get('confidence', 0):.0%}")
+            _src = _cand.get("source_email")
+            st.caption(f"confidence {_cand.get('confidence', 0):.0%}"
+                       + (f" · from {_src}" if _src else ""))
             _a1, _a2 = st.columns(2)
             if _a1.button("Accept & book", key=f"mail_acc_{_mi}",
                           type="primary", icon=":material/check:",
