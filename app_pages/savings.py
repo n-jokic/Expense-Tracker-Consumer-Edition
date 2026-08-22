@@ -556,10 +556,13 @@ if saved:
                 _nrows = goal_rows(fresh, goal_name)
                 nb = float(_nrows.iloc[-1]["balance_eur"]) if not _nrows.empty else de
                 action = "withdrawn from" if dep < 0 else "saved to"
-                st.success(f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
-                           f"balance: {fmt(nb, DC, rates)}")
-                dfs_all = fresh
-                goals = sorted(set(dfs_all["goal_name"].dropna()))
+                # #13: flash + rerun so the goal list/balances re-render from
+                # the bumped cache instead of patched locals (was stale).
+                st.session_state["sav_flash"] = (
+                    "success",
+                    f"**{fmt(abs(de), DC, rates)}** {action} **{goal_name}** — "
+                    f"balance: {fmt(nb, DC, rates)}")
+                st.rerun()
 
 dfs = q.savings(user_id)
 accs = q.savings_accounts(user_id)

@@ -154,6 +154,75 @@ def create_wishlist_target(user_id: int, goal_name: str, *,
     return CommandResult(changed=True, revision=_bump(user_id), affected_ids=(rid,))
 
 
+def create_target_and_fund_purchase(user_id: int, purchase_fields: Mapping,
+                                    goal_name: str, *,
+                                    target_eur: float = 0.0,
+                                    interest_rate: float = 0.0) -> CommandResult:
+    """Create a wishlist item AND its new savings target in ONE transaction (#13).
+
+    Previously the page created the target and the item via two separate
+    commands with a rerun in between; the dropdown then showed stale options
+    because the cached savings reader was never invalidated mid-flow. This
+    command writes both rows atomically: anchor Savings row (zero deposit,
+    carries the target), then the BigPurchase stamped with its stable
+    funding reference. One audit group, one revision bump."""
+    from datetime import date as _date
+    from db import Savings, BigPurchase, log_audit
+    name = str(goal_name or "").strip()
+    if not name:
+        raise CommandError("The savings target needs a name.")
+    tgt = _q2(max(_finite_amount(target_eur or 0.0, "Target amount"), 0.0))
+    rate = _finite_amount(interest_rate or 0.0, "Interest rate")
+    if rate < 0 or rate > 100:
+        raise CommandError("Interest rate must be between 0 and 100.")
+    row_map = dict(purchase_fields or {})
+    s = _session()
+    try:
+        clash = s.query(Savings).filter(
+            Savings.user_id == user_id,
+            Savings.is_deleted.isnot(True)).all()
+        if any(str(r.goal_name or "").strip().lower() == name.lower() for r in clash):
+            raise CommandError(f"A savings goal named '{name}' already exists.")
+        anchor = Savings(
+            user_id=user_id, goal_name=name, date=_date.today(),
+            target_eur=tgt, deposited=0.0, currency="EUR", deposited_eur=0.0,
+            interest_rate=rate, balance_eur=0.0,
+            notes="Wishlist funding target",
+        )
+        s.add(anchor)
+        s.flush()
+        rid = str(anchor.id)
+        log_audit(s, user_id, "CREATE", "savings", rid,
+                  {"goal": name, "target_eur": tgt, "wishlist_target": True})
+        bp_id = str(__import__("uuid").uuid4())
+        obj = BigPurchase(
+            id=bp_id, user_id=user_id,
+            name=row_map.get("name", ""), category=row_map.get("category", "Other"),
+            price=float(row_map.get("price", 0)), currency=row_map.get("currency", "EUR"),
+            price_eur=float(row_map.get("price_eur", 0)),
+            usage_hours=float(row_map.get("usage_hours", 0)),
+            importance=int(row_map.get("importance", 3)),
+            status=row_map.get("status", "wishlist"),
+            sort_order=int(row_map.get("sort_order", 0) or 0),
+            notes=row_map.get("notes", ""),
+            funding_source=FUNDING_SAVINGS_GOAL,
+            funding_goal_ref=rid,
+        )
+        s.add(obj)
+        log_audit(s, user_id, "CREATE", "big_purchases", bp_id,
+                  {**{k: v for k, v in row_map.items()},
+                   "funding_source": FUNDING_SAVINGS_GOAL,
+                   "funding_goal_ref": rid})
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(bp_id, rid))
+
+
 def set_purchase_funding(user_id: int, purchase_id: str, *, source: str | None,
                          goal_ref: str | None = None) -> CommandResult:
     """Attach / change / clear a wishlist item's funding target (FIN-06).

@@ -22,7 +22,8 @@ from finance import derive_hourly_rate
 from services.commands import CommandError
 from services.purchase_commands import (
     FUNDING_SAVINGS_GOAL, FUNDING_UNALLOCATED,
-    SELECTABLE_STATUSES, buy_wishlist_item, create_wishlist_target,
+    SELECTABLE_STATUSES, buy_wishlist_item, create_target_and_fund_purchase,
+    create_wishlist_target,
     funding_summary, is_selectable_status, refund_wishlist_item,
     resolve_linked_goal_name, set_purchase_funding,
 )
@@ -172,29 +173,31 @@ with st.form("bp_form", clear_on_submit=True):
                 st.toast("Already saved — duplicate prevented.", icon=":material/check:")
                 st.rerun()
             pe = to_eur(bp_price, bp_cur, rates)
-            # FIN-06: resolve the funding reference BEFORE the insert so the
-            # item is created with its stable link in place.
-            fund_src, fund_ref = None, None
+            # FIN-06 / #13: funding is resolved BEFORE the insert so the item
+            # is created with its stable link in place. The create-new-target
+            # choice is ONE atomic command (goal + item in a single
+            # transaction), closing the stale-dropdown gap.
+            fields = {"name": bp_name.strip(), "category": bp_cat,
+                      "price": bp_price, "currency": bp_cur, "price_eur": pe,
+                      "usage_hours": float(bp_use), "importance": int(bp_imp),
+                      "status": "wishlist", "notes": bp_notes}
             try:
-                if bp_fund_choice == _OPT_NONE:
-                    fund_src = FUNDING_UNALLOCATED
-                elif bp_fund_choice == _OPT_NEW:
-                    tres = create_wishlist_target(user_id, bp_new_goal.strip(),
-                                                  target_eur=float(bp_new_target))
-                    fund_src, fund_ref = FUNDING_SAVINGS_GOAL, tres.affected_ids[0]
+                if bp_fund_choice == _OPT_NEW:
+                    tres = create_target_and_fund_purchase(
+                        user_id, fields, bp_new_goal.strip(),
+                        target_eur=float(bp_new_target))
                     _bump_to_revision(tres)
                 else:
-                    fund_src = FUNDING_SAVINGS_GOAL
-                    fund_ref = _goal_choices().get(bp_fund_choice)
-                    if not fund_ref:
-                        raise CommandError("The selected goal could not be linked.")
-                add_big_purchase(user_id, {
-                    "name": bp_name.strip(), "category": bp_cat,
-                    "price": bp_price, "currency": bp_cur, "price_eur": pe,
-                    "usage_hours": float(bp_use), "importance": int(bp_imp),
-                    "status": "wishlist", "notes": bp_notes,
-                    "funding_source": fund_src, "funding_goal_ref": fund_ref,
-                })
+                    if bp_fund_choice == _OPT_NONE:
+                        fund_src, fund_ref = FUNDING_UNALLOCATED, None
+                    else:
+                        fund_src = FUNDING_SAVINGS_GOAL
+                        fund_ref = _goal_choices().get(bp_fund_choice)
+                        if not fund_ref:
+                            raise CommandError("The selected goal could not be linked.")
+                    add_big_purchase(user_id, {**fields,
+                                               "funding_source": fund_src,
+                                               "funding_goal_ref": fund_ref})
             except CommandError as e:
                 st.error(str(e))
             except Exception as e:

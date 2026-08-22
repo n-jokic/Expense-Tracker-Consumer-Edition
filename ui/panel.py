@@ -100,8 +100,9 @@ def panel(
         # Use horizontal container for responsive header
         header = st.container(horizontal=True, vertical_alignment="center")  # type: ignore[call-arg]
         with header:
-            if spec.reorderable:
-                st.markdown("`↕`", help="Drag to reorder")
+            # #12: the old decorative "drag to reorder" glyph was removed —
+            # panels are collapsible but never draggable, and the arrow
+            # implied an interaction that did not exist.
             label = f"{spec.icon} {spec.title}" if spec.icon else spec.title
             st.markdown(f"**{label}**")
             if spec.summary:

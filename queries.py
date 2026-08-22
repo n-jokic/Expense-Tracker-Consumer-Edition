@@ -11,6 +11,7 @@ from db import (
     get_expenses, get_income, get_savings, get_budgets, get_recurring,
     get_audit_log, get_settings as _db_get_settings,
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
+    get_household_by_member as _db_household_by_member,
     get_big_purchases, get_loans, get_loan_payments,
     get_holdings, get_holding_prices, get_savings_accounts,
     get_data_revision as _db_get_revision,
@@ -97,6 +98,25 @@ def bump_db_version() -> int:
 
 
 # ── Cached readers ────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _household_of(uid: int, version: int):
+    return _db_household_by_member(uid)
+
+
+def current_household_id(user_id: int) -> int | None:
+    """Authoritative household membership for the CURRENT device (#21a).
+
+    st.session_state.household_id goes stale when membership changes on
+    another device (leave/join/kick bumps revisions there, not here). This
+    read is cached on the shared revision, so any membership bump anywhere
+    invalidates it on the next rerun — the dashboard re-derives instead of
+    trusting session state."""
+    info = _household_of(int(user_id), db_version())
+    if info and info.get("id"):
+        return int(info["id"])
+    return None
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _expenses(user_id: int, version: int, include_deleted: bool):

@@ -1135,6 +1135,18 @@ def _parse_dates(df, cols):
     return df
 
 
+def utc_ts(v):
+    """Normalize any timestamp-ish value to a comparable tz-aware UTC pandas Timestamp.
+
+    SQLite round-trips strip tzinfo while stored values were written aware,
+    so naive and aware values coexist in ORM results; sorting them raises
+    TypeError. None/NaN sort as the oldest possible instant (#20)."""
+    if v is None or (isinstance(v, float) and v != v):  # None or NaN
+        return pd.Timestamp.min.tz_localize("UTC")
+    ts = pd.Timestamp(v)
+    return ts.tz_convert("UTC") if ts.tz is not None else ts.tz_localize("UTC")
+
+
 # ── Expenses ──────────────────────────────────────────────────────────────────
 
 _EXP_COLS = ["id","user_id","date","category","subcategory","description",

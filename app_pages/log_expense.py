@@ -34,6 +34,14 @@ help_expander("How to log an expense",
               "the app reads it (OCR), guesses the amount/merchant/category, "
               "and you accept, edit, or reject the result.")
 
+# #13: flash rendered after a save-rerun so the history table below re-reads
+# the bumped cache instead of showing stale rows.
+if (flash := st.session_state.pop("exp_flash", None)):
+    if flash[0] == "success":
+        st.success(flash[1], icon=":material/check_circle:")
+    else:
+        st.toast(flash[1], icon=":material/check_circle:")
+
 # ── Receipt scan (OCR on the server; phone just sends the photo) ─────────────
 
 def _receipt_candidate_value(receipt_result, field):
@@ -402,8 +410,11 @@ if saved:
             st.error(f"Couldn't save: {e}")
         else:
             q.bump_db_version()
-            st.success(f"**{desc}** — {fmt_dual(amount, cur, ae)}", icon=":material/check:")
+            # #13: flash + rerun so the history table reflects the new row.
+            st.session_state["exp_flash"] = (
+                "success", f"**{desc}** — {fmt_dual(amount, cur, ae)}")
             st.balloons()
+            st.rerun()
 
 def _valid_amount(value) -> bool:
     """Reject non-finite / out-of-range amounts for the batch editor.

@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 import queries as q
-from db import (get_session, UserMilestone, add_custom_milestone,
+from db import (get_session, utc_ts, UserMilestone, add_custom_milestone,
                 get_custom_milestones, delete_custom_milestone)
 from gamification import (MILESTONES, get_earned_milestones,
                           get_logging_streak, _next_milestone_hint,
@@ -267,7 +267,7 @@ def _render_badges():
                                + (f" · {progress}" if progress else ""))
 
     st.subheader(":material/notifications_active: Recent unlocks")
-    recent = sorted(earned_dates.items(), key=lambda item: item[1] or pd.Timestamp.min,
+    recent = sorted(earned_dates.items(), key=lambda item: utc_ts(item[1]),
                     reverse=True)[:6]
     if recent:
         for milestone_id, when in recent:

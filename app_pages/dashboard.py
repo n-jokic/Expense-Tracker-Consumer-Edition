@@ -36,8 +36,9 @@ dfi = q.income(user_id)
 dfs = q.savings(user_id)
 dfb = q.budgets(user_id)
 
-# Household toggle
-hh_id = st.session_state.get("household_id")
+# Household toggle (#21a): derive membership from the DB each run — the
+# session_state copy goes stale when leave/join happens on another device.
+hh_id = q.current_household_id(user_id)
 personal_view = True
 if hh_id:
     view = st.segmented_control("View", ["My data", "Household"], default="My data", key="dash_view")

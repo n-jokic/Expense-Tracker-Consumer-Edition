@@ -1,139 +1,179 @@
-# Expense Tracker Consumer Edition — 11-Item Fix & Feature Plan
+# Expense Tracker — Improvement Wave: Items 12–27
 
-> Tracking doc. Tick items as phases complete. Created at planning time; each
-> item carries acceptance criteria. Execution order: A1 → A2 → B1 → B2 → B3 →
-> C1 → C2 → D1 → D2 → E (E may start in parallel with D once A1/A2 land).
+Baseline: HEAD 036d7e6 (819 tests green, Streamlit 1.61.1). Every item below was investigated against current code (file:line cites held in session research notes); owner decisions locked via Q&A round 2026-08-22.
 
-## Ground rules
-- Q&A decisions locked in: one-tap edited **in the dashboard panel**; tap-time price adjust with instant default; pool overview includes **budgets + goals + emergency fund + upcoming-bills reserve**; OCR = **full pipeline rework**; raises = **history with effective dates**; recurring = **full drag-and-drop**; repayment fee booked **as expense shown on loan**; drained goals **auto-archive (restorable)**; auto-allocation runs **on every income log**, targets = **goals, emergency fund, remainder rule, extra loan payments**.
-- Per-phase: `python -m pytest` stays green; manual smoke per affected tab recorded here.
-
-## Key discoveries (shape the plan)
-- Unallocated-funds math **already exists** (FIN-01): `services/finance_queries.py:100-139` (`unallocated_breakdown`, `unallocated_funds_eur`) — never rendered anywhere.
-- Drag-and-drop + collapsible board **already exists** for Recurring (`app_pages/recurring.py:295-327` → `ui/board.py grouped_board`, persisted via `ui/layout_state.py`). Item 7 = *verify-at-runtime + consistency*; new dep only if runtime verification proves the board broken.
-- Goal-link dropdown **already exists** but gated behind a 3-way radio (`big_purchases.py:140-165`).
-- Early-repayment fee booking already matches chosen design (`services/commands.py:790-882`); missing piece = at-repayment-time override (`loans.py:248-251` uses stored values only).
-- Crash roots: `r_cur` used at `log_expense.py:182`, assigned at :224 (widget order); `pct` at `savings.py:705` clamps top only.
-- OCR roots (verified): optional-decimals regex admits phone numbers (`total_extractor.py:18`); hyphenated "Sub-total" gains +5 while dodging −4 (`:12,:13,:106`); "AMOUNT" alone not a key; currency regex `(…|€|…)` can never match symbols/glued codes, `user_locale` never passed (`currency_extractor.py:8-35`, `service.py:56`); min-max normalization collapses single date candidate to 0.2 conf (`date_extractor.py:75-81`).
-- Goals have **no status field** — `goal_name` groups of `savings` rows; soft delete + Trash/Restore exist (`db.py:1653-1674`, `savings.py:906-940`) → reuse for archive.
-- Settings persistence pattern ready-made: JSON columns on `user_settings` + `_SETTINGS_DEFAULTS` + `_add_missing_columns` + `atomic_update_setting_json` (`db.py:2161-2214`).
-- "Emergency Fund" is a default **goal name** (`domain/taxonomy.py:32`), no special entity → treated as a normal goal.
+Progress legend: `[ ]` todo · `[~]` in progress · `[x]` done (append commit hash when landed). Each phase ends with: full pytest green + page smoke + one commit per item (feat/wix(#NN): ...).
 
 ---
 
-## Phase A — Bug fixes (crashes first)
+## Owner decisions (locked)
 
-### [x] A1. NameError `r_cur` (item 3)
-- `app_pages/log_expense.py`: hoist receipt-review widgets (currency `r_cur`, category `r_cat`, other `rcpt_*` inputs, :218-228) **above** the item-review block (:131-216). Keep identical keys/session state.
-- Acceptance: OCR on test image completes with zero exceptions; kept rows convert with selected currency.
+| Item | Decision |
+|---|---|
+| #12 Loans drag | Keep rich panels — won't-fix dragging; remove misleading glyph only |
+| #13 Purchases | Atomic create-and-link command |
+| #14 Travel | All 4 features · trips table · integrate Open-Meteo + Nominatim (no Google APIs — credit-card wall) |
+| #15 Portfolio | FIFO lots · unrealized tax = info projection + opt-in annual booking |
+| #16 Categories | Delete = force-remap dialog · strict validation vs effective taxonomy |
+| #17 Forecast | All 4 improvements |
+| #18 Insights | Errors expanded, rest collapsed |
+| #21 Households | Stale-fix + admin kick + sharing beyond expenses, per-area visible/editable config |
+| #22 AI providers | Add Gemini + fix ai_api_kind silent-drop |
+| #24 Pie | "Where it is allocated" becomes donut chart |
+| #25 Income | IncomeTemplate table mirroring Recurring · salary stays owned by UserSettings (template syncs from it) |
+| #26 Agent tools | Reversible mutation framework · hybrid confirm (>= EUR 500 configurable) · paste-mail staging first, IMAP poller optional later |
+| #27 UI consistency | Dashboard idiom = canonical kit; migrate all pages |
 
-### [x] A2. Progress-bar crash + clamp sweep (item 6)
-- Add `utils.progress_ratio(value, target) -> float` clamped [0.0, 1.0] (None/≤0 target → 0.0).
-- Replace unclamped sites: `savings.py:705/716`; `dashboard.py:397/399`, `:420/425`; `forecast.py:159-161`; `travel.py:84/94`; `budgets.py:63/66`, `:171/174`; `rewards.py:66/70`.
-- Clamped-from-negative shows hint text (e.g. "overdrawn"); write-side negative producers stay as-is (intentional no-clamp ledger policy, `db.py:1499-1500`).
-- Acceptance: negative-balance goal renders 0% + hint, no exception.
+Defaults locked where Q&A did not cover (veto anytime): income email reminders deferred (board checklist shows unlogged state instead) · compound fun-money bonuses NOT clawed back on undo (documented limitation) · undo window 30 days.
 
-### [x] A3. Recurring tab runtime verification + consistency (item 7)
-- Run app (global Python 3.12 + Streamlit 1.61), exercise board: drag card/group, collapse, Alt+arrows, reload → verify `group_order`/`collapsed_groups` persist in `ui_layout`.
-- Replace silent `except Exception:` fallback (`recurring.py:324-325`) with logging + visible warning.
-- Visual pass: chrome aligned with other tabs.
-- **Decision gate**: only if `grouped_board` cannot work here → add `streamlit-sortables` and re-wire; otherwise no new dep.
-- Acceptance: drag reorder persists across rerun; collapse persists; keyboard path works.
+---
 
-## Phase B — Small features
+## Phase A — Bug fixes
 
-### [x] B1. Early-repayment fee % editable at repayment time (item 8)
-- `loans.py early_repayment_dialog` (:237-294): surcharge-mode selectbox (`fixed`/`percent`) + value input, defaulting to loan's stored values, live caption recompute.
-- Optional "Save as default for this loan" checkbox → persists via existing loan-update path.
-- Booking unchanged (`record_loan_payment` fee-inclusive expense + audited split).
-- Acceptance: % override reflected in total/split/notes; default-save round-trips.
+### [ ] #20 Rewards crash (naive vs aware datetime)
+Root cause verified: earned_at reads back tz-aware; NULL row -> naive pd.Timestamp.min sentinel -> mixed sort (rewards.py:270).
+- [ ] db.py: add utc_ts(v) near _parse_dates (~L1135): None/NaN -> Timestamp.min.tz_localize('UTC'); naive -> localize; aware -> convert.
+- [ ] rewards.py:270: sort key -> utc_ts(item[1]).
+- [ ] Test tests/test_rewards_tz.py: None/naive/aware contract + mixed-dict sort regression.
+- Accept: badges tab renders with a NULL earned_at row present.
 
-### [x] B2. Goal linking via real dropdown (item 9)
-- `big_purchases.py:140-165`: replace 3-way radio with one selectbox **"Savings target"**: `[(no target — pay from unallocated), (➕ create new target…)] + sorted(goal names)`; "create new…" reveals name + target inputs inside existing form.
-- Adjust validation (:172-175) and `fund_src/fund_ref` resolution (:186-199). Edit dialog unchanged.
-- Acceptance: link/unlink/create-new flows save with correct stable ref; no typing of existing goal names anywhere.
+### [ ] #13 Big purchases atomic create-and-link (+ same-class stale renders)
+Bug: create-new-goal branch (big_purchases.py:180-185) never invalidates q.savings cache nor reruns.
+- [ ] services/purchase_commands.py::create_target_and_fund_purchase(...) — one transaction: savings target + wishlist purchase linked via existing funding_goal_ref; reuse validators; audit; single revision bump.
+- [ ] UI _OPT_NEW branch calls the atomic command directly.
+- [ ] One-line stale-render fixes (confirmed class-mates): savings.py deposit branch (after L562) + term deposit (after L830) + log_expense.py (after balloons ~L327): add missing q.bump_db_version()/st.rerun().
+- [ ] Tests: AppTest one-pass create+fund; double-click race -> one goal + error toast.
+- Accept: new goal appears funded in a single submit.
 
-### [x] B3. Auto-archive drained goal after purchase (item 10)
-- Hook in `buy_wishlist_item` (`services/purchase_commands.py:235-359`) post-debit pre-commit: remaining principal ≤ €0.005 AND no other non-bought purchases sharing `funding_goal_ref` AND no active term accounts → soft-delete goal rows + audit `BUY`/`auto_archived_goal`.
-- Symmetric restore in `refund_wishlist_item` (:362-417): if refunded item's goal resolves to nothing alive → restore its soft-deleted rows + audit `AUTO_RESTORE`.
-- Restorable via existing Trash expander (`savings.py:906-940`).
-- Acceptance: buy drains single-linked goal → goal archived; refund brings it back.
+### [ ] #21a Household stale membership
+Bug: dashboard.py:40 trusts st.session_state.household_id; leaving on device B leaves device A stale.
+- [ ] queries.current_household_id(user_id) DB read; dashboard derives membership each run.
+- [ ] Manual QA: 7-step two-browser script (join/share/log/leave/stale/rotate/orphan) — leave-on-A case now passes.
 
-## Phase C — Medium features
+### [ ] #12 Loans — close honestly
+- [ ] ui/panel.py:103-104: remove decorative reorderable arrow glyph (collapse persists unchanged).
+- Accept: no fake drag affordance on loans.
 
-### [x] C1. Fully configurable one-tap presets (items 1 + tap-time price)
-- New JSON column `user_settings.quick_presets` (`{id,label,amount,currency,category,subcategory,description}` list) via defaults+migration+whitelist. Empty ⇒ built-in three.
-- Dashboard panel: header **✏️ Edit** action (`panel(actions=…)`, `ui/panel.py:81`) toggles inline editor (label, amount, currency, category/subcategory, description, remove, add preset); saves via `save_settings`.
-- Tap-time adjust: primary button logs instantly at preset amount (dedupe extracted into shared helper); small ✎ opens prefilled `st.dialog` → Log. Convert via `to_eur` at save.
-- Update `tests/test_app_smoke.py:232-244`.
-- Acceptance: add/edit/remove/reorder presets persists; instant tap + ✎-adjust paths both dedupe-safe.
+## Phase B — Quick wins
 
-### [x] C2. Raise history with effective dates (item 5)
-- New `SalaryRaise` model (id, user_id FK, amount, currency, effective_date, income_id nullable, note, created_at) — table auto-created by create_all; accessor `salary_raises(user_id)`.
-- Raise flow (`log_income.py:200-205`): insert history row (effective_date = income date) AND overwrite `salary_amount`. Existing readers (forecast, hourly fallback, gamification, big-purchases) keep reading setting — zero regressions.
-- Render raise list inside "My fixed salary" expander.
-- Assumption: raise applies immediately going forward; no retroactive recomputation.
-- Acceptance: applying raise inserts row, updates setting, forecast unaffected, list renders.
+### [ ] #24 'Where it is allocated' donut
+- [ ] dashboard.py:132-145: replace markdown bullets with plotly go.Pie(hole=0.45), slices = savings goals + term deposits + holdings, CHART_COLORS, hover shows goal targets; keep reconciliation caption; metrics row keeps Unallocated.
+- [ ] Test: slice sum equals _alloc parts.
+- Accept: donut renders inside existing expander; totals reconcile.
 
-## Phase D — Dashboard transparency & automation
+### [ ] #18 Insights collapsible (errors expanded)
+- [ ] insights.py:446-460: each card -> st.expander(label, expanded=(type=='error')); label = severity icon + summary (text before em-dash, else first ~70 chars).
+- [ ] ML-anomaly + subscription sections get own collapsed expanders; MoM table untouched.
+- [ ] Tests: summary-extraction unit; AppTest expander count == card count.
+- Accept: wall-of-banners gone; errors still visible immediately.
 
-### [x] D1. "Where your money goes" panel (item 2)
-- New `PanelSpec(id="dash_allocation")` in personal-panel cluster:
-  - Headline metric **Unallocated now** (`unallocated_funds_eur`).
-  - Breakdown from `unallocated_breakdown()`: per-goal allocations (`get_savings_summary`), locked terms, holdings — expandable rows.
-  - Planning layers labelled outside FIN-01: monthly budgets total vs spent (`effective_category_budgets`) + **upcoming-bills reserve** (active recurring due this month minus logged, reusing `rec_template_id` month-gate pattern from `recurring.py:114-135`).
-- Read-only consumer of existing services; no invariant changes.
-- Acceptance: numbers reconcile with FIN-01 tests; panel collapses/persists like others.
+### [ ] #19 Ask-your-data charts inline
+Bugs: prompt never mentions rendered charts; figure hides in Sources.
+- [ ] ai/prompts.py::ADVISOR_SYSTEM: add line — chart accompanying results is rendered below; say 'see the chart below'; never claim inability to plot.
+- [ ] ask.py: extract _render_chart_from_result(res) (existing validate_chart_spec path); render inline under assistant message; Sources keeps textual summaries only.
+- [ ] Tests: orchestrate('make me a plot') -> _chart present; invalid spec falls back silently.
+- Accept: 'make me a plot of my spendings' answers with text + inline chart.
 
-### [x] D2. %-auto-allocation of income (item 11)
-- `user_settings.auto_alloc_rules` JSON: `{enabled, targets:[{type:"goal"|"loan", ref, pct}]}` (+ migration trio as C1).
-- New service `apply_auto_allocations(user_id, income_amount_eur, income_date)` called from both income-save paths (`log_income.py` one-tap :87-111, form :194-205) after insert, before `bump_db_version`:
-  - goal targets → `deposit_to_goal` (pool-validating);
-  - loan targets → `record_loan_payment(payment_type="early", surcharge=0)` capped at remaining balance;
-  - requested > unallocated pool → **pro-rata scale down** + toast; per-rule failures never abort income save;
-  - remainder rule = display-only caption (100 − Σpct)%.
-- Dashboard `PanelSpec(id="dash_auto_alloc")` editor: enable toggle, target rows (type selectbox, live goals/loans selectbox, pct, remove), add-row, Σ%>100 warning, remainder caption, last-run summary. Help text states loan targets move real money as early repayments at log time.
-- Acceptance: rules persist; salary log triggers allocations; pro-rata scaling verified; FIN-01 preserved.
+### [ ] #23 Make expense_categorizer visible
+Model exists (TF-IDF + LogReg, needs manual activation; wired only into CSV import / OCR).
+- [ ] log_expense.py (~L335): 'Suggest' button beside Category -> suggest_category_and_subcategory(...) pre-fills selectboxes + confidence caption; suggestion columns/feedback already exist (db.py:1143-1199).
+- [ ] settings.py ML tab (~L154): status line 'Keyword rules only — activate candidate above' vs active-model metrics.
+- [ ] Test: >=10 labelled rows + active model -> AppTest prefill asserted; <10 degrades gracefully.
+- Accept: manual expense form visibly suggests categories.
 
-## Phase E — OCR pipeline rework (item 4)
-Engine/preprocessing (RapidOCR, cache, warp) stay; extraction + confidence reworked:
-1. [x] **Totals** (`total_extractor.py`): mandatory decimal-cents regex; exclude tel/fax/url lines; grand-total keys incl. exact `amount`, `balance due`, `grand total`, `ukupno`; penalties match `sub-total`/`sub total`/`subtotal`/`medjuzbirka`; de-dup equal-value candidates merging reasons. Ticket receipt ⇒ **84.80 top**, 76.80 second, phones gone.
-2. [x] **Currency** (`currency_extractor.py`): rebuild pattern without impossible `` boundaries; thread `user_locale`/default currency through `service.analyze_receipt` (:56) so 0.3-conf fallback activates instead of `[]`.
-3. [x] **Dates** (`date_extractor.py:75-81`): single candidate skips min-max normalization — absolute score mapping (≥LOW_CONF when structurally valid).
-4. [x] **Shared confidence**: one normalize helper in `confidence.py` replacing three copied formulas (fixes totals stuck under 0.80 pass-2 gate).
-5. [x] **Line items** (`line_item_extractor.py`): stricter row grammar (trailing amount required; tel/address/header lines excluded); keep accept/edit/reject UX + mismatch warning.
-6. [x] **Page wiring** (`log_expense.py`): pass default currency into analysis; "assumed <DC>" badge when currency came from fallback.
-7. [x] **Regression tests**: extractor fixtures incl. ticket's raw text asserting total ranking, phone exclusion, currency detection/fallback, date confidence ≥ threshold, reconcile behaviour.
+### [ ] #17 Forecast improvements (all four)
+Line refs shift +14 (ML accuracy expander landed today).
+- [ ] Band on period-average & 7-day: +/-15% caption matching ML format. ponytail: fixed width; residual-based if bands prove useless.
+- [ ] Pacing marker: 'On track for EUR X · Y days left' metric.
+- [ ] Fixed-vs-discretionary overlay: active recurring sum splits projection (stacked bar).
+- [ ] Salary/savings-rate scenarios: sliders over salary/recurring multiplier -> projected savings rate (SalaryRaise tables already exist).
+- [ ] Pure helpers + unit tests (band math, zero-days guard, split, rate).
+- Accept: all three methods show uncertainty; projection names its fixed component.
 
-## Tests & acceptance (per phase)
-- `python -m pytest` green; new tests: quick-presets round-trip + dedupe; raise-history insert + readers unaffected; auto-alloc pro-rata/loan-cap/FIN-01; buy→auto-archive + refund→auto-restore; progress clamps; OCR fixture suite.
-- Manual smoke checklist per affected tab recorded below as phases land.
+## Phase C — Structural foundation
 
-## Out of scope / deferred
-- Write-side guards against legitimately-negative goal ledgers (display clamps ship; ledger policy intentional).
-- PaddleOCR advanced stack; OCR preprocessing changes; schedulers beyond the chosen on-income trigger.
+### [ ] #16 User-configurable categories/subcategories
+- [ ] db.py: user_taxonomy(user_id, category, subcategory, sort_order, is_deleted, created_at); seed-on-first-access from domain/taxonomy.CATEGORIES; 'Uncategorized' seeded non-deletable.
+- [ ] CRUD: get/upsert/rename/delete(soft)/remap(bulk UPDATE)/can_delete_category(counts across expenses+recurring+budgets).
+- [ ] queries.effective_categories(uid) cached on (uid, db_version).
+- [ ] Picker swap: log_expense (form + data-editor), budgets, recurring x2, big_purchases x2, dashboard, travel, rewards fun-cats merge. Ripple found today: services/commands.py:1173 set_budget must use effective list.
+- [ ] domain/validation.py: strict vs caller's taxonomy; import paths map unknowns -> keyword fallback -> catch-all.
+- [ ] Settings -> Categories UI: add/rename/reorder (numeric up/down); delete = force-remap dialog ('N transactions use this — move to:').
+- [ ] Tests extending test_taxonomy_migration patterns: seed idempotency, remap counts, guards, custom category through set_budget.
+- Accept: user adds a category in Settings and can immediately log/budget against it everywhere.
 
-## Progress log
-- [x] Plan stored (this file).
-- [x] A1 done — rcpt_cat/rcpt_cur hoisted above item review; tests/test_ocr_review*.py + test_app_smoke.py: 16 passed.
-- [x] A2 done — utils.progress_ratio added; clamped savings/dashboard/forecast/travel/budgets/rewards; overdrawn hint on goals. tests/test_progress_ratio.py (5) + smoke/ui suites: 43 passed. Note: test_ask_page_error_does_not_pollute_history errors at fixture setup on ANY tree (pytest temp-dir PermissionError under this sandbox) — pre-existing, unrelated.
-- [x] FINAL done — full `python -m pytest tests`: **779 passed**, 6 failed + 11 errors, all the pre-existing sandbox PermissionError-at-teardown/setup family (github_backup x4, recurring-persist x2, llm x11; 37 PermissionError hits in log) — identical set to the A3 baseline (742 passed then; +37 new green since). Manual smoke checklist below.
+## Phase D — Larger features
 
-## Manual smoke checklist (recorded at Final)
-- Dashboard: preset editor add/edit/save persists; tap-time price adjust logs correct amount; dash_allocation reconcile matches service; auto-alloc panel toggle + Save rules persist; 'Last run' appears after next income.
-- Log expense: scan a receipt -> totals ranking sane; if currency absent, `Assumed <DC>` caption shows and DC prefills; item review unaffected.
-- Log income: record a raise -> history row + salary bump; enabled auto-alloc fires toasts per target and scales with warning when pool is tight.
-- Savings/Goals: deposits unchanged; FIN-01 breakdown still reconciles to the cent.
-- Loans: early-repayment dialog fee override + optional save-as-default; archive/reopen gating intact.
-- Big purchases: single-dropdown funding (unallocated/create/existing); buying drains+auto-archives goal; refund restores AUTO_ARCHIVE'd only.
-- Recurring: board drag + collapse persist across reruns; loud fallback only on real failure.
-- Settings: default_currency blank -> EUR assumed in OCR fallback.
-- [x] E1–E7 done — extractor rework: totals (mandatory decimal cents; tel/fax/url noise lines excluded; GRAND tier over plain UKUPNO with clean-total amount tiebreak; cents-less grouped ints only on total-keyword lines −2; equal-value dedup merges reasons), currency (boundary-safe pattern — €/$ glued to digits now match; user_locale/default_currency 0.3-conf fallback threaded service→facade→page + 'Assumed DC' caption), dates (single valid candidate = 0.75 ≥ LOW_CONF via shared helper), confidence.normalize_confidences replaces three drifted min-max copies (top keyword-backed unpenalised total pinned ≥ HIGH_CONF+0.02 so pass-2 gate is reachable), line items (trailing-amount grammar + tel/@ exclusion; overlap dedup fixed to interior-only so qty rows '2 x 289,99 579,98' survive). tests/test_ocr_extractors_v2.py 16/16; -k 'ocr or extract' 78 passed; smoke+finance regression 49 passed. Delegation note: three background workers ran in parallel on disjoint files; one failed without output (E5) and was redone inline — verify worker claims against git status before trusting them.
-- [x] D2 done — auto_alloc_rules JSON (+migration trio); services.commands.apply_auto_allocations (goal→deposit_to_goal, loan→early repayment capped at schedule balance, pro-rata scaling on tight pool, per-target failures isolated) hooked into BOTH income-save paths before bump; dash_auto_alloc editor (enable toggle, typed target rows, Σ% warning, remainder caption, last-run summary). tests/test_auto_allocation.py 5/5 + editor persistence test; combined gate 49/49. Recovery note: a pwsh splice re-encoded dashboard.py through ANSI (emoji mojibake) and an EOF append landed inside reopen_loan — both reverted via git checkout and redone with the edit tool; prefer edit-tool anchors over shell splices for non-ASCII files.
-- [x] D1 done — dash_allocation panel: Unallocated-now headline + expandable FIN-01 breakdown (per-goal rows, terms, holdings, reconciliation caption) + planning layers OUTSIDE the rule (category budgets vs month spend; upcoming-bills reserve via notifications._unlogged_templates). tests/test_dashboard_allocation.py 3/3 incl. collapse persistence; smoke+unallocated gate 25/25. Isolation gotcha documented: q.* wrappers hide cached _readers — tests must clear q._expenses etc. after direct db seeding (uid reuse + process-global cache).
-- [x] C2 done — SalaryRaise table + record_salary_raise (ONE txn: history row + salary_amount bump + audit with previous amount) + get_salary_raises; income-hook now routes through it (effective_date = income date); 'My fixed salary' expander gains raise-history list and a guarded 'Record a raise…' form. tests/test_salary_raise.py 4/4; smoke+finance+forecast+sync 76/76.
-- [x] C1 done — user_settings.quick_presets JSON column (+migration+default); dashboard one-tap panel rebuilt: ✏️ editor (label/amount/currency/category/sub/del + add/save/cancel/done), per-preset ✎ inline tap-time price adjust, dedupe helper _quick_log. Gotchas pinned by tests: page-scope @st.dialog hangs AppTest (replaced with inline adjust panel); header-action flags need a post-panel read for same-run effect. tests/test_app_smoke.py 10/10 incl. 2 new C1 regressions; purchase/unallocated 32/32.
-- [x] B3 done — buy drains goal + no other unbought links + no active terms => same-tx soft-delete (AUTO_ARCHIVE audit); refund restores only AUTO_ARCHIVE'd goals, never resurrects the purchase's own debit or user-deleted goals. tests/test_purchase_auto_archive.py 5/5; purchase+unallocated+smoke: 32+8 passed. Gotcha documented in test helper: outside Streamlit runtime, queries.db_version() is a session-local counter so ttl-cached readers need explicit .clear() in tests.
-- [x] B2 done — add-form funding is one selectbox (unallocated / create-new / existing goals); create-new reveals name+target inputs; resolution + validation rebranched; no stale radio refs. purchase+smoke+ui suites: 32 passed (1 env setup error, pre-existing).
-- [x] B1 done — early-repayment dialog: fee mode/value widgets pre-filled from loan terms, live surcharge recompute, optional "Save as this loan's default fee" via update_loan. Loan + smoke suites: 42 passed.
-- [x] A3 done — **root cause found & fixed**: (a) grouped_board declared `collapsed_groups`/`group_order` state keys without matching on_*_change callbacks → Streamlit rejected EVERY invocation, silent fallback meant drag/collapse never worked (also broke Big-Purchases board); added the missing callbacks. (b) both module-level component caches went stale vs the per-runtime bidi registry ("Component not registered") → register per render in ui/board.py; utils.draggable_card_board now delegates to the canonical board. Fallback is now loud (logged + visible warning). tests/test_recurring_board.py: canonical path renders, no fallback fired, layout persists. Full tests/: **742 passed**; all 6 failed + 11 errors are sandbox PermissionError-at-setup family (verified environmental). No streamlit-sortables needed — decision gate resolved by fixing the existing board.
+### [ ] #15 Portfolio sells — FIFO + tax model
+- [ ] Schema: HoldingLot(holding_id, lot_date, qty, cost_total, cost_eur, rate_at_buy); migration backfills one initial lot per existing holding.
+- [ ] Sell dialog (@st.dialog, mirror remove_holding_dialog): date, qty <= held, live proceeds (reject stale/zero price), tax-rate prefilled from settings. FIFO consumes oldest lots; gain = SUM(proceeds/unit - lot cost/unit)*qty; tax = max(0,gain)*rate; net -> unallocated via audited Income leg (zero-sum invariant). Qty rounds 4 dp; <1e-6 deletes holding (snapshots kept). Loss => tax clamped 0. ponytail: no loss-carryforward ledger yet.
+- [ ] UserSettings.tax_model JSON column (+ column migration): realized_default_rate, country DE/NL/none/custom presets (DE flat 26.375% / EUR 1,000 exemption; NL Box 3 ~5.6% deemed / exemption).
+- [ ] Unrealized tax: Metrics panel shows projected annual accrual (SUM max(0, value-cost)*rate). ponytail: ignores Vorabpauschale basis mechanics — upgrade path commented. Opt-in 'Book <year> accrual': deduped per (user, holding, year), nudges cost basis. Off by default. Settings section + 'not tax advice'.
+- [ ] Tests: FIFO order, partial sells, drift chunk-sells drain cost exactly, invariant delta (unallocated += net), zero-price rejection, accrual idempotency, lot backfill.
+- Accept: sell flows end-to-end; unallocated rises by exactly proceeds - tax.
+
+### [ ] #14 Travel vacation planner
+- [ ] Schema: Trip(user_id, name, start_date, end_date, envelope_eur, dest_currency, participants_json, checklist_json, timestamps) + CRUD + migration.
+- [ ] utils.travel_spent_in_range() (windowed variant); travel.py: trip list + active-trip view — envelope vs spend, per-day pacing (zero-days guard), cumulative-vs-ideal pace chart, countdown, persisted packing checklist.
+- [ ] Savings-gap card: Vacation goal balance vs envelope -> monthly top-up (div-by-zero guarded).
+- [ ] Companion splitting: participant list, equal-split tallies. ponytail: weights later.
+- [ ] Integrations: Open-Meteo destination weather (lat/lon via Nominatim; cached; offline fallback) + Nominatim destination search (1 req/s, UA header). Thin adapters mocked in tests — CI does no network.
+- [ ] Envelope canonical EUR; dest-currency display via existing rates.
+- [ ] Tests: window filtering, pacing/top-up zero-guards, countdown, checklist persistence, adapter mocks.
+- Accept: define a trip -> see pacing while travelling; weather + destination search work without keys.
+
+### [ ] #22 Gemini provider + settings honesty
+- [ ] ai/providers/gemini.py (generateContent, x-goog-api-key, retry cloned from OpenAI provider); orchestrator dispatch; resolve_provider recognition.
+- [ ] Bug fix: ai_api_kind becomes a real column (_add_missing_columns + defaults + save path); one-time derivation from legacy URL-sniff persisted; sniffing retired.
+- [ ] settings_ai.py: gemini in selectbox; label 'Platform API key'; copy states ChatGPT/Claude subscriptions != API billing (Claude OAuth barred for third-party apps); Gemini free tier ~1,500 req/day via AI Studio. README updated.
+- [ ] Tests: response shape (mocked HTTP), dispatch, kind-column persistence.
+- Accept: free-tier Gemini key works end-to-end; provider selection survives restart.
+
+### [ ] #25 Income tab rework — recurring incomes
+Reality: income has NO recurrence concept — only 4 flat UserSettings.salary_* columns powering one button. Expenses have the full template/board stack to lift.
+- [ ] Schema: IncomeTemplate(id, user_id, description, income_type, amount, currency, amount_eur, due_day, start_month, active, sort_order, notes) mirroring Recurring; nullable Income.template_id.
+- [ ] Idempotent seeding: salary_active users get a 'Fixed salary' template (due_day=salary_day, amount=salary_amount). UserSettings.salary_* stays source of truth; template syncs from settings on load; record_salary_raise keeps working unchanged (test_salary_raise.py untouched).
+- [ ] Lift recurring-expense patterns: grouped_board (grouped by income_type), log_income_template_dialog (month-bucket dedup, amount adjust, sets template_id), template editor, _unlogged_income_templates checklist state ('expected — not logged'). Email reminders for income: deferred.
+- [ ] 'Log my salary' button becomes the salary card's Log-now action. Forecast cycle detection (forecast.py:36-51 reads Income rows) unaffected.
+- [ ] db fns: add/update/get_income_templates; q.income_templates(uid).
+- [ ] Tests: seeding idempotency, dedup logging, unlogged detection, raise syncs board card.
+- Accept: user adds 'Rent income, day 5' once; board shows due/unlogged; one tap logs it.
+
+## Phase E — Platform
+
+### [ ] #26 Rich agent capabilities — reversible logging + mail
+Today: 18 read-only tools; mutations limited to one hardcoded budget proposal; MCP add_expense/add_income bypass commands (no undo/audit parity); zero mail ingestion.
+- [ ] E1 Framework services/undo.py: CommandResultWithUndo(.undo_token/.undo_command/.undo_args); UndoToken(token_id, inverse_command, inverse_args, expires_at=30d, description); _execute_undo(token) idempotent (already-deleted -> ok-noop). Milestone/fun-money side effects NOT clawed back (next load re-evaluates naturally) — documented limitation.
+- [ ] E2 Commands in services/commands.py wrapping existing writers, each returning undo tokens: add_expense / add_income / update_expense / delete_expense (undo = soft-delete/restore), recurring-template CRUD (needs is_deleted/deleted_at on Recurring), link/unlink purchase-to-goal. Route MCP paths through commands (audit parity).
+- [ ] E3 Tools: register the 8 mutation tools in ai/tool_registry.py with schemas + dry_run flag; populate ALLOWED_MUTATIONS (ai/safety.py:46); orchestrator gate becomes TOOLS ∪ ALLOWED_MUTATIONS; redact undo_token/undo_command in sanitizer ID keys.
+- [ ] E4 Feedback loop (ask.py): success card 'stored: expense EUR X @ Y — [Undo]'; undo -> 'undone — [Redo]'; toasts; dry-run preview cards >= threshold; agent_confirm_threshold_eur setting default 500; rate cap 20 agent mutations/24h (UserSettings.agent_call_counts); audit_log page gains 'via agent' filter.
+- [ ] E5 Mail staging (paste flow): mail_ingestion.py parses pasted email text via existing extractors (ocr.guess_total_amount, line_item_extractor, bank_import keyword map) -> structured candidates {description, amount_eur, category, date, confidence} -> staging cards with per-item Accept/Discard. Nothing books silently.
+- [ ] E6 (optional, later) local IMAP poller: stdlib imaplib/email; UNSEEN fetch; Fernet app-password; background thread like github_backup.maybe_auto_backup; feeds same staging. Build only after E5 proves out.
+- [ ] Tests: undo idempotency/expiry, threshold confirmation, rate limit, sanitizer redaction, mail-parse edge cases (no amount, multi-line), milestone-after-undo behavior.
+- Accept: 'Log this: coffee EUR 3.50 yesterday' books instantly with an Undo card; a EUR 600 expense returns a confirm card; pasted order-email produces accept/discard candidates.
+
+### [ ] #21b Household admin kick + configurable sharing
+- [ ] Kick: owner-only remove_member command (clears member household_id, bumps ALL members' revisions incl. removed, audit row); member-list UI; owner cannot kick self.
+- [ ] Sharing config: households.share_prefs JSON — areas expenses(always) | budgets | income | loans, each hidden | visible | editable (default hidden except expenses); dashboard/household queries respect prefs; edits under editable go through audited commands. Single-machine SQLite documented in-page.
+- [ ] Tests: prefs gating, kick revision bump, owner-only enforcement, prefs survive join/leave.
+- Accept: owner toggles 'budgets: visible'; members see budgets without expenses-side changes.
+
+### [ ] #27 UI consistency — dashboard kit everywhere
+Audit result: palette already shared (CHART_COLORS via utils re-export); inconsistency is structural idioms.
+- [ ] Codify kit in ui/: page_kpi_band(metrics) helper + PanelSpec/panel defaults (icon + summary + collapsible) + board-card CSS tokens from palette (ui/board.py CCv2 inline CSS).
+- [ ] Migrate pages: loans (KPI band: total debt/debt-free date; panels stay), big_purchases + recurring (board headers/KPI band alignment), budgets/travel/savings/portfolio/household (ad-hoc st.markdown sections -> panel shells).
+- [ ] Sweep: no hex literals outside ui/styles.py (currently clean); every chart uses CHART_COLORS.
+- [ ] Per-page before/after smoke screenshots; mobile CSS sanity pass.
+- Accept: any page reads as the same product; dashboard components recognizable everywhere.
+
+---
+
+## Known limitations (documented in-app where relevant)
+- Undo does not claw back fun-money bonuses; milestones re-evaluate on next load.
+- Unrealized-tax projection is a simplified preset model (not Vorabpauschale/Box-3 precise).
+- Households are single-machine; no cross-device sync (sync_core is per-user phone pairing).
+- Agent mutations cap at EUR-500-confirm / 20-per-day by default; both user-tunable.
+
+## Suggested execution order
+A (#20 -> #13 -> #21a -> #12) -> B (#24 -> #18 -> #19 -> #23 -> #17) -> C (#16) -> D (#15 -> #25 -> #14 -> #22) -> E (#26 E1-E5 -> #21b -> #27 -> #26 E6 optional).
+Rationale: bugs first; quick wins build momentum; taxonomy before anything validating categories; heavy features before the platform layer; restyle last so pages are not styled twice.
