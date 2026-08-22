@@ -13,6 +13,10 @@ import streamlit as st
 
 import queries as q
 from db import add_expense
+from services.finance_queries import (
+    get_savings_summary, unallocated_breakdown,
+)
+from notifications import _unlogged_templates
 from utils import (
     NEAR_LIMIT_THRESHOLD, SAVINGS_TARGET_PCT, SAVINGS_GOAL_PCT, CHART_COLORS,
     fmt, fmt_row, to_display, get_currency_symbol, effective_category_budgets,
@@ -107,6 +111,64 @@ if personal_view:
                             else (r["category"] if pd.notna(r["category"]) else "Bill"))
                     amt  = fmt_row(r["amount_eur"], r["amount"], r["currency"], DC, rates)
                     st.markdown(f"- {d.strftime('%d %b')} — **{desc}** · {amt}")
+
+    # ── Where your money goes (D1): transparent allocation overview ──────────
+    # Read-only consumer of the FIN-01 services — no invariant changes.
+    _alloc = unallocated_breakdown(user_id)
+    spec = PanelSpec(id="dash_allocation", title="Where your money goes",
+                     icon=":material/pie_chart:", collapsible=True,
+                     default_expanded=True,
+                     summary="live balance of every euro")
+    expanded, container = panel(spec, user_id=user_id, area="dashboard")
+    if expanded:
+        with container:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Unallocated now", fmt(_alloc["unallocated_eur"], DC, rates))
+            m2.metric("Received (incl. financing)",
+                      fmt(_alloc["inflows_eur"] + _alloc["financing_inflows_eur"], DC, rates))
+            m3.metric("Spent so far", fmt(_alloc["outflows_eur"], DC, rates))
+
+            with st.expander("Where it is allocated", icon=":material/account_tree:"):
+                st.markdown(f"- 🎯 **Savings goals** · {fmt(_alloc['savings_allocations_eur'], DC, rates)}")
+                for _g in get_savings_summary(user_id)["goals"]:
+                    tgt = _g["target_eur"]
+                    tgt_txt = f" of {fmt(tgt, DC, rates)}" if tgt > 0 else ""
+                    st.markdown(f"    - {_g['goal_name']} · {fmt(_g['balance_eur'], DC, rates)}{tgt_txt}")
+                st.markdown(f"- 🔒 **Locked term deposits** · {fmt(_alloc['term_allocations_eur'], DC, rates)}")
+                st.markdown(f"- 📈 **Holdings** (cost basis) · {fmt(_alloc['holdings_allocations_eur'], DC, rates)}")
+                _parts = (_alloc["savings_allocations_eur"] + _alloc["term_allocations_eur"]
+                          + _alloc["holdings_allocations_eur"])
+                st.caption(
+                    f"Check: received − spent − allocated ({fmt(_parts, DC, rates)}) "
+                    f"= unallocated. This is the app's core balance rule; "
+                    "every panel reconciles against it.")
+
+            # Planning layers — labelled OUTSIDE the balance rule: budgets and
+            # unpaid bills guide spending but are not part of FIN-01 money.
+            with st.expander("This month's plan (planning only)",
+                             icon=":material/event_note:"):
+                _bud_total = float(sum(effective_category_budgets(dfb).values()))
+                _month_exp = dfe[(dfe["date"].dt.year == today.year)
+                                 & (dfe["date"].dt.month == today.month)] if not dfe.empty else dfe
+                _month_spent = float(_month_exp["amount_eur"].fillna(0).sum()) \
+                    if not _month_exp.empty else 0.0
+                p1, p2 = st.columns(2)
+                p1.metric("Category budgets", fmt(_bud_total, DC, rates),
+                          delta=f"{fmt(_month_spent, DC, rates)} spent",
+                          delta_color="off")
+                _reserve_rows = []
+                if not rec_df.empty:
+                    try:
+                        _reserve_rows = _unlogged_templates(rec_df, dfe, today)
+                    except Exception:
+                        _reserve_rows = []
+                _reserve = float(sum(float(r["amount_eur"]) if pd.notna(r["amount_eur"]) else 0.0
+                                     for r in _reserve_rows))
+                p2.metric("Upcoming-bills reserve", fmt(_reserve, DC, rates),
+                          delta=f"{len(_reserve_rows)} bill(s) unpaid this month",
+                          delta_color="off")
+                st.caption("Budgets and this reserve are planning aids — "
+                           "they do not change your unallocated balance.")
 
     # One-tap quick logging (C1) — BISECTION VARIANT B1: no @st.dialog.
     _QP_DEFAULTS = [
