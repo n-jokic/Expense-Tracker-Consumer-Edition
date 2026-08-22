@@ -9,6 +9,7 @@ import streamlit as st
 
 from db import (
     get_expenses, get_income, get_savings, get_budgets, get_recurring,
+    get_income_templates,
     get_audit_log, get_settings as _db_get_settings,
     get_household_expenses, get_household_members, save_settings as _db_save_settings,
     get_household_by_member as _db_household_by_member,
@@ -158,6 +159,19 @@ def _budgets(user_id: int, version: int):
 @st.cache_data(ttl=300, show_spinner=False)
 def _recurring(user_id: int, version: int):
     return get_recurring(user_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _income_templates(user_id: int, version: int):
+    return get_income_templates(user_id)
+
+
+def income_templates(user_id: int, include_inactive: bool = True):
+    """#25: board cards for recurring income (cached on db_version)."""
+    df = _income_templates(int(user_id), db_version())
+    if include_inactive or df.empty:
+        return df
+    return df[df["active"].notna() & (df["active"] == True)]  # noqa: E712
 
 
 @st.cache_data(ttl=300, show_spinner=False)

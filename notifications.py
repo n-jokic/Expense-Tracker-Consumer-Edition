@@ -282,6 +282,36 @@ def _unlogged_templates(recurring_df: pd.DataFrame, expenses_df: pd.DataFrame,
     return unlogged
 
 
+def _unlogged_income_templates(tpls_df: pd.DataFrame,
+                               income_df: pd.DataFrame, today: date) -> list:
+    """#25 income-side twin of _unlogged_templates: active income cards with
+    nothing logged this month. Matching: income.template_id == card id, with a
+    description+amount fallback for rows logged before cards existed."""
+    active = tpls_df[tpls_df["active"] == True]  # noqa: E712
+    if active.empty:
+        return []
+    template_ids = set()
+    desc_amounts = set()
+    if income_df is not None and not income_df.empty:
+        m_inc = income_df[(income_df["date"].dt.year == today.year) &
+                          (income_df["date"].dt.month == today.month)]
+        if "template_id" in m_inc.columns:
+            template_ids = set(m_inc["template_id"].dropna().astype(str))
+        desc_amounts = set(
+            zip(m_inc["description"].str.strip().str.lower(),
+                m_inc["actual_eur"].round(2)))
+    unlogged = []
+    for _, row in active.iterrows():
+        tid = str(row.get("id"))
+        key = (str(row["description"]).strip().lower(),
+               round(float(row["amount_eur"])
+                     if pd.notna(row["amount_eur"]) else 0.0, 2))
+        if tid in template_ids or key in desc_amounts:
+            continue
+        unlogged.append(row)
+    return unlogged
+
+
 def check_and_send_budget_alerts(user_id: int, expenses_df: pd.DataFrame,
                                   budgets_df: pd.DataFrame, settings: dict,
                                   rates: dict, DC: str):

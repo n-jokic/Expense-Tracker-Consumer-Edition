@@ -14,6 +14,8 @@ import queries as q
 from db import (
     add_income, update_income, soft_delete_income, restore_income,
     get_salary_raises, record_salary_raise,
+    SALARY_TEMPLATE_NAME, add_income_template, update_income_template,
+    delete_income_template, sync_salary_income_template,
 )
 from services.commands import apply_auto_allocations
 from utils import (
@@ -127,6 +129,9 @@ salary_currency = settings.get("salary_currency", "EUR")
 salary_day      = int(settings.get("salary_day") or 1)
 salary_active   = bool(settings.get("salary_active", False))
 
+# #25: keep the 'Fixed salary' board card in lockstep with the salary settings
+sync_salary_income_template(user_id)
+
 # ── One-tap "log my salary" ───────────────────────────────────────────────────
 dfi = q.income(user_id)
 salary_logged_this_month = False
@@ -137,46 +142,223 @@ if not dfi.empty:
          (dfi["date"].dt.month == today.month)).any()
     )
 
-if salary_active and salary_amount > 0:
-    _, qc = st.columns([3, 1.8])
-    with qc:
-        if salary_logged_this_month:
-            st.success(f"Salary for {calendar.month_name[today.month]} logged",
-                       icon=":material/check:")
-        elif st.button("Log my salary for this month", width="stretch", key="log_salary_btn",
-                       icon=":material/add:"):
-            month_len = calendar.monthrange(today.year, today.month)[1]
-            pay_date  = date(today.year, today.month, min(salary_day, month_len))
-            ae = to_eur(salary_amount, salary_currency, rates)
-            _fresh_sal = q.income(user_id)
-            if not _fresh_sal.empty and (
-                (_fresh_sal["date"].dt.date == pay_date) & (_fresh_sal["income_type"] == "Salary")
-            ).any():
-                st.toast("Salary already logged this month.", icon=":material/check:")
-                st.rerun()
-            try:
-                add_income(user_id, {
-                    "date": pay_date, "source": "Salary", "income_type": "Salary",
-                    "hours": None, "rate": None,
-                    "budgeted": salary_amount, "actual": salary_amount,
-                    "currency": salary_currency, "budgeted_eur": ae, "actual_eur": ae,
-                    "notes": "Fixed salary",
-                })
-            except Exception as e:
-                st.error(f"Couldn't save: {e}")
+# ── Recurring income board (#25) ─────────────────────────────────────────────
+
+@st.dialog("Log recurring income")
+def log_income_template_dialog(row):
+    """One-tap logging from a board card; month-bucket deduped via
+    settlement_ref so a card can never double-book a month."""
+    month_len = calendar.monthrange(today.year, today.month)[1]
+    dd = row.get("due_day")
+    default_day = (int(dd) if dd is not None and not pd.isna(dd)
+                   and int(dd) > 0 else today.day)
+    pay_date = st.date_input(
+        "Date",
+        value=date(today.year, today.month, min(default_day, month_len)),
+        key=f"itpl_date_{row['id']}")
+    cur = str(row.get("currency") or "EUR")
+    amount = st.number_input(f"Amount ({get_currency_symbol(cur)})",
+                             min_value=0.0, max_value=MAX_AMOUNT, step=10.0,
+                             format="%.2f", value=float(row.get("amount") or 0.0),
+                             key=f"itpl_amt_{row['id']}")
+    if st.button("Log it", type="primary", width="stretch",
+                 key=f"itpl_go_{row['id']}", icon=":material/check:"):
+        ref = f"tpl:{row['id']}:{pay_date.year}:{pay_date.month}"
+        _fresh = q.income(user_id)
+        if (not _fresh.empty and "settlement_ref" in _fresh.columns
+                and (_fresh["settlement_ref"] == ref).any()):
+            st.toast("Already logged for this month.", icon=":material/check:")
+            st.rerun()
+        ae = to_eur(float(amount), cur, rates)
+        try:
+            add_income(user_id, {
+                "date": pay_date, "source": str(row["description"]),
+                "income_type": str(row.get("income_type") or "Other"),
+                "hours": None, "rate": None,
+                "budgeted": float(amount), "actual": float(amount),
+                "currency": cur, "budgeted_eur": ae, "actual_eur": ae,
+                "notes": f"From card: {row['description']}",
+                "template_id": str(row["id"]), "settlement_ref": ref,
+            })
+        except Exception as e:
+            st.error(f"Couldn't save: {e}")
+            return
+        _alloc = apply_auto_allocations(
+            user_id, income_amount_eur=ae, income_date=pay_date)
+        if _alloc.get("enabled"):
+            st.session_state["last_auto_alloc"] = _alloc
+            for _a in _alloc.get("applied", []):
+                st.toast(f"Auto-allocated {fmt(_a['amount_eur'], DC, rates)}"
+                         f" → {_a['ref']}", icon=":material/savings:")
+            if _alloc.get("scaled"):
+                st.toast("Unallocated pool was tight — auto-allocation"
+                         " scaled down.", icon=":material/warning:")
+        q.bump_db_version()
+        st.toast(f"{row['description']} logged for "
+                 f"{calendar.month_name[pay_date.month]}", icon=":material/work:")
+        st.rerun()
+
+
+@st.dialog("Edit income card")
+def edit_income_template_dialog(row):
+    is_salary = str(row["description"]) == SALARY_TEMPLATE_NAME
+    if is_salary:
+        st.caption("This card syncs from **My fixed salary** above — "
+                   "edit the salary there.")
+    with st.form(f"itpl_edit_{row['id']}"):
+        e_desc = st.text_input("Description", value=str(row["description"]),
+                               disabled=is_salary)
+        e_type = st.selectbox("Income type", INCOME_TYPES,
+                              index=(INCOME_TYPES.index(str(row.get("income_type") or "Other"))
+                                     if str(row.get("income_type") or "Other") in INCOME_TYPES else 0),
+                              disabled=is_salary)
+        e_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                             index=list(SUPPORTED_CURRENCIES.keys()).index(
+                                 str(row.get("currency") or "EUR"))
+                             if str(row.get("currency") or "EUR") in SUPPORTED_CURRENCIES else 0,
+                             key=f"itpl_ecur_{row['id']}")
+        e_amt = st.number_input(f"Amount ({get_currency_symbol(e_cur)})",
+                                min_value=0.0, max_value=MAX_AMOUNT, step=10.0,
+                                format="%.2f", value=float(row.get("amount") or 0.0),
+                                key=f"itpl_eamt_{row['id']}")
+        e_day = st.number_input("Due day of month (0 = none)", min_value=0,
+                                max_value=31,
+                                value=int(row.get("due_day") or 0),
+                                key=f"itpl_eday_{row['id']}")
+        submitted = st.form_submit_button("Save card", type="primary")
+    cdel, ccancel = st.columns(2)
+    removed = False
+    if not is_salary and cdel.button("Delete card", key=f"itpl_del_{row['id']}",
+                                     icon=":material/delete:"):
+        delete_income_template(user_id, row["id"])
+        removed = True
+    if ccancel.button("Close", key=f"itpl_close_{row['id']}"):
+        st.rerun()
+    if removed or submitted:
+        if submitted and not removed:
+            from db import get_settings as _gs
+            _rate = rates
+            update_income_template(user_id, row["id"], {
+                "description": e_desc.strip() or str(row["description"]),
+                "income_type": e_type,
+                "currency": e_cur,
+                "amount": float(e_amt),
+                "amount_eur": to_eur(float(e_amt), e_cur, _rate),
+                "due_day": int(e_day) if int(e_day) > 0 else None,
+            })
+        q.bump_db_version()
+        st.rerun()
+
+
+dfi_board = dfi  # already fetched above for the salary check
+tpls = q.income_templates(user_id)
+active_t = (tpls[tpls["active"] == True]  # noqa: E712
+            if not tpls.empty else tpls)
+if not active_t.empty:
+    from notifications import _unlogged_income_templates
+    unlogged_rows = _unlogged_income_templates(active_t, dfi_board, today)
+    unlogged_ids = {str(r["id"]) for r in unlogged_rows}
+    month_len_b = calendar.monthrange(today.year, today.month)[1]
+
+    itypes = sorted({str(t) for t in active_t["income_type"].dropna()})
+    if "Salary" in itypes:
+        itypes.remove("Salary")
+        itypes.insert(0, "Salary")          # salary card leads the board
+    groups_i = {}
+    for t in itypes:
+        rows_i = active_t[active_t["income_type"] == t]
+        cards_i = []
+        for _, row in rows_i.iterrows():
+            rid = str(row["id"])
+            done = rid not in unlogged_ids
+            due = "logged this month" if done else "no due day"
+            dday = row.get("due_day")
+            if not done and dday is not None and not pd.isna(dday) and int(dday) > 0:
+                due_date = date(today.year, today.month, min(int(dday), month_len_b))
+                days_left = (due_date - today).days
+                due = ("overdue" if days_left < 0
+                       else ("due today" if not days_left
+                             else f"due in {days_left}d"))
+            actions = ([] if done else [{"label": "Log now", "action": "log"}])
+            if str(row["description"]) != SALARY_TEMPLATE_NAME:
+                actions.append({"label": "Edit", "action": "edit"})
+                actions.append({"label": "Remove", "action": "remove"})
+            cards_i.append({
+                "id": rid,
+                "title": f"{'✅' if done else '⏳'} {row['description']}",
+                "details": due,
+                "amount": fmt(float(row["amount_eur"] or 0.0), DC, rates),
+                "actions": actions})
+        groups_i[t] = cards_i
+
+    from ui.board import grouped_board
+    try:
+        _br = grouped_board(f"income_cards_{user_id}", groups_i,
+                            allow_group_reorder=False,
+                            allow_item_reorder=False,
+                            allow_cross_group_move=False,
+                            collapsible=True)
+        action = _br.action
+    except Exception as _board_exc:
+        import logging, traceback
+        logging.getLogger(__name__).error(
+            "grouped_board failed on log_income page:\n%s",
+            traceback.format_exc())
+        st.warning(f"Income board fell back to a plain list ({_board_exc}).",
+                   icon=":material/warning:")
+        action = None
+        for t, cards_l in groups_i.items():
+            for c_l in cards_l:
+                row_l = active_t[active_t["id"] == c_l["id"]].iloc[0]
+                b_log, b_edit = st.columns(2)
+                if (not any(a["action"] == "log" for a in c_l["actions"])
+                        and b_log.button(f"Log {c_l['title']}",
+                                         key=f"fb_log_{c_l['id']}")):
+                    log_income_template_dialog(row_l)
+                if b_edit.button(f"Edit {c_l['title']}",
+                                 key=f"fb_edit_{c_l['id']}"):
+                    edit_income_template_dialog(row_l)
+    if action:
+        row_t = active_t[active_t["id"] == action["id"]].iloc[0]
+        if action["action"] == "log":
+            log_income_template_dialog(row_t)
+        elif action["action"] == "edit":
+            edit_income_template_dialog(row_t)
+        elif action["action"] == "remove":
+            delete_income_template(user_id, row_t["id"])
+            q.bump_db_version()
+            st.rerun()
+
+with st.expander("Add an income card", icon=":material/add_chart:"):
+    with st.form("itpl_add_form", clear_on_submit=True):
+        n_desc = st.text_input("Description", placeholder="e.g. Rent income")
+        n_type = st.selectbox("Income type", INCOME_TYPES, key="itpl_ntype")
+        nc1, nc2 = st.columns(2)
+        with nc1:
+            n_cur = st.selectbox("Currency", list(SUPPORTED_CURRENCIES.keys()),
+                                 key="itpl_ncur")
+        with nc2:
+            n_amt = st.number_input(f"Amount ({get_currency_symbol(st.session_state.get('itpl_ncur', 'EUR'))})",
+                                    min_value=0.0, max_value=MAX_AMOUNT,
+                                    step=10.0, format="%.2f", key="itpl_namt")
+        n_day = st.number_input("Due day of month (0 = none)", min_value=0,
+                                max_value=31, value=0, key="itpl_nday")
+        if st.form_submit_button("Add card", type="primary"):
+            if not n_desc.strip():
+                st.error("Please give the card a description.")
             else:
-                _alloc = apply_auto_allocations(
-                    user_id, income_amount_eur=ae, income_date=pay_date)
-                if _alloc.get("enabled"):
-                    st.session_state["last_auto_alloc"] = _alloc
-                    for _a in _alloc.get("applied", []):
-                        st.toast(f"Auto-allocated {fmt(_a['amount_eur'], DC, rates)}"
-                                 f" → {_a['ref']}", icon=":material/savings:")
-                    if _alloc.get("scaled"):
-                        st.toast("Unallocated pool was tight — auto-allocation"
-                                 " scaled down.", icon=":material/warning:")
+                add_income_template(user_id, {
+                    "description": n_desc.strip(), "income_type": n_type,
+                    "amount": float(n_amt),
+                    "currency": st.session_state.get("itpl_ncur", "EUR"),
+                    "amount_eur": to_eur(float(n_amt),
+                                         st.session_state.get("itpl_ncur", "EUR"),
+                                         rates),
+                    "due_day": int(n_day) if int(n_day) > 0 else None,
+                    "sort_order": 0})
                 q.bump_db_version()
-                st.toast(f"Salary logged for {calendar.month_name[pay_date.month]}", icon=":material/work:")
+                st.toast(f"Card **{n_desc.strip()}** added.",
+                         icon=":material/check:")
                 st.rerun()
 
 # ── Entry form ────────────────────────────────────────────────────────────────

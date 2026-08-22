@@ -393,6 +393,7 @@ class Income(Base):
     # FIN-04 idempotency: settlement_ref on the realized-interest income row
     # ("term-settle:<account_id>") — partial unique index below.
     settlement_ref = Column(String, nullable=True)
+    template_id   = Column(String, nullable=True)   # #25: source income_templates.id
     is_deleted   = Column(Boolean, default=False, nullable=False, server_default=text("0"))
     deleted_at   = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, default=_utcnow)
@@ -493,6 +494,24 @@ class Recurring(Base):
     amount_eur  = Column(Float, default=0.0)
     due_day     = Column(Integer, nullable=True)   # day of month (1-31); None = no due day
     start_month = Column(String, nullable=True)    # "YYYY-MM" first active month; None = always
+    notes       = Column(String, default="")
+    active      = Column(Boolean, default=True)
+    sort_order  = Column(Integer, default=0)
+
+
+class IncomeTemplate(Base):
+    """#25: recurring-income board template, mirroring Recurring. The synced
+    'Fixed salary' card keeps UserSettings.salary_* as the source of truth."""
+    __tablename__ = "income_templates"
+    id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
+    description = Column(String)
+    income_type = Column(String, default="Other")
+    amount      = Column(Float, default=0.0)
+    currency    = Column(String, default="EUR")
+    amount_eur  = Column(Float, default=0.0)
+    due_day     = Column(Integer, nullable=True)   # day of month (1-31); None = no due day
+    start_month = Column(String, nullable=True)
     notes       = Column(String, default="")
     active      = Column(Boolean, default=True)
     sort_order  = Column(Integer, default=0)
@@ -836,6 +855,7 @@ def _migrate(engine):
         "income_type": "VARCHAR DEFAULT 'Other'",
         "hours": "FLOAT",
         "rate": "FLOAT",
+        "template_id": "VARCHAR",
     })
     _add_missing_columns(engine, "recurring", {
         "due_day": "INTEGER",
@@ -1452,7 +1472,8 @@ def restore_expense(user_id, expense_id):
 
 _INC_COLS = ["id","user_id","date","source","income_type","hours","rate",
              "budgeted","actual","currency","budgeted_eur","actual_eur",
-             "notes","is_deleted","deleted_at","created_at","updated_at"]
+             "notes","settlement_ref","template_id",
+             "is_deleted","deleted_at","created_at","updated_at"]
 
 # Legacy installs stored the type inside `source`; map those labels on read.
 _LEGACY_INCOME_TYPES = {
@@ -1482,6 +1503,120 @@ def get_income(user_id, include_deleted=False):
     return _fill_income_types(df)
 
 
+# ── Income templates (#25): recurring-income board ───────────────────────────
+
+_INC_TPL_COLS = ["id", "description", "income_type", "amount", "currency",
+                 "amount_eur", "due_day", "start_month", "notes", "active",
+                 "sort_order"]
+
+SALARY_TEMPLATE_NAME = "Fixed salary"
+
+
+def get_income_templates(user_id, include_inactive=True):
+    """Board cards ordered by sort_order then description."""
+    with get_session() as s:
+        q = s.query(IncomeTemplate).filter(
+            IncomeTemplate.user_id == user_id)
+        if not include_inactive:
+            q = q.filter(IncomeTemplate.active.isnot(False))
+        rows = (q.order_by(IncomeTemplate.sort_order.asc(),
+                           IncomeTemplate.description.asc()).all())
+    df = _to_df(rows, _INC_TPL_COLS)
+    return df
+
+
+def add_income_template(user_id, row):
+    tpl_id = str(uuid.uuid4())
+    with get_session() as s:
+        s.add(IncomeTemplate(
+            id=tpl_id, user_id=user_id,
+            description=row.get("description", ""),
+            income_type=row.get("income_type", "Other"),
+            amount=float(row.get("amount", 0)),
+            currency=row.get("currency", "EUR"),
+            amount_eur=float(row.get("amount_eur", 0)),
+            due_day=row.get("due_day"), start_month=row.get("start_month"),
+            notes=row.get("notes", ""),
+            active=bool(row.get("active", True)),
+            sort_order=int(row.get("sort_order", 0))))
+        log_audit(s, user_id, "CREATE", "income_templates", tpl_id,
+                  {"description": row.get("description")})
+    return tpl_id
+
+
+def update_income_template(user_id, tpl_id, updates):
+    with get_session() as s:
+        obj = (s.query(IncomeTemplate)
+               .filter(IncomeTemplate.id == str(tpl_id),
+                       IncomeTemplate.user_id == user_id).first())
+        if not obj:
+            return False
+        for k, v in updates.items():
+            if hasattr(obj, k) and k not in ("id", "user_id"):
+                setattr(obj, k, v)
+        log_audit(s, user_id, "UPDATE", "income_templates", str(tpl_id),
+                  updates)
+    return True
+
+
+def delete_income_template(user_id, tpl_id):
+    """Hard delete — board cards are user-managed, history is in audit."""
+    with get_session() as s:
+        n = (s.query(IncomeTemplate)
+             .filter(IncomeTemplate.id == str(tpl_id),
+                     IncomeTemplate.user_id == user_id)
+             .delete(synchronize_session=False))
+        if n:
+            log_audit(s, user_id, "DELETE", "income_templates",
+                      str(tpl_id), {})
+    return bool(n)
+
+
+def sync_salary_income_template(user_id):
+    """#25: keep the 'Fixed salary' board card in lockstep with
+    UserSettings.salary_* (the source of truth). Creates it when salary is
+    active and missing, updates it on raises, deactivates it when salary is
+    switched off. Idempotent; safe to call on every page load."""
+    st = get_settings(user_id) or {}
+    active = bool(st.get("salary_active", False))
+    amount = float(st.get("salary_amount") or 0.0)
+    currency = str(st.get("salary_currency") or "EUR")
+    day = int(st.get("salary_day") or 1)
+    with get_session() as s:
+        obj = (s.query(IncomeTemplate)
+               .filter(IncomeTemplate.user_id == user_id,
+                       IncomeTemplate.description == SALARY_TEMPLATE_NAME)
+               .first())
+        if obj is None:
+            if not active:
+                return False
+            s.add(IncomeTemplate(
+                user_id=user_id, description=SALARY_TEMPLATE_NAME,
+                income_type="Salary", amount=amount, currency=currency,
+                amount_eur=amount,  # salary settings store EUR-equivalent
+                due_day=day, active=True, sort_order=-1000,
+                notes="Synced from My fixed salary"))
+            log_audit(s, user_id, "CREATE", "income_templates",
+                      SALARY_TEMPLATE_NAME, {"sync": True})
+            return True
+        changed = False
+        want_active = active
+        if bool(obj.active) != want_active:
+            obj.active = want_active
+            changed = True
+        if active:
+            for attr, val in (("income_type", "Salary"), ("amount", amount),
+                              ("currency", currency), ("amount_eur", amount),
+                              ("due_day", day)):
+                if getattr(obj, attr) != val:
+                    setattr(obj, attr, val)
+                    changed = True
+        if changed:
+            log_audit(s, user_id, "UPDATE", "income_templates",
+                      str(obj.id), {"sync_from_salary": True})
+    return True
+
+
 def add_income(user_id, row):
     inc_id = str(uuid.uuid4())
     with get_session() as s:
@@ -1494,7 +1629,9 @@ def add_income(user_id, row):
             currency=row.get("currency","EUR"),
             budgeted_eur=float(row.get("budgeted_eur",0)),
             actual_eur=float(row.get("actual_eur",0)),
-            notes=row.get("notes","")
+            notes=row.get("notes",""),
+            settlement_ref=row.get("settlement_ref"),
+            template_id=row.get("template_id"),
         )
         s.add(obj)
         log_audit(s, user_id, "CREATE", "income", inc_id, row)
@@ -2879,6 +3016,8 @@ def delete_user_account(user_id):
         s.query(MlFeedbackEvent).filter(MlFeedbackEvent.user_id == user_id).delete(
             synchronize_session=False)
         s.query(UserTaxonomy).filter(UserTaxonomy.user_id == user_id).delete(
+            synchronize_session=False)
+        s.query(IncomeTemplate).filter(IncomeTemplate.user_id == user_id).delete(
             synchronize_session=False)
         s.query(MlModel).filter(MlModel.user_id == user_id).delete(
             synchronize_session=False)

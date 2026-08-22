@@ -129,14 +129,14 @@ Line refs shift +14 (ML accuracy expander landed today).
 - [ ] Tests: response shape (mocked HTTP), dispatch, kind-column persistence.
 - Accept: free-tier Gemini key works end-to-end; provider selection survives restart.
 
-### [ ] #25 Income tab rework — recurring incomes
+### [x] #25 Income tab rework — recurring incomes
 Reality: income has NO recurrence concept — only 4 flat UserSettings.salary_* columns powering one button. Expenses have the full template/board stack to lift.
-- [ ] Schema: IncomeTemplate(id, user_id, description, income_type, amount, currency, amount_eur, due_day, start_month, active, sort_order, notes) mirroring Recurring; nullable Income.template_id.
-- [ ] Idempotent seeding: salary_active users get a 'Fixed salary' template (due_day=salary_day, amount=salary_amount). UserSettings.salary_* stays source of truth; template syncs from settings on load; record_salary_raise keeps working unchanged (test_salary_raise.py untouched).
-- [ ] Lift recurring-expense patterns: grouped_board (grouped by income_type), log_income_template_dialog (month-bucket dedup, amount adjust, sets template_id), template editor, _unlogged_income_templates checklist state ('expected — not logged'). Email reminders for income: deferred.
-- [ ] 'Log my salary' button becomes the salary card's Log-now action. Forecast cycle detection (forecast.py:36-51 reads Income rows) unaffected.
-- [ ] db fns: add/update/get_income_templates; q.income_templates(uid).
-- [ ] Tests: seeding idempotency, dedup logging, unlogged detection, raise syncs board card.
+- [x] Schema: IncomeTemplate table mirroring Recurring + nullable Income.template_id (model + migration); add/update/delete/get CRUD.
+- [x] sync_salary_income_template on page load: creates once when active, syncs raises into the same card, deactivates when salary off; test_salary_raise.py untouched and green.
+- [x] grouped_board by income_type (Salary leads), log_income_template_dialog with settlement_ref month dedupe + amount override + auto-allocations, edit dialog (salary card read-only pointer), notifications._unlogged_income_templates twin helper; email reminders deferred per plan.
+- [x] Standalone quick-log button retired — the synced salary card's Log-now is the single path (auto-allocations preserved inside the dialog); cards alone never fabricate Income rows (test asserts forecast input untouched).
+- [x] db.add/update/delete/get_income_templates (+SALARY_TEMPLATE_NAME) + cached q.income_templates(uid).
+- [x] tests/test_income_templates.py — 6 tests covering all four listed behaviors plus month-scoping and add_income field mapping.
 - Accept: user adds 'Rent income, day 5' once; board shows due/unlogged; one tap logs it.
 
 ## Phase E — Platform
