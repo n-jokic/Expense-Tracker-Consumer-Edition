@@ -30,7 +30,7 @@ from utils import (
     fmt, to_display, to_eur, get_currency_symbol, progress_ratio,
     help_expander, to_excel,
 )
-from ui.panel import PanelSpec, panel
+from ui.panel import PanelSpec, page_kpi_band, panel
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -612,13 +612,14 @@ if not dfs.empty:
             portfolio_value += float(h["quantity"] or 0.0) * price_eur
 
     st.divider()
-    with st.container(horizontal=True):
-        st.metric("Total balance", fmt(total_balance + locked_eur, DC, rates), border=True)
-        st.metric("Saved this year", fmt(saved_year, DC, rates), border=True)
-        st.metric("Interest earned", fmt(interest_total, DC, rates), border=True)
-        st.metric("Locked (term)", fmt(locked_eur, DC, rates), border=True)
-        st.metric("Portfolio", fmt(portfolio_value, DC, rates), border=True)
-        st.metric("Active goals", dfs["goal_name"].nunique(), border=True)
+    page_kpi_band([
+        {"label": "Total balance", "value": fmt(total_balance + locked_eur, DC, rates)},
+        {"label": "Saved this year", "value": fmt(saved_year, DC, rates)},
+        {"label": "Interest earned", "value": fmt(interest_total, DC, rates)},
+        {"label": "Locked (term)", "value": fmt(locked_eur, DC, rates)},
+        {"label": "Portfolio", "value": fmt(portfolio_value, DC, rates)},
+        {"label": "Active goals", "value": str(dfs["goal_name"].nunique())},
+    ])
 
     # ── Goal progress (cards with quick actions) ─────────────────────────────
     st.divider()

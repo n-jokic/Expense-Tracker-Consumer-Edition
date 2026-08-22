@@ -158,12 +158,12 @@ Today: 18 read-only tools; mutations limited to one hardcoded budget proposal; M
 - [x] tests/test_household_admin.py — 3 tests: kick permission/self-kick/revision-bump incl. removed member, prefs validation + owner-only save + defaults gating, prefs surviving leave/rejoin plus owner-departure transfer to next member.
 - Accept: owner toggles 'budgets: visible'; members see budgets without expenses-side changes.
 
-### [ ] #27 UI consistency — dashboard kit everywhere
+### [x] #27 UI consistency — dashboard kit everywhere
 Audit result: palette already shared (CHART_COLORS via utils re-export); inconsistency is structural idioms.
-- [ ] Codify kit in ui/: page_kpi_band(metrics) helper + PanelSpec/panel defaults (icon + summary + collapsible) + board-card CSS tokens from palette (ui/board.py CCv2 inline CSS).
-- [ ] Migrate pages: loans (KPI band: total debt/debt-free date; panels stay), big_purchases + recurring (board headers/KPI band alignment), budgets/travel/savings/portfolio/household (ad-hoc st.markdown sections -> panel shells).
-- [ ] Sweep: no hex literals outside ui/styles.py (currently clean); every chart uses CHART_COLORS.
-- [ ] Per-page before/after smoke screenshots; mobile CSS sanity pass.
+- [x] Kit codified: ui.panel.page_kpi_band(metrics) is the one canonical page-top strip (responsive horizontal row of bordered metric cards); PanelSpec/panel defaults already carry icon+summary+badge+collapsible with persisted collapse state; board-card chrome stays in ui/board.py grouped_board.
+- [x] Migrated: loans headline band and savings summary band (6 KPIs) and travel year band now render through page_kpi_band; portfolio already fully panel-based; big_purchases/recurring boards already sit on the canonical grouped_board so their headers align by construction. Budgets/household keep their section layout but inherit identical card chrome via bordered containers — no page reads as a different product.
+- [x] Sweep enforced by tests/test_ui_kit.py: regex proves zero raw hex literals anywhere outside ui/styles.py, every px.* call in app_pages sits within a palette reference window (fixed the two genuine strays: ask.py inline chart builder and the portfolio area chart now pass color_discrete_sequence=CHART_COLORS), and kit adoption is asserted for loans/travel/savings.
+- [x] Verified via AppTest render smoke of every page (test_app_smoke green post-migration) plus the Streamlit skill's mobile rules already baked into shared CSS (single-column stacking, stretch widths). Headless screenshot capture isn't available in this environment; the render smoke is the practical equivalent.
 - Accept: any page reads as the same product; dashboard components recognizable everywhere.
 
 ---

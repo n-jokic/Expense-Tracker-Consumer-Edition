@@ -135,3 +135,23 @@ def panel(
 
         content = st.container()
         return True, content
+
+
+def page_kpi_band(metrics: list[dict]) -> None:
+    """#27: the canonical page-top KPI row — one responsive strip of
+    bordered metric cards. Every page renders its headline numbers through
+    this helper so spacing, borders and wrapping stay identical.
+
+    metrics items: {"label", "value", optional "delta" and "help"}.
+    """
+    if not metrics:
+        return
+    with st.container(horizontal=True):
+        for m in metrics:
+            st.metric(
+                str(m.get("label", "")),
+                str(m.get("value", "")),
+                delta=m.get("delta"),
+                border=True,
+                help=m.get("help"),
+            )

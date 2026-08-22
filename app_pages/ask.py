@@ -13,6 +13,7 @@ import os as _os
 import streamlit as st
 
 import llm
+from ui.styles import CHART_COLORS
 
 user_id = st.session_state.user_id
 settings = st.session_state.settings
@@ -92,11 +93,14 @@ def _render_chart_from_result(result_dict):
             import plotly.express as px
             cdf = pd.DataFrame(spec["data"])
             if spec["type"] == "line":
-                fig = px.line(cdf, x=spec["x"], y=spec["y"], markers=True)
+                fig = px.line(cdf, x=spec["x"], y=spec["y"], markers=True,
+                              color_discrete_sequence=CHART_COLORS)
             elif spec["type"] == "bar":
-                fig = px.bar(cdf, x=spec["x"], y=spec["y"])
+                fig = px.bar(cdf, x=spec["x"], y=spec["y"],
+                             color_discrete_sequence=CHART_COLORS)
             else:
-                fig = px.pie(cdf, names=spec["x"], values=spec["y"])
+                fig = px.pie(cdf, names=spec["x"], values=spec["y"],
+                             color_discrete_sequence=CHART_COLORS)
             fig.update_layout(
                 title=spec["title"] or None,
                 plot_bgcolor="rgba(0,0,0,0)",

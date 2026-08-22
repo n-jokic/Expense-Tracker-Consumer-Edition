@@ -13,6 +13,7 @@ import streamlit as st
 
 import queries as q
 from db import add_trip, delete_trip, get_trips, update_trip
+from ui.panel import page_kpi_band
 from services.travel_apis import destination_forecast, geocode_destination
 from utils import (
     CATEGORIES, CAT_LIST, ALL_SUBCATS, DEFAULT_TRAVEL_CATEGORIES, CHART_COLORS,
@@ -89,10 +90,11 @@ days_in_year = 366 if calendar.isleap(year) else 365
 year_pct = today.timetuple().tm_yday / days_in_year * 100
 budget_pct = (spent / budget * 100) if budget > 0 else 0.0
 
-with st.container(horizontal=True):
-    st.metric(f"Spent in {year}", fmt(spent, DC, rates), border=True)
-    st.metric("Budget", fmt(budget, DC, rates), border=True)
-    st.metric("Remaining", fmt(max(budget - spent, 0.0), DC, rates), border=True)
+page_kpi_band([
+    {"label": f"Spent in {year}", "value": fmt(spent, DC, rates)},
+    {"label": "Budget", "value": fmt(budget, DC, rates)},
+    {"label": "Remaining", "value": fmt(max(budget - spent, 0.0), DC, rates)},
+])
 
 if budget > 0:
     st.markdown(f"**{budget_pct:.0f}%** of the travel budget used — "

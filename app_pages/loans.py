@@ -20,7 +20,7 @@ from utils import (
     fmt, to_eur, get_currency_symbol,
     help_expander,
 )
-from ui.panel import PanelSpec, panel
+from ui.panel import PanelSpec, page_kpi_band, panel
 
 user_id = st.session_state.user_id
 DC      = st.session_state.dc
@@ -512,9 +512,9 @@ else:
 
     if total_debt > 0:
         free_date = max(debt_free_dates).strftime("%b %Y") if debt_free_dates else "—"
-        with st.container(border=True):
-            with st.container(horizontal=True):
-                st.metric("Total debt", fmt(total_debt, DC, rates))
-                st.metric("Debt-free by", free_date)
+        page_kpi_band([
+            {"label": "Total debt", "value": fmt(total_debt, DC, rates)},
+            {"label": "Debt-free by", "value": free_date},
+        ])
     else:
         st.success("🎉 You're debt-free!")

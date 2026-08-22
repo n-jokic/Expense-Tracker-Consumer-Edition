@@ -211,7 +211,8 @@ with r2:
                     vsum = vdf.groupby("date")["value_eur"].sum().reset_index()
                     vsum["d"] = vsum["value_eur"].apply(lambda x: to_display(x, DC, rates))
                     figv = px.area(vsum, x="date", y="d",
-                                   labels={"d": f"Value ({get_currency_symbol(DC)})", "date": "Date"})
+                                   labels={"d": f"Value ({get_currency_symbol(DC)})", "date": "Date"},
+                                   color_discrete_sequence=CHART_COLORS)
                     figv.update_layout(plot_bgcolor="rgba(0,0,0,0)",
                                        paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
                     st.plotly_chart(figv, width="stretch")
