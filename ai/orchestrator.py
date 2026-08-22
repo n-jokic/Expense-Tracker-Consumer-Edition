@@ -118,9 +118,9 @@ def _execute_tool(tool: str, arguments: dict, user_id: int) -> tuple[dict | None
     """Execute a read-only finance tool. Returns (result, error)."""
     try:
         from ai.tool_registry import TOOLS
-        from ai.safety import is_read_only_tool
+        from ai.safety import is_allowed_tool
 
-        if not is_read_only_tool(tool):
+        if not is_allowed_tool(tool):
             return None, f"tool not allowed: {tool}"
         fn = TOOLS.get(tool)
         if fn is None:
@@ -148,6 +148,39 @@ def _execute_tool(tool: str, arguments: dict, user_id: int) -> tuple[dict | None
     except Exception as e:
         log.warning("tool %s failed: %s", tool, e)
         return None, str(e)
+
+
+# ── #26 E4: turn-scoped mutation offers ─────────────────────────────────────
+# The tool wrappers hand real undo tokens here AFTER sanitization has run on
+# what the MODEL sees; the UI (ask.py) reads these to render Undo cards.
+import collections as _collections
+
+_RECENT_MUTATIONS: dict[int, object] = {}   # user_id -> deque[maxlen=10]
+
+
+def note_mutation(user_id: int, token_id: str, description: str,
+                  forward_command: str, forward_args: dict) -> None:
+    import time as _time
+    dq = _RECENT_MUTATIONS.setdefault(
+        int(user_id), _collections.deque(maxlen=10))
+    dq.append({"token_id": str(token_id), "description": str(description),
+               "forward_command": str(forward_command),
+               "forward_args": dict(forward_args or {}),
+               "ts": _time.time()})
+
+
+def recent_mutations(user_id: int) -> list:
+    return list(_RECENT_MUTATIONS.get(int(user_id)) or [])
+
+
+def pop_mutation_offers(user_id: int) -> list:
+    """Take (and clear) the newest mutation offers for the ask page."""
+    dq = _RECENT_MUTATIONS.get(int(user_id))
+    if not dq:
+        return []
+    out = list(dq)
+    dq.clear()
+    return out
 
 
 def _deterministic_answer(tool: str, result: dict) -> str:
@@ -366,6 +399,7 @@ def orchestrate(
 
     # Planner iterations bounded by MAX_TOOL_CALLS
     external = _external_provider(settings)  # AI-01 sanitizer mode
+    executed_mutations: list = []             # #26 E4: undo offers for the UI
     for iteration in range(MAX_TOOL_CALLS):
         # Build planner prompt with context so far
         prior_results = ""
@@ -487,6 +521,25 @@ def orchestrate(
             if exec_err:
                 # Tool error is feedback to planner — allow one more iteration
                 continue
+            # #26 E3/E4: surface mutation outcomes to the UI layer.
+            if isinstance(result, dict) and result.get("needs_confirmation"):
+                return {
+                    "answer": None,
+                    "tool_calls": [tc.__dict__ for tc in tool_calls],
+                    "error": None,
+                    "mutation_confirm": {
+                        "command": result.get("command"),
+                        "args": result.get("args") or {},
+                        "preview": result.get("preview") or {},
+                    },
+                }
+            if isinstance(result, dict) and result.get("changed"):
+                executed_mutations.append({
+                    "tool": tool,
+                    "token_id": result.get("undo_token"),
+                    "undo_description": result.get("undo_description") or "",
+                    "stored": result.get("stored") or {},
+                })
             # Heuristic: after 1-2 successful calls, we have enough to answer.
             # For describe/diagnose we often need 1; for plan/coach maybe 2-3.
             # Let planner decide on next iteration whether to call again.
@@ -511,6 +564,7 @@ def orchestrate(
     return {
         "answer": answer,
         "tool_calls": [tc.__dict__ for tc in tool_calls],
+        "mutations": executed_mutations,
         "error": err,
         "diagnostic": diag,
     }

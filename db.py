@@ -497,6 +497,9 @@ class Recurring(Base):
     notes       = Column(String, default="")
     active      = Column(Boolean, default=True)
     sort_order  = Column(Integer, default=0)
+    # #26 E2: agent-facing template deletes are SOFT so undo can restore.
+    is_deleted  = Column(Boolean, default=False, nullable=False, server_default=text("0"))
+    deleted_at  = Column(DateTime, nullable=True)
 
 
 class IncomeTemplate(Base):
@@ -738,6 +741,9 @@ class UserSettings(Base):
     # #22: which external API family the key belongs to. Was historically
     # derived by sniffing ai_api_base — now a first-class persisted column.
     ai_api_kind          = Column(String, nullable=True)      # openai_compatible | anthropic | gemini
+    # #26 E4 agent guard rails: mutation confirm threshold + 24h rate counts.
+    agent_confirm_threshold_eur = Column(Float, default=500.0)
+    agent_call_counts     = Column(JSON, nullable=True)      # list[ISO timestamps]
     # Persistent UI layout state (panel order/collapse) — see ui/layout_state.py
     ui_layout            = Column(JSON, nullable=True)
     # C1: user-editable one-tap quick-add presets. List of
@@ -880,6 +886,8 @@ def _migrate(engine):
         "ai_api_model": "VARCHAR",
         "ai_api_key_enc": "VARCHAR",
         "ai_api_kind": "VARCHAR",
+        "agent_confirm_threshold_eur": "FLOAT DEFAULT 500",
+        "agent_call_counts": "JSON",
         "ui_layout": "JSON",
         "quick_presets": "JSON",
         "auto_alloc_rules": "JSON",
@@ -896,6 +904,9 @@ def _migrate(engine):
         "due_day": "INTEGER",
         "start_month": "VARCHAR",
         "sort_order": "INTEGER DEFAULT 0",
+        # #26 E2: reversible recurring-template deletes
+        "is_deleted": "BOOLEAN DEFAULT 0",
+        "deleted_at": "DATETIME",
     })
     _add_missing_columns(engine, "big_purchases", {
         "sort_order": "INTEGER DEFAULT 0",
@@ -2369,11 +2380,13 @@ def delete_budget(user_id, budget_id):
 
 _REC_COLS = ["id","user_id","category","subcategory","description",
              "amount","currency","amount_eur","due_day","start_month","notes","active",
-             "sort_order"]
+             "sort_order","is_deleted","deleted_at"]
 
 def get_recurring(user_id):
     with get_session() as s:
-        rows = (s.query(Recurring).filter(Recurring.user_id == user_id)
+        rows = (s.query(Recurring)
+                .filter(Recurring.user_id == user_id,
+                        Recurring.is_deleted.isnot(True))
                 .order_by(Recurring.category.asc(), Recurring.sort_order.asc(),
                           Recurring.description.asc()).all())
     return _to_df(rows, _REC_COLS)
@@ -2766,6 +2779,9 @@ _SETTINGS_DEFAULTS = {
     "tax_model": None,
     # #22: external API family (openai_compatible | anthropic | gemini).
     "ai_api_kind": None,
+    # #26 E4: agent mutation guards.
+    "agent_confirm_threshold_eur": 500.0,
+    "agent_call_counts": None,
 }
 
 def get_settings(user_id):

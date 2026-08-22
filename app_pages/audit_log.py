@@ -24,6 +24,23 @@ else:
     actions = df_audit["action"].unique().tolist()
     filt = st.multiselect("Filter by action", actions, default=actions, key="audit_filt")
     df_show = df_audit[df_audit["action"].isin(filt)].copy()
+    # #26 E4: 'via agent' filter — AGENT audit rows carry via/command details.
+    only_agent = st.toggle("Only agent-made changes", key="audit_agent_only",
+                           help="Shows rows written by AI-assistant mutations "
+                                "(action AGENT) and MCP bookings routed "
+                                "through the same audited commands.")
+    if only_agent:
+        def _is_agent(row):
+            if str(row.get("action")) == "AGENT":
+                return True
+            try:
+                d = row.get("details")
+                if isinstance(d, str) and d.strip().startswith("{"):
+                    return '"via"' in d
+            except Exception:
+                return False
+            return False
+        df_show = df_show[df_show.apply(_is_agent, axis=1)]
     # Pretty-print the JSON details blobs (stored as strings by log_audit).
     def _pretty(d):
         if isinstance(d, str) and d.strip().startswith("{"):

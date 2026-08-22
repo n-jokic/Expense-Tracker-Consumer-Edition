@@ -41,9 +41,15 @@ from typing import Any
 
 log = logging.getLogger("ai.safety")
 
-# Tools are read-only; this set is intentionally empty until explicit
-# user-confirmed mutations are introduced.
-ALLOWED_MUTATIONS: set[str] = set()
+# #26 E3: explicit user-confirmed mutations. Read-only tools stay in the
+# registry; each name here must ALSO be registered in tool_registry.TOOLS.
+# Removing a name here is the kill-switch for that agent mutation.
+ALLOWED_MUTATIONS: set[str] = {
+    "add_expense", "add_income", "update_expense", "delete_expense",
+    "add_recurring_template", "update_recurring_template",
+    "delete_recurring_template", "link_purchase_to_goal",
+    "unlink_purchase_from_goal",
+}
 
 # Patterns that must never appear in model output that claims to be a tool call
 # (prevents prompt-injection trying to exfiltrate or mutate).
@@ -60,12 +66,26 @@ MAX_ARGUMENT_VALUE_LEN = 500
 
 
 def is_read_only_tool(tool: str) -> bool:
-    """True if tool is in read-only allowlist."""
+    """True if tool is in the registry (kept for backward compat)."""
     try:
         from ai.tool_registry import TOOLS
         return tool in TOOLS
     except Exception:
         return False
+
+
+def is_allowed_tool(tool: str) -> bool:
+    """#26 E3 gate: registry tools are allowed; mutation tools only when
+    their name is in ALLOWED_MUTATIONS (the user-facing kill-switch)."""
+    try:
+        from ai.tool_registry import TOOLS, MUTATION_TOOLS
+    except Exception:
+        return False
+    if tool not in TOOLS:
+        return False
+    if tool in MUTATION_TOOLS:
+        return tool in ALLOWED_MUTATIONS
+    return True
 
 
 def sanitize_question(question: str) -> str:
@@ -355,6 +375,14 @@ _SENSITIVE_KEY_SUFFIXES = (
 _ID_KEY_EXACT = {"id", "uid", "uuid", "guid", "user_id", "userid"}
 _ID_KEY_SUFFIXES = ("_id", "_uuid", "_guid")
 
+# #26 E3: undo plumbing is for the UI layer, never for the model — the
+# token value and its inverse-command name are redacted in BOTH modes.
+_UNDO_KEY_EXACT = {"undo_token", "undo_command", "undo_args"}
+
+
+def _is_undo_key(key: str) -> bool:
+    return str(key).lower() in _UNDO_KEY_EXACT
+
 
 def _is_sensitive_key(key: str) -> bool:
     k = str(key).lower()
@@ -383,6 +411,10 @@ def _sanitize_walk(obj: Any, external: bool, depth: int,
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
+            if isinstance(k, str) and _is_undo_key(k):
+                out[k] = REDACTED_VALUE
+                stats.add("undo_field")
+                continue
             if isinstance(k, str) and _is_sensitive_key(k):
                 # Keep the shape, destroy the value — visible, not silent.
                 out[k] = REDACTED_VALUE

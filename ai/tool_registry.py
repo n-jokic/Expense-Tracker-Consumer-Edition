@@ -38,6 +38,25 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "forecast": {"required": [], "optional": []},
     "purchase_scenario": {"required": ["purchase_eur", "year", "month"], "optional": []},
     "spending_series": {"required": [], "optional": ["months"]},
+    # #26 E3 mutations — dry_run/confirm accepted on all of them
+    "add_expense": {"required": ["description", "amount_eur"],
+                    "optional": ["category", "subcategory", "date", "notes", "dry_run", "confirm"]},
+    "add_income": {"required": ["source", "amount_eur"],
+                   "optional": ["income_type", "date", "notes", "dry_run", "confirm"]},
+    "update_expense": {"required": ["expense_id", "updates"],
+                       "optional": ["dry_run", "confirm"]},
+    "delete_expense": {"required": ["expense_id"],
+                       "optional": ["dry_run", "confirm"]},
+    "add_recurring_template": {"required": ["description", "amount_eur"],
+                               "optional": ["category", "subcategory", "due_day", "dry_run", "confirm"]},
+    "update_recurring_template": {"required": ["template_id", "updates"],
+                                  "optional": ["dry_run", "confirm"]},
+    "delete_recurring_template": {"required": ["template_id"],
+                                  "optional": ["dry_run", "confirm"]},
+    "link_purchase_to_goal": {"required": ["purchase_id", "goal_ref"],
+                              "optional": ["dry_run", "confirm"]},
+    "unlink_purchase_from_goal": {"required": ["purchase_id"],
+                                  "optional": ["dry_run", "confirm"]},
 }
 
 MAX_RESULT_ROWS = 100  # enforced by orchestrator too; kept here for reference
@@ -352,4 +371,281 @@ def forecast(user_id: int) -> dict:
 def purchase_scenario(user_id: int, purchase_eur: float, year: int, month: int) -> dict:
     result = fq.purchase_scenario(user_id, purchase_eur, year, month)
     result["_provenance"] = _prov("purchase_scenario", period_start=date(int(year), int(month), 1))
-    return result
+    return result# ── Mutation tools (#26 E3) ──────────────────────────────────────────────
+# Every mutation goes through services.commands (audit + revision + undo
+# token). dry_run=True validates and previews without writing. Mutations
+## above the user's confirm threshold return needs_confirmation unless
+# confirm=True — the ask.py confirm card supplies that flag.
+
+MUTATION_TOOLS: set[str] = {
+    "add_expense", "add_income", "update_expense", "delete_expense",
+    "add_recurring_template", "update_recurring_template",
+    "delete_recurring_template", "link_purchase_to_goal",
+    "unlink_purchase_from_goal",
+}
+
+
+def _mutation_guard(user_id: int, amount_eur: float | None) -> dict | None:
+    """Rate-cap check shared by all mutation tools (None => not blocked)."""
+    from services.commands import mutation_rate_limited
+    if mutation_rate_limited(int(user_id)):
+        return {
+            "ok": False,
+            "error": ("Agent mutation limit reached (20 per 24h). "
+                      "Do it manually or wait — this protects your data."),
+            "_provenance": _prov("mutation_guard"),
+        }
+    return None
+
+
+def _mutation_result(user_id: int, command: str, res, preview: dict) -> dict:
+    import services.commands as _C
+    from ai import orchestrator as _orch
+    if not getattr(res, "changed", False):
+        return {"ok": True, "changed": False,
+                "_provenance": _prov("mutation:" + command)}
+    try:
+        _C.record_agent_mutation(int(user_id))
+    except Exception:
+        pass
+    out = {"ok": True, "changed": True,
+           "_provenance": _prov("mutation:" + command),
+           "stored": preview}
+    tok = getattr(res, "undo_token", None)
+    if tok is not None:
+        # real token travels to the UI via result["mutations"]; the value
+        # the MODEL sees is redacted by ai.safety (undo_* keys).
+        out["undo_token"] = tok.token_id
+        out["undo_description"] = tok.description
+        try:
+            _orch.note_mutation(int(user_id), tok.token_id,
+                                tok.description, command,
+                                dict(preview))
+        except Exception:
+            pass
+    return out
+
+
+@_register("add_expense")
+def tool_add_expense(user_id: int, description: str, amount_eur: float,
+                     category=None, subcategory: str = "", date=None,
+                     notes: str = "", dry_run: bool = False,
+                     confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, float(amount_eur))
+    if blocked:
+        return blocked
+    preview = {"description": str(description),
+               "amount_eur": round(float(amount_eur), 2),
+               "date": str(date or "today"),
+               "category": str(category or "auto")}
+    if C.mutation_requires_confirmation(int(user_id), float(amount_eur)) \
+            and not confirm and not dry_run:
+        return {"needs_confirmation": True, "command": "add_expense",
+                "args": {"description": str(description),
+                         "amount_eur": float(amount_eur),
+                         "category": category,
+                         "subcategory": str(subcategory),
+                         "date": str(date) if date else None,
+                         "notes": str(notes)},
+                "preview": preview,
+                "_provenance": _prov("mutation:add_expense")}
+    res = C.add_expense(int(user_id), description=str(description),
+                        amount_eur=float(amount_eur), category=category,
+                        subcategory=str(subcategory or ""), date=date,
+                        notes=str(notes or ""), dry_run=bool(dry_run))
+    return _mutation_result(user_id, "add_expense", res, preview)
+
+
+@_register("add_income")
+def tool_add_income(user_id: int, source: str, amount_eur: float,
+                    income_type: str = "Other", date=None,
+                    notes: str = "", dry_run: bool = False,
+                    confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, float(amount_eur))
+    if blocked:
+        return blocked
+    preview = {"source": str(source),
+               "amount_eur": round(float(amount_eur), 2),
+               "date": str(date or "today")}
+    if C.mutation_requires_confirmation(int(user_id), float(amount_eur)) \
+            and not confirm and not dry_run:
+        return {"needs_confirmation": True, "command": "add_income",
+                "args": {"source": str(source),
+                         "amount_eur": float(amount_eur),
+                         "income_type": str(income_type),
+                         "date": str(date) if date else None,
+                         "notes": str(notes)},
+                "preview": preview,
+                "_provenance": _prov("mutation:add_income")}
+    res = C.add_income(int(user_id), source=str(source),
+                       amount_eur=float(amount_eur),
+                       income_type=str(income_type), date=date,
+                       notes=str(notes or ""), dry_run=bool(dry_run))
+    return _mutation_result(user_id, "add_income", res, preview)
+
+
+@_register("update_expense")
+def tool_update_expense(user_id: int, expense_id: str, updates: dict,
+                        dry_run: bool = False,
+                        confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if C.mutation_requires_confirmation(
+            int(user_id),
+            float(updates.get("amount_eur") or 0) +
+            C.confirm_threshold_eur(int(user_id))) \
+            and not confirm and not dry_run:
+        return {"needs_confirmation": True, "command": "update_expense",
+                "args": {"expense_id": str(expense_id),
+                         "updates": dict(updates)},
+                "preview": {"expense_id": str(expense_id),
+                            "updates": dict(updates)},
+                "_provenance": _prov("mutation:update_expense")}
+    res = C.update_expense(int(user_id), str(expense_id), dict(updates),
+                           dry_run=bool(dry_run))
+    return _mutation_result(user_id, "update_expense", res,
+                            {"expense_id": str(expense_id),
+                             "updates": dict(updates)})
+
+
+@_register("delete_expense")
+def tool_delete_expense(user_id: int, expense_id: str,
+                        dry_run: bool = False,
+                        confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if not confirm and not dry_run:
+        # deletes always confirm — the threshold does not apply to them.
+        return {"needs_confirmation": True, "command": "delete_expense",
+                "args": {"expense_id": str(expense_id)},
+                "preview": {"expense_id": str(expense_id),
+                            "action": "soft-delete (undoable)"},
+                "_provenance": _prov("mutation:delete_expense")}
+    res = C.delete_expense(int(user_id), str(expense_id),
+                           dry_run=bool(dry_run))
+    return _mutation_result(user_id, "delete_expense", res,
+                            {"expense_id": str(expense_id)})
+
+
+@_register("add_recurring_template")
+def tool_add_recurring_template(user_id: int, description: str,
+                                amount_eur: float, category=None,
+                                subcategory: str = "", due_day=None,
+                                dry_run: bool = False,
+                                confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, float(amount_eur))
+    if blocked:
+        return blocked
+    preview = {"description": str(description),
+               "amount_eur": round(float(amount_eur), 2)}
+    if C.mutation_requires_confirmation(int(user_id), float(amount_eur)) \
+            and not confirm and not dry_run:
+        return {"needs_confirmation": True,
+                "command": "add_recurring_template",
+                "args": {"description": str(description),
+                         "amount_eur": float(amount_eur),
+                         "category": category,
+                         "subcategory": str(subcategory),
+                         "due_day": due_day},
+                "preview": preview,
+                "_provenance": _prov("mutation:add_recurring_template")}
+    res = C.add_recurring_template(
+        int(user_id), description=str(description),
+        amount_eur=float(amount_eur), category=category,
+        subcategory=str(subcategory or ""), due_day=due_day,
+        dry_run=bool(dry_run))
+    return _mutation_result(user_id, "add_recurring_template", res, preview)
+
+
+@_register("update_recurring_template")
+def tool_update_recurring_template(user_id: int, template_id: str,
+                                   updates: dict,
+                                   dry_run: bool = False,
+                                   confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if not confirm and not dry_run:
+        return {"needs_confirmation": True,
+                "command": "update_recurring_template",
+                "args": {"template_id": str(template_id),
+                         "updates": dict(updates)},
+                "preview": {"template_id": str(template_id),
+                            "updates": dict(updates)},
+                "_provenance": _prov("mutation:update_recurring_template")}
+    res = C.update_recurring_template(int(user_id), str(template_id),
+                                      dict(updates))
+    return _mutation_result(user_id, "update_recurring_template", res,
+                            {"template_id": str(template_id),
+                             "updates": dict(updates)})
+
+
+@_register("delete_recurring_template")
+def tool_delete_recurring_template(user_id: int, template_id: str,
+                                   dry_run: bool = False,
+                                   confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if not confirm and not dry_run:
+        return {"needs_confirmation": True,
+                "command": "delete_recurring_template",
+                "args": {"template_id": str(template_id)},
+                "preview": {"template_id": str(template_id),
+                            "action": "soft-delete (undoable)"},
+                "_provenance": _prov("mutation:delete_recurring_template")}
+    res = C.delete_recurring_template(int(user_id), str(template_id))
+    return _mutation_result(user_id, "delete_recurring_template", res,
+                            {"template_id": str(template_id)})
+
+
+@_register("link_purchase_to_goal")
+def tool_link_purchase_to_goal(user_id: int, purchase_id: str,
+                               goal_ref: str, dry_run: bool = False,
+                               confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if not confirm and not dry_run:
+        return {"needs_confirmation": True,
+                "command": "link_purchase_to_goal",
+                "args": {"purchase_id": str(purchase_id),
+                         "goal_ref": str(goal_ref)},
+                "preview": {"purchase_id": str(purchase_id),
+                            "goal_ref": str(goal_ref)},
+                "_provenance": _prov("mutation:link_purchase_to_goal")}
+    res = C.link_purchase_to_goal(int(user_id), str(purchase_id),
+                                  str(goal_ref))
+    return _mutation_result(user_id, "link_purchase_to_goal", res,
+                            {"purchase_id": str(purchase_id),
+                             "goal_ref": str(goal_ref)})
+
+
+@_register("unlink_purchase_from_goal")
+def tool_unlink_purchase_from_goal(user_id: int, purchase_id: str,
+                                   dry_run: bool = False,
+                                   confirm: bool = False) -> dict:
+    from services import commands as C
+    blocked = _mutation_guard(user_id, None)
+    if blocked:
+        return blocked
+    if not confirm and not dry_run:
+        return {"needs_confirmation": True,
+                "command": "unlink_purchase_from_goal",
+                "args": {"purchase_id": str(purchase_id)},
+                "preview": {"purchase_id": str(purchase_id),
+                            "action": "clear funding link"},
+                "_provenance": _prov("mutation:unlink_purchase_from_goal")}
+    res = C.unlink_purchase_from_goal(int(user_id), str(purchase_id))
+    return _mutation_result(user_id, "unlink_purchase_from_goal", res,
+                            {"purchase_id": str(purchase_id)})

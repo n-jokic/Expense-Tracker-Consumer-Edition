@@ -45,6 +45,65 @@ if (flash := st.session_state.pop("exp_flash", None)):
     else:
         st.toast(flash[1], icon=":material/check_circle:")
 
+# ── #26 E5: paste order/shipping email staging ───────────────────────────
+with st.expander("Paste an order / shipping email",
+                 icon=":material/mark_email_read:"):
+    st.caption("Parse a pasted confirmation email into booking candidates — "
+               "nothing is saved until you accept an item.")
+    _pasted = st.text_area("Email text", height=130, key="mail_paste")
+    if st.button("Parse candidates", key="mail_parse_btn",
+                 icon=":material/manage_search:",
+                 disabled=not (_pasted or "").strip()):
+        from services.mail_ingestion import parse_email_text
+
+        st.session_state["mail_candidates"] = parse_email_text(_pasted)
+        st.rerun()
+    _mail_cands = st.session_state.get("mail_candidates") or []
+    if not _mail_cands and st.session_state.get("mail_parsed_once"):
+        st.caption("No amounts found in that text.")
+    for _mi, _cand in enumerate(_mail_cands):
+        with st.container(border=True):
+            _sub = ((" › " + _cand["subcategory"])
+                    if _cand.get("subcategory") else "")
+            st.markdown(
+                f"**{_cand['description']}** · "
+                f"{fmt_dual(_cand['amount_eur'], DC, rates)} · "
+                f"{_cand['category']}{_sub} · {_cand.get('date') or 'today'}")
+            st.caption(f"confidence {_cand.get('confidence', 0):.0%}")
+            _a1, _a2 = st.columns(2)
+            if _a1.button("Accept & book", key=f"mail_acc_{_mi}",
+                          type="primary", icon=":material/check:",
+                          width="stretch"):
+                from services import commands as _cmds
+
+                try:
+                    _res = _cmds.add_expense(
+                        user_id, description=_cand["description"],
+                        amount_eur=float(_cand["amount_eur"]),
+                        category=_cand.get("category"),
+                        subcategory=_cand.get("subcategory") or "",
+                        date=_cand.get("date"), via="email")
+                except Exception as _exc:
+                    st.error(f"Couldn't book: {_exc}",
+                             icon=":material/block:")
+                else:
+                    q.bump_db_version()
+                    st.session_state["exp_flash"] = (
+                        "success",
+                        f"Booked {_cand['description']} — " + _res.undo_token.description
+                        if getattr(_res, "undo_token", None)
+                        else f"Booked {_cand['description']}.")
+                _rest = [c for j, c in enumerate(_mail_cands) if j != _mi]
+                st.session_state["mail_candidates"] = _rest
+                st.session_state["mail_parsed_once"] = True
+                st.rerun()
+            if _a2.button("Discard", key=f"mail_dis_{_mi}",
+                          icon=":material/close:", width="stretch"):
+                st.session_state["mail_candidates"] = [
+                    c for j, c in enumerate(_mail_cands) if j != _mi]
+                st.session_state["mail_parsed_once"] = True
+                st.rerun()
+
 # ── Receipt scan (OCR on the server; phone just sends the photo) ─────────────
 
 def _receipt_candidate_value(receipt_result, field):

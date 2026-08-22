@@ -7,6 +7,7 @@ All numbers come from canonical services (services/finance_queries) with
 provenance — no LLM arithmetic.
 """
 
+import json
 import os as _os
 
 import streamlit as st
@@ -184,6 +185,99 @@ if _last_proposal:
     st.caption("Proposals are never auto-executed — confirming calls one "
                "audited command (single transaction, single audit record).")
 
+# ── Agent mutation confirm card (#26 E4) ───────────────────────────────────
+_mc = st.session_state.get("_last_mutation_confirm")
+if _mc:
+    st.warning("The assistant wants to book a change — review before "
+               "confirming.", icon=":material/warning:")
+    st.code(json.dumps(_mc.get("preview") or {}, default=str),
+            language="json")
+
+    def _run_agent_command(command: str, args: dict):
+        from services import commands as C
+        from services.commands import CommandError
+
+        fn = getattr(C, str(command), None)
+        if fn is None or str(command) not in getattr(
+                C, "UNDO_COMMANDS", {}) and not command.startswith((
+                    "add_", "update_", "delete_", "link_", "unlink_")):
+            raise CommandError(f"Unknown agent command {command!r}.")
+        return fn(user_id, **dict(args or {}))
+
+    c_yes, c_no = st.columns(2)
+    if c_yes.button("Confirm booking", type="primary",
+                    icon=":material/check:", key="ask_confirm_mutation"):
+        _p = st.session_state.pop("_last_mutation_confirm", None) or {}
+        try:
+            _res = _run_agent_command(str(_p.get("command")),
+                                      dict(_p.get("args") or {}))
+        except Exception as exc:
+            st.error(f"Rejected: {exc}", icon=":material/block:")
+        else:
+            if getattr(_res, "changed", False):
+                import queries as _q
+
+                _q.bump_db_version()
+                st.toast("Booked.", icon=":material/check_circle:")
+            st.rerun()
+    if c_no.button("Dismiss", key="ask_dismiss_mutation"):
+        st.session_state.pop("_last_mutation_confirm", None)
+        st.rerun()
+
+# ── Undo / Redo cards (#26 E4) ─────────────────────────────────────────────
+_offers = st.session_state.get("_undo_offers") or []
+if _offers:
+    from services.undo import execute_undo
+
+    for _i, _off in enumerate(_offers[:3]):
+        _desc = _off.get("undo_description") or _off.get("tool") or "change"
+        _box = st.container(border=True)
+        with _box:
+            st.markdown(f"↩️ **{_desc}**")
+            if st.button("Undo", key=f"ask_undo_{_off.get('token_id')}",
+                         icon=":material/undo:"):
+                _out = execute_undo(str(_off.get("token_id")))
+                st.session_state.pop("_undo_offers", None)
+                if _out.ok:
+                    if _out.changed:
+                        import queries as _q
+
+                        _q.bump_db_version()
+                        st.session_state["_last_undone"] = {
+                            "command": _off.get("tool"),
+                            "args": _off.get("stored") or {},
+                            "description": _desc,
+                        }
+                    st.toast(_out.message, icon=":material/undo:")
+                else:
+                    st.error(_out.message, icon=":material/block:")
+                st.rerun()
+
+_undone = st.session_state.get("_last_undone")
+if _undone:
+    st.info(f"Undone — {_undone.get('description')}.",
+            icon=":material/undo:")
+    if st.button("Redo", key="ask_redo_mutation",
+                 icon=":material/redo:"):
+        st.session_state.pop("_last_undone", None)
+        _fwd = {"add_expense": "add_expense",
+                "add_income": "add_income",
+                "add_recurring_template": "add_recurring_template"}
+        _cmd = _fwd.get(str(_undone.get("command")))
+        if _cmd:
+            try:
+                _args = dict(_undone.get("args") or {})
+                _args.pop("undo_token", None)
+                _res2 = _run_agent_command(_cmd, _args)
+                if getattr(_res2, "changed", False):
+                    import queries as _q
+
+                    _q.bump_db_version()
+                    st.toast("Re-applied.", icon=":material/redo:")
+            except Exception as exc:
+                st.error(f"Redo failed: {exc}", icon=":material/block:")
+        st.rerun()
+
 # ── Input ──────────────────────────────────────────────────────────────────
 prompt = st.chat_input("Ask about your finances…", submit_mode="disable")
 if prompt and prompt.strip():
@@ -209,6 +303,30 @@ if st.session_state.pop("ask_pending", None):
                 "content": f"⚠️ {proposal.get('message', 'Proposed change requires confirmation.')}\n\n_The model never auto-executes mutations — use Confirm change to apply._",
             }
         )
+        st.rerun()
+
+    # ── #26 E4: agent mutation confirm + undo offers ────────────────────
+    mc = result.get("mutation_confirm")
+    if mc:
+        st.session_state["_last_mutation_confirm"] = mc
+        prev = mc.get("preview") or {}
+        st.session_state.ask_history.append({
+            "role": "assistant",
+            "content": ("⚠️ Ready to apply: " + str(prev) +
+                        "\n\n_Confirm below — nothing is booked silently._"),
+        })
+        st.rerun()
+
+    mutations = result.get("mutations") or []
+    if mutations:
+        st.session_state["_undo_offers"] = mutations
+        for m in mutations:
+            stored = m.get("stored") or {}
+            st.session_state.ask_history.append({
+                "role": "assistant",
+                "content": ("✅ Stored: " + str(stored) +
+                            "\n\n_Undo available below._"),
+            })
         st.rerun()
 
     answer = result.get("answer")

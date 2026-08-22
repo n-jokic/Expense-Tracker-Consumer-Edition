@@ -1198,3 +1198,531 @@ def set_budget(user_id: int, category: str, amount_eur: float,
     return CommandResult(changed=True, revision=_bump(user_id),
                          affected_ids=(f"{yr}-{mo:02d}:{cat}",))
 
+
+
+# ── Reversible agent mutations (#26 E2) ──────────────────────────────────────
+# Wrappers around the db writers that add validation, an agent-marked audit
+# row, an undo token, and (for MCP callers) command-layer parity. Every
+# inverse command in UNDO_COMMANDS is idempotent (already-done -> ok no-op).
+
+AGENT_SOURCE = "agent"
+MAX_AMOUNT_EUR = 1_000_000
+DEFAULT_CONFIRM_THRESHOLD_EUR = 500.0
+MAX_AGENT_MUTATIONS_PER_DAY = 20
+
+
+@dataclass(frozen=True)
+class CommandResultWithUndo(CommandResult):
+    undo_token: object | None = None
+
+
+def _audit_via(user_id: int, action: str, table: str, obj_id: str,
+               details: dict) -> None:
+    from db import get_session, log_audit
+    with get_session() as s:
+        log_audit(s, user_id, action, table, str(obj_id), details)
+
+
+def _as_date(v):
+    from datetime import date as _date, datetime as _dt
+    if v is None or v == "":
+        return _date.today()
+    if isinstance(v, _dt):
+        return v.date()
+    if isinstance(v, _date):
+        return v
+    s = str(v).strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return _dt.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    raise CommandError(f"could not parse date {s!r} — use YYYY-MM-DD.")
+
+
+def _resolve_category(user_id: int, category, subcategory) -> tuple:
+    """Unknown/garbage categories map through the user's taxonomy instead of
+    being rejected — the agent should not fail a booking over naming."""
+    import db as _db
+    from domain.validation import map_unknown_category
+    cats = _db.effective_taxonomy(int(user_id))[1]
+    cat = str(category or "").strip()
+    sub = str(subcategory or "").strip()
+    if cat and cat in cats:
+        if sub and sub not in cats.get(cat, []):
+            sub = ""
+        return cat, sub
+    return map_unknown_category(cat or sub, cats)
+
+
+def add_expense(user_id: int, *, description: str, amount_eur: float,
+                category=None, subcategory: str = "",
+                date=None, notes: str = "", currency: str = "EUR",
+                amount: float | None = None,
+                via: str = AGENT_SOURCE, dry_run: bool = False
+                ) -> CommandResultWithUndo:
+    """Book an expense with validation + undo token (soft-delete inverse)."""
+    from db import add_expense as _db_add
+    from services.undo import make_undo_token, register_token
+
+    ae = _q2(_finite_amount(amount_eur, "amount"))
+    if ae <= 0 or ae > MAX_AMOUNT_EUR:
+        raise CommandError("amount must be within (0, 1000000] EUR.")
+    # original-currency passthrough (MCP keeps the user's currency)
+    cur = str(currency or "EUR").upper()
+    amt = _q2(float(amount)) if amount is not None else ae
+    desc = str(description or "").strip()
+    if not desc:
+        raise CommandError("description must not be empty.")
+    d = _as_date(date)
+    cat, sub = _resolve_category(user_id, category, subcategory)
+    row = {"date": d, "category": cat, "subcategory": sub,
+           "description": desc, "amount": amt, "currency": cur,
+           "amount_eur": ae, "notes": str(notes or "")}
+    if dry_run:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    eid = _db_add(int(user_id), row)
+    _audit_via(user_id, "AGENT", "expenses", eid,
+               {"via": via, "command": "add_expense", "amount_eur": amt})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "delete_expense", {"user_id": int(user_id), "expense_id": eid},
+        f"Undo expense {amt:.2f} EUR — {desc[:40]}"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(eid,), undo_token=token)
+
+
+def add_income(user_id: int, *, source: str, amount_eur: float,
+               income_type: str = "Other", date=None, notes: str = "",
+               currency: str = "EUR", amount: float | None = None,
+               via: str = AGENT_SOURCE, dry_run: bool = False
+               ) -> CommandResultWithUndo:
+    from db import add_income as _db_add
+    from services.undo import make_undo_token, register_token
+
+    ae = _q2(_finite_amount(amount_eur, "amount"))
+    if ae <= 0 or ae > MAX_AMOUNT_EUR:
+        raise CommandError("amount must be within (0, 1000000] EUR.")
+    cur = str(currency or "EUR").upper()
+    amt = _q2(float(amount)) if amount is not None else ae
+    src = str(source or "").strip()
+    if not src:
+        raise CommandError("source must not be empty.")
+    d = _as_date(date)
+    row = {"date": d, "source": src, "income_type": str(income_type or "Other"),
+           "hours": None, "rate": None, "budgeted": amt, "actual": amt,
+           "currency": cur, "budgeted_eur": ae, "actual_eur": ae,
+           "notes": str(notes or "")}
+    if dry_run:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    iid = _db_add(int(user_id), row)
+    _audit_via(user_id, "AGENT", "income", iid,
+               {"via": via, "command": "add_income", "amount_eur": amt})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "delete_income", {"user_id": int(user_id), "income_id": iid},
+        f"Undo income {amt:.2f} EUR — {src[:40]}"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(iid,), undo_token=token)
+
+
+_EXP_SNAPSHOT_KEYS = ("date", "category", "subcategory", "description",
+                      "amount", "currency", "amount_eur", "notes")
+
+
+def update_expense(user_id: int, expense_id: str, updates: dict,
+                   via: str = AGENT_SOURCE,
+                   dry_run: bool = False) -> CommandResultWithUndo:
+    """Edit an expense; the undo token re-applies the previous values."""
+    import db as _db
+    from db import get_session, Expense
+    from services.undo import make_undo_token, register_token
+
+    clean: dict = {}
+    for k in _EXP_SNAPSHOT_KEYS:
+        if k not in updates:
+            continue
+        v = updates[k]
+        if k in ("amount", "amount_eur"):
+            v = _q2(_finite_amount(v, k))
+            if v <= 0:
+                raise CommandError(f"{k} must be positive.")
+        if k == "date":
+            v = _as_date(v)
+        if k in ("category", "subcategory"):
+            cat, sub = _resolve_category(
+                user_id, v if k == "category" else None,
+                v if k == "subcategory" else None)
+            v = cat if k == "category" else sub
+        clean[k] = v
+    if not clean:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    with get_session() as s:
+        obj = s.query(Expense).filter(Expense.id == str(expense_id),
+                                      Expense.user_id == int(user_id),
+                                      Expense.is_deleted.isnot(True)).first()
+        if obj is None:
+            raise CommandError("Expense not found (or already deleted).")
+        old = {k: getattr(obj, k) for k in clean}
+    if dry_run:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    _db.update_expense(int(user_id), str(expense_id), clean)
+    _audit_via(user_id, "AGENT", "expenses", str(expense_id),
+               {"via": via, "command": "update_expense", "updates": clean})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "update_expense", {"user_id": int(user_id),
+                           "expense_id": str(expense_id),
+                           "updates": {k: (v.isoformat()
+                                           if hasattr(v, "isoformat")
+                                           else v) for k, v in old.items()}},
+        "Undo expense edit"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(expense_id),),
+                                 undo_token=token)
+
+
+def delete_expense(user_id: int, expense_id: str,
+                   via: str = AGENT_SOURCE,
+                   dry_run: bool = False) -> CommandResultWithUndo:
+    """Soft-delete (idempotent); undo restores."""
+    import db as _db
+    from db import get_session, Expense
+    from services.undo import make_undo_token, register_token
+
+    if dry_run:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    with get_session() as s:
+        obj = s.query(Expense).filter(Expense.id == str(expense_id),
+                                      Expense.user_id == int(user_id)).first()
+        if obj is None:
+            raise CommandError("Expense not found.")
+        already = bool(obj.is_deleted)
+    if already:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    _db.soft_delete_expense(int(user_id), str(expense_id))
+    _audit_via(user_id, "AGENT", "expenses", str(expense_id),
+               {"via": via, "command": "delete_expense"})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "restore_expense", {"user_id": int(user_id),
+                            "expense_id": str(expense_id)},
+        "Restore deleted expense"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(expense_id),),
+                                 undo_token=token)
+
+
+def restore_expense(user_id: int, expense_id: str) -> CommandResult:
+    """Inverse of delete_expense; idempotent (already active -> no-op)."""
+    from db import get_session, Expense, restore_expense as _db_restore
+    with get_session() as s:
+        obj = s.query(Expense).filter(Expense.id == str(expense_id),
+                                      Expense.user_id == int(user_id)).first()
+        if obj is None or not bool(obj.is_deleted):
+            return CommandResult(changed=False, revision=None,
+                                 affected_ids=())
+    _db_restore(int(user_id), str(expense_id))
+    _audit_via(user_id, "RESTORE", "expenses", str(expense_id), {})
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(str(expense_id),))
+
+
+def delete_income(user_id: int, income_id: str) -> CommandResult:
+    """Inverse of add_income; idempotent."""
+    import db as _db
+    from db import get_session, Income
+    with get_session() as s:
+        obj = s.query(Income).filter(Income.id == str(income_id),
+                                     Income.user_id == int(user_id)).first()
+        if obj is None or bool(obj.is_deleted):
+            return CommandResult(changed=False, revision=None,
+                                 affected_ids=())
+    _db.soft_delete_income(int(user_id), str(income_id))
+    _audit_via(user_id, "DELETE", "income", str(income_id), {"soft": True})
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(str(income_id),))
+
+
+# ── recurring template CRUD with undo ────────────────────────────────────────
+
+def _rec_snapshot(obj) -> dict:
+    return {"description": obj.description, "amount_eur": obj.amount_eur,
+            "due_day": obj.due_day, "notes": obj.notes}
+
+
+def add_recurring_template(user_id: int, *, description: str,
+                           amount_eur: float, category=None,
+                           subcategory: str = "", due_day=None,
+                           via: str = AGENT_SOURCE,
+                           dry_run: bool = False) -> CommandResultWithUndo:
+    from db import add_recurring as _db_add
+    from services.undo import make_undo_token, register_token
+
+    amt = _q2(_finite_amount(amount_eur, "amount"))
+    if amt <= 0 or amt > MAX_AMOUNT_EUR:
+        raise CommandError("amount must be within (0, 1000000] EUR.")
+    desc = str(description or "").strip()
+    if not desc:
+        raise CommandError("description must not be empty.")
+    cat, sub = _resolve_category(user_id, category, subcategory)
+    dd = int(due_day) if due_day else None
+    if dd is not None and not (1 <= dd <= 31):
+        raise CommandError("due_day must be within 1..31.")
+    if dry_run:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    rid = _db_add(int(user_id), {"category": cat, "subcategory": sub,
+                                 "description": desc, "amount": amt,
+                                 "currency": "EUR", "amount_eur": amt,
+                                 "due_day": dd})
+    _audit_via(user_id, "AGENT", "recurring", rid,
+               {"via": via, "command": "add_recurring_template"})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "delete_recurring_template",
+        {"user_id": int(user_id), "template_id": rid},
+        f"Undo template {desc[:40]}"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(rid,), undo_token=token)
+
+
+def delete_recurring_template(user_id: int, template_id: str,
+                              via: str = AGENT_SOURCE
+                              ) -> CommandResultWithUndo:
+    """Soft-delete a template (idempotent); undo un-deletes it."""
+    from datetime import datetime as _dt
+    from db import get_session, Recurring, log_audit
+    from services.undo import make_undo_token, register_token
+
+    with get_session() as s:
+        obj = s.query(Recurring).filter(Recurring.id == str(template_id),
+                                        Recurring.user_id == int(user_id)).first()
+        if obj is None:
+            raise CommandError("Template not found.")
+        already = bool(getattr(obj, "is_deleted", False))
+    if already:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    with get_session() as s:
+        obj = s.query(Recurring).filter(Recurring.id == str(template_id),
+                                        Recurring.user_id == int(user_id)).first()
+        obj.is_deleted = True
+        obj.deleted_at = _dt.utcnow()
+        obj.active = False
+        log_audit(s, int(user_id), "DELETE", "recurring", str(template_id),
+                  {"soft": True, "via": via})
+        s.commit()
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "restore_recurring_template",
+        {"user_id": int(user_id), "template_id": str(template_id)},
+        "Restore deleted template"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(template_id),),
+                                 undo_token=token)
+
+
+def restore_recurring_template(user_id: int, template_id: str) -> CommandResult:
+    from db import get_session, Recurring, log_audit
+    with get_session() as s:
+        obj = s.query(Recurring).filter(Recurring.id == str(template_id),
+                                        Recurring.user_id == int(user_id)).first()
+        if obj is None or not bool(getattr(obj, "is_deleted", False)):
+            return CommandResult(changed=False, revision=None,
+                                 affected_ids=())
+        obj.is_deleted = False
+        obj.deleted_at = None
+        obj.active = True
+        log_audit(s, int(user_id), "RESTORE", "recurring",
+                  str(template_id), {})
+        s.commit()
+    return CommandResult(changed=True, revision=_bump(user_id),
+                         affected_ids=(str(template_id),))
+
+
+def update_recurring_template(user_id: int, template_id: str, updates: dict,
+                              via: str = AGENT_SOURCE
+                              ) -> CommandResultWithUndo:
+    from db import get_session, Recurring, update_recurring as _db_upd
+    from services.undo import make_undo_token, register_token
+
+    clean: dict = {}
+    for k in ("description", "amount_eur", "due_day", "notes"):
+        if k in updates:
+            v = updates[k]
+            if k == "amount_eur":
+                v = _q2(_finite_amount(v, k))
+                if v <= 0:
+                    raise CommandError("amount_eur must be positive.")
+            if k == "due_day":
+                v = int(v) if v else None
+                if v is not None and not (1 <= v <= 31):
+                    raise CommandError("due_day must be within 1..31.")
+            clean[k] = v
+    if not clean:
+        return CommandResultWithUndo(changed=False, revision=None,
+                                     affected_ids=())
+    with get_session() as s:
+        obj = s.query(Recurring).filter(Recurring.id == str(template_id),
+                                        Recurring.user_id == int(user_id),
+                                        Recurring.is_deleted.isnot(True)).first()
+        if obj is None:
+            raise CommandError("Template not found (or already deleted).")
+        old = _rec_snapshot(obj)
+    if "amount_eur" in clean:
+        clean["amount"] = clean["amount_eur"]
+    _db_upd(int(user_id), str(template_id), clean)
+    _audit_via(user_id, "AGENT", "recurring", str(template_id),
+               {"via": via, "command": "update_recurring_template",
+                "updates": clean})
+    rev = _bump(user_id)
+    token = register_token(make_undo_token(
+        "update_recurring_template",
+        {"user_id": int(user_id), "template_id": str(template_id),
+         "updates": old}, "Undo template edit"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(template_id),),
+                                 undo_token=token)
+
+
+# ── wishlist funding link/unlink (undo = previous link state) ────────────────
+
+def link_purchase_to_goal(user_id: int, purchase_id: str, goal_ref: str,
+                          via: str = AGENT_SOURCE
+                          ) -> CommandResultWithUndo:
+    """Attach a wishlist item to a savings goal; undo restores the old link."""
+    from services.purchase_commands import (FUNDING_SAVINGS_GOAL,
+                                            set_purchase_funding)
+    from db import get_session, BigPurchase
+    from services.undo import make_undo_token, register_token
+
+    with get_session() as s:
+        item = s.query(BigPurchase).filter(
+            BigPurchase.id == str(purchase_id),
+            BigPurchase.user_id == int(user_id)).first()
+        if item is None:
+            raise CommandError("Wishlist item not found.")
+        old_src = item.funding_source
+        old_ref = item.funding_goal_ref
+    set_purchase_funding(int(user_id), str(purchase_id),
+                         source=FUNDING_SAVINGS_GOAL, goal_ref=str(goal_ref))
+    _audit_via(user_id, "AGENT", "big_purchases", str(purchase_id),
+               {"via": via, "command": "link_purchase_to_goal",
+                "goal_ref": str(goal_ref)})
+    rev = _bump(user_id)
+    if old_src == FUNDING_SAVINGS_GOAL and old_ref:
+        inv_cmd, inv_args = "link_purchase_to_goal", {
+            "user_id": int(user_id), "purchase_id": str(purchase_id),
+            "goal_ref": str(old_ref)}
+    else:
+        inv_cmd, inv_args = "unlink_purchase_from_goal", {
+            "user_id": int(user_id), "purchase_id": str(purchase_id)}
+    token = register_token(make_undo_token(inv_cmd, inv_args,
+                                           "Undo funding link"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(purchase_id),),
+                                 undo_token=token)
+
+
+def unlink_purchase_from_goal(user_id: int, purchase_id: str,
+                              via: str = AGENT_SOURCE
+                              ) -> CommandResultWithUndo:
+    from services.purchase_commands import set_purchase_funding
+    from db import get_session, BigPurchase
+    from services.undo import make_undo_token, register_token
+
+    with get_session() as s:
+        item = s.query(BigPurchase).filter(
+            BigPurchase.id == str(purchase_id),
+            BigPurchase.user_id == int(user_id)).first()
+        if item is None:
+            raise CommandError("Wishlist item not found.")
+        old_src = item.funding_source
+        old_ref = item.funding_goal_ref
+    set_purchase_funding(int(user_id), str(purchase_id), source=None)
+    _audit_via(user_id, "AGENT", "big_purchases", str(purchase_id),
+               {"via": via, "command": "unlink_purchase_from_goal"})
+    rev = _bump(user_id)
+    token = None
+    if old_src and old_ref:
+        token = register_token(make_undo_token(
+            "link_purchase_to_goal",
+            {"user_id": int(user_id), "purchase_id": str(purchase_id),
+             "goal_ref": str(old_ref)}, "Restore funding link"))
+    return CommandResultWithUndo(changed=True, revision=rev,
+                                 affected_ids=(str(purchase_id),),
+                                 undo_token=token)
+
+
+# Inverse-command registry for services.undo.execute_undo. The undo of an
+# add_* is the matching delete_*; deletes/updates restore previous state.
+UNDO_COMMANDS = {
+    "delete_expense": delete_expense,
+    "restore_expense": restore_expense,
+    "update_expense": update_expense,
+    "delete_income": delete_income,
+    "delete_recurring_template": delete_recurring_template,
+    "restore_recurring_template": restore_recurring_template,
+    "update_recurring_template": update_recurring_template,
+    "link_purchase_to_goal": link_purchase_to_goal,
+    "unlink_purchase_from_goal": unlink_purchase_from_goal,
+}
+
+
+# ── agent guard rails (#26 E4) ───────────────────────────────────────────────
+
+def confirm_threshold_eur(user_id: int) -> float:
+    from db import get_settings
+    v = float((get_settings(int(user_id)) or {}).get(
+        "agent_confirm_threshold_eur") or DEFAULT_CONFIRM_THRESHOLD_EUR)
+    return v if v > 0 else DEFAULT_CONFIRM_THRESHOLD_EUR
+
+
+def mutations_last_24h(user_id: int) -> int:
+    """Count of agent mutations in the trailing 24h (pruned on read)."""
+    from datetime import datetime as _dt, timedelta
+    from db import get_settings, save_settings
+    st = get_settings(int(user_id)) or {}
+    raw = list(st.get("agent_call_counts") or [])
+    now = _dt.utcnow()
+    fresh = []
+    for ts in raw:
+        try:
+            t = _dt.fromisoformat(str(ts))
+            if now - t < timedelta(hours=24):
+                fresh.append(str(ts))
+        except ValueError:
+            continue
+    if len(fresh) != len(raw):
+        try:
+            save_settings(int(user_id), {"agent_call_counts": fresh})
+        except Exception:
+            pass
+    return len(fresh)
+
+
+def record_agent_mutation(user_id: int) -> int:
+    from datetime import datetime as _dt
+    from db import get_settings, save_settings
+    mutations_last_24h(int(user_id))                  # prune first
+    st = get_settings(int(user_id)) or {}
+    calls = list(st.get("agent_call_counts") or [])
+    calls.append(_dt.utcnow().isoformat())
+    save_settings(int(user_id), {"agent_call_counts": calls})
+    return len(calls)
+
+
+def mutation_requires_confirmation(user_id: int, amount_eur: float) -> bool:
+    return float(amount_eur) > confirm_threshold_eur(int(user_id))
+
+
+def mutation_rate_limited(user_id: int) -> bool:
+    return mutations_last_24h(int(user_id)) >= MAX_AGENT_MUTATIONS_PER_DAY
+

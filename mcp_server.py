@@ -343,9 +343,14 @@ async def _add_expense_impl(amount: float, category: str, description: str = "",
             "amount_eur": ae, "recurring": False, "notes": "",
             "via": "mcp",
         }
-        exp_id = db_add_expense(uid, row)
-        bump_data_revision(uid)
-        return {"ok": True, "id": exp_id, "amount_eur": round(ae, 2),
+        # #26 E2: MCP bookings go through the audited command layer — same
+        # validation/audit/revision parity as the in-app agent path.
+        from services import commands as _cmd
+        res = _cmd.add_expense(uid, description=desc, amount_eur=ae,
+                               category=cat, subcategory=sub, date=when,
+                               currency=cur, amount=amt, via="mcp")
+        return {"ok": True, "id": (res.affected_ids[0] if res.affected_ids
+                                   else ""), "amount_eur": round(ae, 2),
                 "date": when.isoformat(),
                 "message": f"Logged expense '{desc}' ({cat}) for {amt:g} {cur}."}
     except Exception as e:
@@ -376,9 +381,14 @@ async def _add_income_impl(amount: float, income_type: str = "Other",
             "budgeted_eur": ae, "actual_eur": ae, "notes": notes,
             "via": "mcp",
         }
-        inc_id = db_add_income(uid, row)
-        bump_data_revision(uid)
-        return {"ok": True, "id": inc_id, "amount_eur": round(ae, 2),
+        # #26 E2: audited command-layer parity for income too.
+        from services import commands as _cmd
+        res = _cmd.add_income(uid, source=row["source"], amount_eur=ae,
+                              income_type=itype, date=when,
+                              notes=notes, currency=cur, amount=amt,
+                              via="mcp")
+        return {"ok": True, "id": (res.affected_ids[0] if res.affected_ids
+                                   else ""), "amount_eur": round(ae, 2),
                 "date": when.isoformat(),
                 "message": f"Logged {itype} income of {amt:g} {cur}."}
     except Exception as e:

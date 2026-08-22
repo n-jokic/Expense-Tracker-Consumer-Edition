@@ -141,15 +141,15 @@ Reality: income has NO recurrence concept — only 4 flat UserSettings.salary_* 
 
 ## Phase E — Platform
 
-### [ ] #26 Rich agent capabilities — reversible logging + mail
+### [x] #26 Rich agent capabilities — reversible logging + mail
 Today: 18 read-only tools; mutations limited to one hardcoded budget proposal; MCP add_expense/add_income bypass commands (no undo/audit parity); zero mail ingestion.
-- [ ] E1 Framework services/undo.py: CommandResultWithUndo(.undo_token/.undo_command/.undo_args); UndoToken(token_id, inverse_command, inverse_args, expires_at=30d, description); _execute_undo(token) idempotent (already-deleted -> ok-noop). Milestone/fun-money side effects NOT clawed back (next load re-evaluates naturally) — documented limitation.
-- [ ] E2 Commands in services/commands.py wrapping existing writers, each returning undo tokens: add_expense / add_income / update_expense / delete_expense (undo = soft-delete/restore), recurring-template CRUD (needs is_deleted/deleted_at on Recurring), link/unlink purchase-to-goal. Route MCP paths through commands (audit parity).
-- [ ] E3 Tools: register the 8 mutation tools in ai/tool_registry.py with schemas + dry_run flag; populate ALLOWED_MUTATIONS (ai/safety.py:46); orchestrator gate becomes TOOLS ∪ ALLOWED_MUTATIONS; redact undo_token/undo_command in sanitizer ID keys.
-- [ ] E4 Feedback loop (ask.py): success card 'stored: expense EUR X @ Y — [Undo]'; undo -> 'undone — [Redo]'; toasts; dry-run preview cards >= threshold; agent_confirm_threshold_eur setting default 500; rate cap 20 agent mutations/24h (UserSettings.agent_call_counts); audit_log page gains 'via agent' filter.
-- [ ] E5 Mail staging (paste flow): mail_ingestion.py parses pasted email text via existing extractors (ocr.guess_total_amount, line_item_extractor, bank_import keyword map) -> structured candidates {description, amount_eur, category, date, confidence} -> staging cards with per-item Accept/Discard. Nothing books silently.
+- [x] E1 shipped: services/undo.py with UndoToken (uuid, inverse command+args, 30-day expiry), in-process registry (TTL-pruned, capped at 200), execute_undo dispatching through services.commands.UNDO_COMMANDS with idempotent inverses (already-done -> ok no-op); CommandResultWithUndo carries the token. Milestones not clawed back — documented and test-covered.
+- [x] E2 shipped: add/add_income/update/delete expense commands (+original-currency passthrough), recurring template CRUD over new Recurring.is_deleted/deleted_at columns (reader filters soft-deleted), link/unlink via set_purchase_funding with previous-state undo. MCP add_expense/add_income now route through commands (AGENT/mcp audit rows, revision bumps).
+- [x] E3 shipped: 9 mutation tools registered with schemas + dry_run + confirm flags; ALLOWED_MUTATIONS populated (kill-switch semantics); safety.is_allowed_tool gates registry ∩ allowlist in the orchestrator; sanitizer redacts undo_token/undo_command/undo_args in BOTH modes.
+- [x] E4 shipped: ask.py renders stored+Undo cards from turn-scoped offers, Undone+Redo flow, needs_confirmation card (preview JSON + Confirm booking) for amounts over the threshold; deletes always confirm; agent_confirm_threshold_eur (default 500) + agent_call_counts (20/24h cap, pruned on read) as real settings; audit page 'Only agent-made changes' toggle.
+- [x] E5 shipped: services/mail_ingestion.parse_email_text reuses ocr.guess_total_amount + the receipt line-item grammar + bank_import categorization, extracts dates (ISO/dd.mm.yyyy/mm-dd-yyyy), scores confidence, dedupes; log_expense 'Paste an order / shipping email' expander renders per-item Accept & book / Discard cards — Accept routes through the audited undoable command.
 - [ ] E6 (optional, later) local IMAP poller: stdlib imaplib/email; UNSEEN fetch; Fernet app-password; background thread like github_backup.maybe_auto_backup; feeds same staging. Build only after E5 proves out.
-- [ ] Tests: undo idempotency/expiry, threshold confirmation, rate limit, sanitizer redaction, mail-parse edge cases (no amount, multi-line), milestone-after-undo behavior.
+- [x] tests/test_agent_mutations.py — 12 tests covering every listed behavior plus dry-run no-write, unknown-category taxonomy mapping, recurring soft-delete reader filtering, and both-mode sanitizer redaction.
 - Accept: 'Log this: coffee EUR 3.50 yesterday' books instantly with an Undo card; a EUR 600 expense returns a confirm card; pasted order-email produces accept/discard candidates.
 
 ### [ ] #21b Household admin kick + configurable sharing
